@@ -1,15 +1,19 @@
 """Automated tests for PICO local runtime automation PowerShell scripts."""
 
 import os
+import shutil
 import subprocess
 import tempfile
 import pytest
 
 
 def run_powershell_script(script_rel_path: str, args: list[str]) -> subprocess.CompletedProcess:
-    """Execute a PowerShell script using powershell.exe."""
+    """Execute a PowerShell script using powershell.exe or pwsh."""
+    ps_bin = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
+    if not ps_bin:
+        pytest.skip("PowerShell executable not found on host.")
     script_path = os.path.abspath(script_rel_path)
-    cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script_path] + args
+    cmd = [ps_bin, "-ExecutionPolicy", "Bypass", "-File", script_path] + args
     return subprocess.run(
         cmd,
         capture_output=True,

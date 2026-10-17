@@ -254,3 +254,168 @@ def test_chat_stream_cancellation_marks_decision_cancelled(
 
     finally:
         app.state.provider_override = None
+
+
+def test_chat_stream_mixed_history_pins_to_local_and_prevents_cloud(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    from pico.core.config import settings
+
+    monkeypatch.setattr(settings, "CLOUD_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "mock")
+
+    # 1. Create a conversation
+    conv_res = client.post("/api/conversations", json={"title": "Mixed Context Thread"})
+    conv_id = conv_res.json()["id"]
+
+    mock_prov = MockModelProvider(fixed_response="Local model execution on mixed history.")
+    app.state.provider_override = mock_prov
+
+    try:
+        # 2. Add an INTERNAL message first
+        first_payload = {
+            "conversation_id": conv_id,
+            "message": "Here is confidential proprietary info.",
+            "data_classification": "INTERNAL",
+        }
+        res1 = client.post("/api/chat/stream", json=first_payload)
+        assert res1.status_code == 200
+
+        # 3. Submit a subsequent PUBLIC message with planning task (qualifies for cloud IF purely public)
+        second_payload = {
+            "conversation_id": conv_id,
+            "message": "Now summarize the next steps for public release.",
+            "data_classification": "PUBLIC",
+            "task_category": "planning",
+        }
+        res2 = client.post("/api/chat/stream", json=second_payload)
+        assert res2.status_code == 200
+
+        events = parse_sse_events(res2.text)
+        meta_event = [e[1] for e in events if e[0] == "meta"][0]
+
+        # Invariant: Mixed context MUST remain local and effective classification must be INTERNAL
+        assert meta_event["provider"] == "mock"
+        assert meta_event["data_classification"] == "INTERNAL"
+        assert meta_event["decision_rule"] == "RULE_PRIVATE_LOCAL_PIN"
+
+        # Check DB records
+        messages = (
+            db_session.query(Message)
+            .filter(Message.conversation_id == conv_id)
+            .order_by(Message.created_at.asc())
+            .all()
+        )
+        assert len(messages) == 4
+        # User message 2 has its own classification (PUBLIC)
+        assert messages[2].data_classification == "PUBLIC"
+        # Assistant reply 2 is synthesized from mixed context, so it inherits effective classification (INTERNAL)
+        assert messages[3].data_classification == "INTERNAL"
+
+        # Check routing decision
+        decisions = (
+            db_session.query(RoutingDecision)
+            .filter(RoutingDecision.conversation_id == conv_id)
+            .order_by(RoutingDecision.created_at.desc())
+            .all()
+        )
+        assert decisions[0].data_classification == "INTERNAL"
+        assert decisions[0].cloud_approved is False
+        assert decisions[0].provider == "mock"
+
+    finally:
+        app.state.provider_override = None
+
+
+def test_chat_stream_mixed_history_rejects_explicit_cloud_request(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    from pico.core.config import settings
+
+    monkeypatch.setattr(settings, "CLOUD_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "mock")
+
+    conv_res = client.post("/api/conversations", json={"title": "Cloud Leak Prevention Thread"})
+    conv_id = conv_res.json()["id"]
+
+    mock_prov = MockModelProvider(fixed_response="Setup message.")
+    app.state.provider_override = mock_prov
+
+    try:
+        # Add SECRET message
+        res1 = client.post(
+            "/api/chat/stream",
+            json={
+                "conversation_id": conv_id,
+                "message": "Top secret encryption key: sk-secret-9999",
+                "data_classification": "SECRET",
+            },
+        )
+        assert res1.status_code == 200
+
+        # Submit PUBLIC message explicitly requesting cloud
+        res2 = client.post(
+            "/api/chat/stream",
+            json={
+                "conversation_id": conv_id,
+                "message": "Analyze with cloud model please.",
+                "data_classification": "PUBLIC",
+                "requested_profile": "cloud-strong",
+            },
+        )
+        # Invariant: Must fail closed with 422 ValidationError, strictly preventing cloud dispatch
+        assert res2.status_code == 422
+        assert "strictly prohibited from cloud transmission" in res2.text
+
+    finally:
+        app.state.provider_override = None
+
+
+def test_chat_stream_invalid_history_classification_defaults_to_internal_and_blocks_cloud(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    from pico.core.config import settings
+
+    monkeypatch.setattr(settings, "CLOUD_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "mock")
+
+    conv_res = client.post("/api/conversations", json={"title": "Invalid Classification Thread"})
+    conv_id = conv_res.json()["id"]
+
+    from pico.repositories.message_repo import MessageRepository
+
+    repo = MessageRepository(db_session)
+    repo.create(
+        message_id="msg_corrupt_tier_01",
+        conversation_id=conv_id,
+        role="user",
+        content="Historical message with ambiguous legacy tier classification.",
+        data_classification="UNRECOGNIZED_CONFIDENTIAL_TIER",
+    )
+    db_session.commit()
+
+    mock_prov = MockModelProvider(fixed_response="Testing fallback.")
+    app.state.provider_override = mock_prov
+
+    try:
+        # Submit subsequent PUBLIC message for complex reasoning
+        res2 = client.post(
+            "/api/chat/stream",
+            json={
+                "conversation_id": conv_id,
+                "message": "Plan our next architecture phase.",
+                "data_classification": "PUBLIC",
+                "task_category": "planning",
+            },
+        )
+        assert res2.status_code == 200
+        events = parse_sse_events(res2.text)
+        meta_event = [e[1] for e in events if e[0] == "meta"][0]
+
+        # Invariant: Unknown classification in history defaults to private (INTERNAL) and blocks cloud routing
+        assert meta_event["provider"] == "mock"
+        assert meta_event["data_classification"] == "INTERNAL"
+        assert meta_event["decision_rule"] == "RULE_PRIVATE_LOCAL_PIN"
+
+    finally:
+        app.state.provider_override = None

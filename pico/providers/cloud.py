@@ -78,6 +78,14 @@ class CloudProvider(ModelProvider):
                 "Cloud provider API key is not configured. Set CLOUD_API_KEY in environment."
             )
 
+        # Defense-in-depth security guard: Never send SECRET, SENSITIVE, or INTERNAL content to cloud
+        for m in messages:
+            norm = (m.data_classification or "INTERNAL").strip().upper()
+            if norm != "PUBLIC":
+                raise ProviderConfigurationError(
+                    f"Data classification violation: Message classified as '{norm}' cannot be sent to cloud inference."
+                )
+
         start_time = time.perf_counter()
 
         cloud_messages = [

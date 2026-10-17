@@ -68,10 +68,28 @@ async def chat_stream(
         data_classification=classification,
     )
 
-    # 3. Resolve routing decision & record initial pending audit decision
+    # 3. Fetch recent conversation context for prompt assembly (including newly inserted user message)
+    history_records = msg_repo.list_by_conversation(
+        payload.conversation_id, limit=20, offset=0
+    )
+    chat_messages: list[ChatMessage] = [
+        ChatMessage(
+            role=rec.role,  # type: ignore[arg-type]
+            content=rec.content,
+            data_classification=routing_service.normalize_classification(rec.data_classification),
+        )
+        for rec in history_records
+    ]
+
+    # 4. Deterministic, fail-closed policy: compute effective classification across all assembled context items
+    context_classifications = [m.data_classification for m in chat_messages]
+    effective_classification = routing_service.compute_effective_classification(context_classifications)
+
+    # 5. Resolve routing decision based strictly on effective context classification
     decision: StepRoutingDecision = routing_service.resolve_route(
         task_category=payload.task_category or "general_chat",
-        data_classification=classification,
+        data_classification=effective_classification,
+        context_classifications=context_classifications,
         requested_profile=payload.requested_profile,
     )
     route_repo = RoutingDecisionRepository(db)
@@ -89,19 +107,6 @@ async def chat_stream(
         cloud_approved=decision.cloud_approved,
         outcome="pending",
     )
-
-    # 4. Fetch recent conversation context for prompt assembly
-    history_records = msg_repo.list_by_conversation(
-        payload.conversation_id, limit=20, offset=0
-    )
-    chat_messages: list[ChatMessage] = [
-        ChatMessage(
-            role=rec.role,  # type: ignore[arg-type]
-            content=rec.content,
-            data_classification=rec.data_classification,
-        )
-        for rec in history_records
-    ]
 
     # Explicit options for generation
     options = GenerationOptions(
@@ -125,7 +130,7 @@ async def chat_stream(
         assistant_msg_id: str | None = None
 
         try:
-            # Emit meta event
+            # Emit meta event with effective classification
             meta_data = {
                 "decision_id": decision.decision_id,
                 "provider": decision.provider,
@@ -135,6 +140,19 @@ async def chat_stream(
                 "decision_rule": decision.decision_rule,
             }
             yield format_sse("meta", meta_data)
+
+            # Fail-closed guard: ensure non-local provider cannot be dispatched for non-PUBLIC context
+            if decision.provider == "cloud" and effective_classification != "PUBLIC":
+                raise ValidationError(
+                    f"Security policy violation: Cloud provider resolved for non-PUBLIC context ('{effective_classification}')."
+                )
+
+            if override_provider is not None:
+                is_local = getattr(override_provider.metadata, "is_local", True)
+                if not is_local and effective_classification != "PUBLIC":
+                    raise ValidationError(
+                        f"Security policy violation: Non-local provider override attempted on '{effective_classification}' context."
+                    )
 
             provider = ProviderFactory.get_provider(
                 provider_name=decision.provider,
@@ -167,7 +185,7 @@ async def chat_stream(
                             conversation_id=payload.conversation_id,
                             role="assistant",
                             content=full_response,
-                            data_classification=classification,
+                            data_classification=effective_classification,
                             token_count=event.completion_tokens,
                         )
 
