@@ -6,14 +6,14 @@ PICO is a local-first, multi-model personal intelligence system engineered for v
 
 ## Architecture & Documentation
 
-- [AGENTS.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/AGENTS.md) — Non-negotiable operating rules, hardware constraints, and engineering principles.
-- [docs/architecture.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/architecture.md) — System architecture, subsystem boundaries, and request lifecycle data flow.
-- [docs/data-model.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/data-model.md) — Relational persistence models, SQLite WAL configuration, and schema evolution.
-- [docs/api-contract.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/api-contract.md) — REST API endpoints, schemas, validation, and error envelopes.
-- [docs/security-and-risk-register.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/security-and-risk-register.md) — Threat modeling, local trust boundaries, and risk mitigations.
-- [docs/implementation-plan.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/implementation-plan.md) — Phased delivery plan and completion statuses.
-- [docs/evaluation/README.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/evaluation/README.md) — Evaluation framework and representative test case specifications.
-- [docs/model-gateway-design.md](file:///c:/Users/AYUSH/OneDrive/Desktop/PICO/docs/model-gateway-design.md) — Per-step model router, profiles, and data classification policies.
+- [AGENTS.md](AGENTS.md) — Non-negotiable operating rules, hardware constraints, and engineering principles.
+- [docs/architecture.md](docs/architecture.md) — System architecture, subsystem boundaries, and request lifecycle data flow.
+- [docs/data-model.md](docs/data-model.md) — Relational persistence models, SQLite WAL configuration, and schema evolution.
+- [docs/api-contract.md](docs/api-contract.md) — REST API endpoints, schemas, validation, and error envelopes.
+- [docs/security-and-risk-register.md](docs/security-and-risk-register.md) — Threat modeling, local trust boundaries, and risk mitigations.
+- [docs/implementation-plan.md](docs/implementation-plan.md) — Phased delivery plan and completion statuses.
+- [docs/evaluation/README.md](docs/evaluation/README.md) — Evaluation framework and representative test case specifications.
+- [docs/model-gateway-design.md](docs/model-gateway-design.md) — Per-step model router, profiles, and data classification policies.
 
 ---
 
@@ -251,13 +251,19 @@ Run the full automated test suite (offline, no external network calls):
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```
-All 64 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
-- `tests/test_conversations_api.py` (5 tests)
-- `tests/test_messages_api.py` (5 tests)
-- `tests/test_projects_api.py` (4 tests)
-- `tests/test_tasks_api.py` (6 tests)
-- `tests/test_database_persistence.py` (3 tests)
-- `tests/test_model_gateway.py` (10 tests)
-- `tests/test_chat_stream_api.py` (6 tests)
-- `tests/test_benchmark_runner.py` (20 tests)
+All 71 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
 - `tests/test_automation_scripts.py` (5 tests)
+- `tests/test_bench_runner.py` (9 tests)
+- `tests/test_chat_stream_api.py` (8 tests)
+- `tests/test_cloud_provider.py` (6 tests)
+- `tests/test_conversations.py` (4 tests)
+- `tests/test_foreign_keys.py` (2 tests)
+- `tests/test_health.py` (1 test)
+- `tests/test_messages.py` (5 tests)
+- `tests/test_mock_provider.py` (4 tests)
+- `tests/test_ollama_provider.py` (6 tests)
+- `tests/test_persistence_reopen.py` (1 test)
+- `tests/test_projects.py` (5 tests)
+- `tests/test_routing_persistence.py` (1 test)
+- `tests/test_routing_service.py` (9 tests)
+- `tests/test_tasks.py` (5 tests)

@@ -62,7 +62,7 @@ async def test_cloud_provider_streaming_success() -> None:
 
         events = []
         tokens = []
-        async for event in provider.stream_chat([ChatMessage(role="user", content="Analyze this")]):
+        async for event in provider.stream_chat([ChatMessage(role="user", content="Analyze this", data_classification="PUBLIC")]):
             events.append(event)
             if isinstance(event, TokenEvent):
                 tokens.append(event.delta)
@@ -99,7 +99,7 @@ async def test_cloud_provider_error_no_secret_leakage() -> None:
             http_client=http_client,
         )
         with pytest.raises(ProviderResponseError) as exc_info:
-            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test")]):
+            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test", data_classification="PUBLIC")]):
                 pass
 
         error_message = str(exc_info.value)
@@ -117,5 +117,17 @@ async def test_cloud_provider_connection_failure() -> None:
     async with httpx.AsyncClient(transport=transport) as http_client:
         provider = CloudProvider(enabled=True, api_key="sk-test", http_client=http_client)
         with pytest.raises(ProviderConnectionError):
-            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test")]):
+            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test", data_classification="PUBLIC")]):
                 pass
+
+
+@pytest.mark.anyio
+async def test_cloud_provider_rejects_non_public_messages_defense_in_depth() -> None:
+    provider = CloudProvider(enabled=True, api_key="sk-test-key")
+
+    for non_public in ["INTERNAL", "SENSITIVE", "SECRET", "UNKNOWN"]:
+        msg = ChatMessage(role="user", content="Classified text", data_classification=non_public)
+        with pytest.raises(ProviderConfigurationError) as exc_info:
+            async for _ in provider.stream_chat([msg]):
+                pass
+        assert "cannot be sent to cloud" in str(exc_info.value)

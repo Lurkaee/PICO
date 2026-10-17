@@ -24,6 +24,12 @@ class RoutingService:
     """Deterministic, policy-driven model router for PICO."""
 
     VALID_CLASSIFICATIONS = {"PUBLIC", "INTERNAL", "SENSITIVE", "SECRET"}
+    CLASSIFICATION_SEVERITY: dict[str, int] = {
+        "PUBLIC": 0,
+        "INTERNAL": 1,
+        "SENSITIVE": 2,
+        "SECRET": 3,
+    }
     REASONING_CATEGORIES = {"planning", "coding", "verification"}
     ROUTINE_CATEGORIES = {"intent_classification", "entity_extraction", "summarization", "general_chat"}
 
@@ -39,16 +45,54 @@ class RoutingService:
             return "INTERNAL"
         return upper
 
+    def compute_effective_classification(
+        self, classifications: list[str | None] | tuple[str | None, ...] | set[str | None]
+    ) -> str:
+        """Compute deterministic effective sensitivity across all items in context.
+
+        Invariants:
+        - Any unknown, missing, or invalid classification defaults to private ('INTERNAL').
+        - Highest sensitivity among items dominates ('SECRET' > 'SENSITIVE' > 'INTERNAL' > 'PUBLIC').
+        - Mixed-classification context defaults to the highest severity level and remains local.
+        - Returns 'INTERNAL' if empty.
+        """
+        if not classifications:
+            return "INTERNAL"
+
+        max_severity = 0
+        effective = "PUBLIC"
+
+        for c in classifications:
+            norm = self.normalize_classification(c)
+            sev = self.CLASSIFICATION_SEVERITY.get(norm, 1)
+            if sev > max_severity:
+                max_severity = sev
+                effective = norm
+
+        return effective
+
     def resolve_route(
         self,
         task_category: str = "general_chat",
         data_classification: str | None = None,
+        context_classifications: list[str | None] | tuple[str | None, ...] | None = None,
         requested_profile: str | None = None,
         cloud_approved: bool = False,
     ) -> StepRoutingDecision:
         """Resolve model route based strictly on deterministic policy invariants."""
         decision_id = generate_id("route")
-        classification = self.normalize_classification(data_classification)
+
+        items_to_evaluate: list[str | None] = []
+        if context_classifications:
+            items_to_evaluate.extend(context_classifications)
+        if data_classification is not None:
+            items_to_evaluate.append(data_classification)
+
+        if items_to_evaluate:
+            classification = self.compute_effective_classification(items_to_evaluate)
+        else:
+            classification = self.normalize_classification(data_classification)
+
         category = task_category.strip().lower() if task_category else "general_chat"
 
         # Determine local profile and provider
