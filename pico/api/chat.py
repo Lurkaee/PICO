@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
 
-from pico.core.errors import EntityNotFoundError
+from pico.core.errors import EntityNotFoundError, ValidationError
 from pico.core.id_gen import generate_id
 from pico.db.session import get_db
 from pico.providers.errors import ProviderCancelledError

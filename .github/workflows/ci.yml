@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -39,8 +41,21 @@ jobs:
           python -m compileall -q pico tests tools
 
       - name: Check git formatting and whitespace
+        shell: pwsh
         run: |
-          git diff --check
+          if ($env:GITHUB_BASE_REF) {
+            Write-Host "Checking pull request diff against origin/$env:GITHUB_BASE_REF"
+            git diff --check "origin/$env:GITHUB_BASE_REF...HEAD"
+          } else {
+            $count = [int](git rev-list --count HEAD)
+            if ($count -gt 1) {
+              Write-Host "Checking push diff against HEAD~1"
+              git diff --check HEAD~1...HEAD
+            } else {
+              Write-Host "Initial commit, checking working tree"
+              git diff --check
+            }
+          }
 
       - name: Run test suite
         run: |

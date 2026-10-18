@@ -251,10 +251,10 @@ Run the full automated test suite (offline, no external network calls):
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```
-All 71 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
+All 73 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
 - `tests/test_automation_scripts.py` (5 tests)
 - `tests/test_bench_runner.py` (9 tests)
-- `tests/test_chat_stream_api.py` (8 tests)
+- `tests/test_chat_stream_api.py` (10 tests)
 - `tests/test_cloud_provider.py` (6 tests)
 - `tests/test_conversations.py` (4 tests)
 - `tests/test_foreign_keys.py` (2 tests)

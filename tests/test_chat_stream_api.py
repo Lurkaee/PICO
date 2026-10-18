@@ -419,3 +419,91 @@ def test_chat_stream_invalid_history_classification_defaults_to_internal_and_blo
 
     finally:
         app.state.provider_override = None
+
+
+def test_chat_stream_defense_in_depth_cloud_guard_raises_validation_error(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    """Verify that if routing somehow resolves cloud for non-PUBLIC context, the defense-in-depth guard raises ValidationError (not NameError)."""
+    conv_res = client.post("/api/conversations", json={"title": "Cloud Guard Test Thread"})
+    conv_id = conv_res.json()["id"]
+
+    # Mock router to return a rogue cloud decision on INTERNAL data
+    from pico.services.routing_service import RoutingService, StepRoutingDecision
+
+    def mock_resolve_route(*args, **kwargs) -> StepRoutingDecision:
+        return StepRoutingDecision(
+            decision_id="route_rogue_cloud_test",
+            selected_profile="cloud-strong",
+            provider="cloud",
+            model_name="claude-3-5-sonnet-20241022",
+            decision_rule="RULE_MOCK_ROGUE_BYPASS",
+            reason="Simulated rogue routing bypass",
+            cloud_approved=True,
+            data_classification="INTERNAL",
+            task_category="general_chat",
+        )
+
+    monkeypatch.setattr(RoutingService, "resolve_route", mock_resolve_route)
+
+    res = client.post(
+        "/api/chat/stream",
+        json={
+            "conversation_id": conv_id,
+            "message": "Sensitive query that should never reach cloud.",
+            "data_classification": "INTERNAL",
+        },
+    )
+    assert res.status_code == 200
+    events = parse_sse_events(res.text)
+
+    # Must emit meta event first, then error event from the defense-in-depth guard
+    event_types = [e[0] for e in events]
+    assert "meta" in event_types
+    assert "error" in event_types
+
+    error_event = [e[1] for e in events if e[0] == "error"][0]
+    assert error_event["code"] == "VALIDATION_ERROR"
+    assert "Security policy violation: Cloud provider resolved for non-PUBLIC context" in error_event["message"]
+
+    # Verify decision is marked failed in DB
+    decision = db_session.query(RoutingDecision).filter(RoutingDecision.id == "route_rogue_cloud_test").first()
+    assert decision is not None
+    assert decision.outcome == "failed"
+    assert "Security policy violation" in (decision.error_message or "")
+
+
+def test_chat_stream_defense_in_depth_non_local_override_guard_raises_validation_error(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verify that a non-local provider override on non-PUBLIC context raises ValidationError (not NameError)."""
+    conv_res = client.post("/api/conversations", json={"title": "Non-local Override Test Thread"})
+    conv_id = conv_res.json()["id"]
+
+    # Create mock provider with is_local = False
+    mock_prov = MockModelProvider(fixed_response="Non-local response.")
+    mock_prov.metadata.is_local = False
+    app.state.provider_override = mock_prov
+
+    try:
+        res = client.post(
+            "/api/chat/stream",
+            json={
+                "conversation_id": conv_id,
+                "message": "Proprietary internal information.",
+                "data_classification": "INTERNAL",
+            },
+        )
+        assert res.status_code == 200
+        events = parse_sse_events(res.text)
+
+        event_types = [e[0] for e in events]
+        assert "meta" in event_types
+        assert "error" in event_types
+
+        error_event = [e[1] for e in events if e[0] == "error"][0]
+        assert error_event["code"] == "VALIDATION_ERROR"
+        assert "Security policy violation: Non-local provider override attempted" in error_event["message"]
+
+    finally:
+        app.state.provider_override = None

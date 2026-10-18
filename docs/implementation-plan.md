@@ -55,6 +55,14 @@ The implementation of PICO is structured into distinct, reviewable vertical slic
   - *Dependencies*: Slice 1.
   - *Status*: **COMPLETED**.
 
+- [x] **Slice 2.1 (Phase 1.1 / 1.1.1): Context-Level Privacy Hardening & CI Workflow**
+  - Fail-closed context classification: effective sensitivity computation over assembled history (`SECRET` > `SENSITIVE` > `INTERNAL` > `PUBLIC`).
+  - Strict local pinning for non-`PUBLIC` context (`RULE_PRIVATE_LOCAL_PIN`); zero non-`PUBLIC` content transmitted to cloud.
+  - Defense-in-depth security verification in `CloudProvider.stream_chat` and streaming chat endpoint.
+  - GitHub Actions CI workflow for Python 3.12 and 3.13 on `windows-latest` with PR diff validation.
+  - *Dependencies*: Slice 2.
+  - *Status*: **COMPLETED**.
+
 - [x] **Slice 3: Hardware Benchmarking, Telemetry & Quality Gates (`tools/bench/`)**
   - Benchmark test runner measuring Time To First Token (TTFT), tokens/sec, RAM, and VRAM.
   - Windows kernel32 memory API integration and nvidia-smi GPU VRAM telemetry.

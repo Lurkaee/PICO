@@ -11,10 +11,12 @@ The PICO Model Gateway is built on five core principles:
    - Local model `local-mid` (`qwen3.5:4b`) remains disabled by default until benchmark validation passes.
    - Context budget is capped at 4096 tokens (test 8192 only when headroom is verified).
    - Strict single-model residency in memory.
-4. **Data Privacy Invariants**:
-   - `SECRET` classification: **Never** permitted to leave the local machine. Cloud routing is rejected unconditionally.
-   - `SENSITIVE` classification: Stays local by default; requires explicit user interactive consent before any cloud transmission.
-   - `INTERNAL` / `PUBLIC`: Permitted for cloud routing only if the user has configured and enabled a cloud provider.
+4. **Data Privacy Invariants (Fail-Closed Context Policy)**:
+   - Only purely `PUBLIC` context is eligible for external cloud routing (when `CLOUD_ENABLED=True`).
+   - `INTERNAL`, `SENSITIVE`, and `SECRET` classifications: **Never** permitted to leave the local machine under the current deterministic policy; strictly pinned to local inference (`RULE_PRIVATE_LOCAL_PIN`).
+   - Mixed-classification context (assembled history + prompt) defaults to the highest severity level among all items and remains local.
+   - Missing, unknown, or corrupted classification values deterministically fail closed and default to `INTERNAL`.
+   - Cloud approval gates for `SENSITIVE` data are deliberately deferred until a separate, independently audited interactive approval engine and data-sanitization policy are designed and tested.
 5. **Inspectable Audit Trail**:
    Every routing decision is recorded with the decision rule, selected profile, provider, model name, prompt/completion tokens, latency in milliseconds, and estimated cost in cents.
 
@@ -57,7 +59,7 @@ The PICO Model Gateway is built on five core principles:
       "cost_per_million_input": 3.0,
       "cost_per_million_output": 15.0,
       "requires_cloud_approval": true,
-      "max_data_classification": "INTERNAL"
+      "max_data_classification": "PUBLIC"
     },
     "mock": {
       "provider": "mock",
@@ -126,12 +128,12 @@ class StepRoutingDecision(BaseModel):
 
 ## 4. Deterministic Policy Rules
 
-1. **Rule 1: Hard Secret Exclusion**
-   - Condition: `data_classification == SECRET`
-   - Action: `selected_profile` must be local (`local-small`, `local-mid`, or `mock`). Cloud providers are disqualified. If the local model lacks required capabilities for the task, the task is safely refused with an explanatory explanation.
-2. **Rule 2: Sensitive Cloud Approval Gate**
-   - Condition: `data_classification == SENSITIVE`
-   - Action: Cannot route to `cloud-strong` unless `cloud_approved == True`. If approval is missing, routes to `local-small` or halts with an interactive approval request.
+1. **Rule 1: Non-Public Hard Local Pin (Fail-Closed Context Policy)**
+   - Condition: `effective_classification in [SECRET, SENSITIVE, INTERNAL]` (or any unknown/missing classification).
+   - Action: `selected_profile` must be local (`local-small`, `local-mid`, or `mock`). Cloud providers are strictly disqualified. Mixed-classification context cannot be transmitted to cloud inference. Explicit user requests or fallback attempts to route non-`PUBLIC` context to cloud inference fail closed with a `422 ValidationError`.
+2. **Rule 2: Deferred Sensitive Cloud Approval Gate**
+   - Condition: Interactive sensitive cloud transmission requires a formal Policy & Approval Engine.
+   - Status: DEFERRED. Until a formal approval and data-sanitization engine is deliberately implemented and tested, all `SENSITIVE` and `INTERNAL` context is strictly held to Rule 1 (local execution only).
 3. **Rule 3: Routine Task Optimization**
    - Condition: `task_category in [INTENT_CLASSIFICATION, ENTITY_EXTRACTION, SUMMARIZATION]`
    - Action: Routes to `local-small` if `benchmark_gate_passed == True`. Never waste cloud budget on basic classification or summarization.
