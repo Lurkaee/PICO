@@ -81,7 +81,7 @@ PICO rejects the chatbot-wrapper anti-pattern. Instead, it decouples user intent
 3. **Model Gateway & Per-Step Model Router**
    - Evaluates routing rules **per individual execution step**, not merely once per conversation.
    - Routes routine tasks (tagging, intent classification, entity extraction) to `local-small`.
-   - Routes complex reasoning and multi-file code synthesis to `cloud-strong` (subject to explicit user consent and privacy policy).
+   - Routes complex reasoning and multi-file code synthesis to `cloud-strong` (strictly restricted to purely `PUBLIC` context and explicit user enablement; all non-`PUBLIC` context is pinned locally under the current fail-closed privacy policy).
    - Records every routing decision, model fallback, latency, and estimated token cost.
    - Status: *Architecture defined now; adapter interfaces & deterministic router implemented in Phase 1 Slice 2.*
 

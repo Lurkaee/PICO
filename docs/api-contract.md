@@ -304,7 +304,7 @@
       data: {"code": "PROVIDER_CONNECTION_ERROR", "message": "Ollama service unavailable at http://127.0.0.1:11434"}
       ```
   - **Response (404 Not Found)**: If `conversation_id` does not exist.
-  - **Response (422 Unprocessable Entity)**: Validation error (e.g. empty message).
+  - **Response (422 Unprocessable Entity)**: Validation error (e.g. empty message, or security policy violation: attempting to explicitly request or route a cloud profile on a conversation containing non-`PUBLIC` context).
 
 ---
 
