@@ -5,6 +5,10 @@ from typing import Any
 
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ValidationError
+from pico.perception.classification import (
+    compute_trusted_perception_classification,
+    validate_trusted_source_device,
+)
 from pico.perception.contracts import (
     Modality,
     NormalizedPerceptionEvent,
@@ -83,9 +87,12 @@ class VisionAdapter:
         return {
             "enabled": settings.PERCEPTION_ENABLED,
             "state": self.state.value,
-            "camera_available": False,  # Physical camera requires external device hook
+            "physical_camera_connected": False,  # Physical camera hardware driver not attached
+            "camera_available": False,  # Live hardware capture unavailable
             "ocr_available": False,     # Local Tesseract / EasyOCR not bundled in base install
             "vision_model_available": False,  # Qwen2-VL or similar not loaded into 4GB VRAM
+            "scene_understanding_available": False,
+            "api_ingestion_available": True,
             "max_image_bytes": settings.VISION_MAX_IMAGE_BYTES,
             "max_dimension_px": settings.VISION_MAX_DIMENSION,
             "supported_formats": ["png", "jpeg", "jpg", "bmp", "ppm", "webp"],
@@ -100,6 +107,8 @@ class VisionAdapter:
 
         if not request.user_consent:
             raise AuthorizationError("Explicit user consent is mandatory for visual capture.")
+
+        clean_device = validate_trusted_source_device(Modality.VISION, request.source_device)
 
         # Decode base64
         try:
@@ -125,27 +134,35 @@ class VisionAdapter:
                 f"{settings.VISION_MAX_DIMENSION}px."
             )
 
-        # Generate structured observation
-        scene_summary = f"Visual snapshot ({width}x{height} {request.image_format.upper()}) captured from {request.source_device}."
-        confidence = 0.90
+        # Generate structured observation - honest: metadata-only validated
+        scene_summary = (
+            f"Visual snapshot ({width}x{height} {request.image_format.upper()}) ingested from {clean_device}. "
+            f"Local scene understanding runtime is unavailable."
+        )
+        # Interpretive confidence is 0.0 because scene analysis is not performed
+        confidence = 0.0
+        effective_classification = compute_trusted_perception_classification(Modality.VISION, clean_device)
 
         # Create normalized event (without embedding raw binary image)
         event = NormalizedPerceptionEvent(
             modality=Modality.VISION,
-            event_type="visual_snapshot_analyzed",
-            source_device_id=request.source_device,
-            data_classification="INTERNAL",
+            event_type="visual_snapshot_ingested",
+            source_device_id=clean_device,
+            data_classification=effective_classification,
             confidence=confidence,
             raw_payload_scrubbed=True,
             structured_data={
                 "width": width,
                 "height": height,
                 "format": request.image_format.lower(),
+                "metadata_only": True,
+                "scene_analysis_performed": False,
                 "scene_description": scene_summary,
+                "interpretive_confidence": 0.0,
                 "purpose": request.purpose,
                 "task_id": request.task_id,
             },
-            provenance=f"vision:{request.source_device}:{request.purpose}",
+            provenance=f"vision:{clean_device}:{request.purpose}",
             retention_policy=RetentionPolicy.SHORT_TERM_AUDIT,
         )
 
@@ -154,14 +171,14 @@ class VisionAdapter:
 
         response = VisionCaptureResponse(
             event_id=event.event_id,
-            source_device=request.source_device,
+            source_device=clean_device,
             width=width,
             height=height,
             format=request.image_format.lower(),
             scene_description=scene_summary,
             ocr_text=None,
             confidence=confidence,
-            data_classification="INTERNAL",
+            data_classification=effective_classification,
             provenance=event.provenance,
             raw_buffer_retained=False,
         )
