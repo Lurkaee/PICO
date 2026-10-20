@@ -291,7 +291,8 @@ class ToolExecutionEngine:
             )
 
         # 2. Consequential action checks: human approval, single-use dispatch, and triple-digest agreement
-        recomputed_digest = compute_input_digest(execution.input_json)
+        validated_input_snapshot = dict(execution.input_json)
+        recomputed_digest = compute_input_digest(validated_input_snapshot)
         if capability.metadata.consequential:
             if not execution.approved_by or not execution.approved_at or not execution.approval_input_digest:
                 raise AuthorizationError(f"Consequential capability '{execution.capability_id}' lacks human approval.")
@@ -362,6 +363,7 @@ class ToolExecutionEngine:
         claimed = self.exec_repo.claim_for_execution(
             execution_id=execution_id,
             expected_digest=recomputed_digest,
+            expected_input=validated_input_snapshot,
             expected_approval_digest=execution.approval_input_digest if capability.metadata.consequential else None,
             is_consequential=capability.metadata.consequential,
             metadata_json=exec_metadata,
@@ -378,6 +380,30 @@ class ToolExecutionEngine:
             )
             raise AuthorizationError(
                 f"Execution '{execution_id}' could not be claimed: concurrent dispatch conflict, stale input, or already consumed ticket."
+            )
+
+        # 4. Post-claim integrity verification: Ensure refreshed persisted input exactly matches validated snapshot
+        if (
+            claimed.input_json != validated_input_snapshot
+            or compute_input_digest(claimed.input_json) != recomputed_digest
+            or claimed.input_digest != recomputed_digest
+            or (capability.metadata.consequential and claimed.approval_input_digest != recomputed_digest)
+        ):
+            self.ledger_repo.append(
+                event_type="authorization_denied",
+                execution_id=execution.id,
+                task_id=execution.task_id,
+                correlation_id=correlation_id,
+                capability_id=execution.capability_id,
+                capability_version=capability.metadata.version,
+                payload_json={
+                    "reason": "Post-claim input snapshot divergence: persisted input does not match validated snapshot",
+                    "execution_id": execution_id,
+                },
+                data_classification=execution.data_classification,
+            )
+            raise AuthorizationError(
+                f"Execution '{execution_id}' input verification failed: persisted input was modified after validation."
             )
 
         execution = claimed
