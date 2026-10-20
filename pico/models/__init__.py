@@ -1,8 +1,12 @@
 from pico.models.conversation import Conversation
+from pico.models.episodic_memory import EpisodicMemoryItem
 from pico.models.message import Message
+from pico.models.procedural_memory import ProceduralMemoryItem
 from pico.models.project import Project
 from pico.models.routing_decision import RoutingDecision
+from pico.models.semantic_memory import SemanticMemoryItem
 from pico.models.task import Task
+from pico.models.working_memory import WorkingMemoryItem
 
 __all__ = [
     "Conversation",
@@ -10,4 +14,8 @@ __all__ = [
     "Project",
     "Task",
     "RoutingDecision",
+    "WorkingMemoryItem",
+    "EpisodicMemoryItem",
+    "SemanticMemoryItem",
+    "ProceduralMemoryItem",
 ]

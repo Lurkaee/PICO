@@ -70,7 +70,12 @@ Target Development & Deployment Environment:
    - Disabled by default. Enabled only after benchmark validation demonstrates acceptable latency and system stability.
 3. **`cloud-strong`** (Configurable Cloud Provider, e.g., Anthropic / OpenAI / Gemini)
    - Scope: Complex architectural reasoning, multi-step verification, deep coding, and edge-case resolution.
-   - Guardrails: Explicit user consent, visual UI indicator, strict data redaction/minimization. Data classified as `SECRET` must NEVER be sent to cloud providers.
+   - Privacy & Cloud Routing Policy:
+     - Only `PUBLIC` effective context is eligible for cloud processing.
+     - `INTERNAL`, `SENSITIVE`, `SECRET`, missing classifications, and unknown classifications must remain local or fail closed.
+     - Cloud eligibility requires explicit cloud enablement (e.g., `CLOUD_ENABLED=true`).
+     - There is no sensitive-data consent exception in the current implementation.
+     - Guardrails: Visual UI indicator, strict data redaction/minimization. Data classified as `SECRET`, `SENSITIVE`, `INTERNAL`, or unknown must NEVER be sent to cloud providers.
 4. **`embeddings`** (Local CPU/lightweight GPU model)
    - Scope: Local semantic vector generation for episodic/semantic memory retrieval. Persist model identifier and vector dimensionality.
 

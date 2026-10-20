@@ -1,9 +1,28 @@
 from pico.schemas.chat import ChatStreamRequest
 from pico.schemas.common import ErrorDetail, ErrorResponse, PaginatedResponse
+from pico.schemas.context import CompiledContext, ContextItem, SelectionDecision
 from pico.schemas.conversation import (
     ConversationCreate,
     ConversationListResponse,
     ConversationResponse,
+)
+from pico.schemas.memory import (
+    EpisodicMemoryCreate,
+    EpisodicMemoryListResponse,
+    EpisodicMemoryResponse,
+    MemoryStatusResponse,
+    ProceduralMemoryApprovalRequest,
+    ProceduralMemoryCreate,
+    ProceduralMemoryListResponse,
+    ProceduralMemoryResponse,
+    ProceduralMemoryUpdate,
+    SemanticMemoryCreate,
+    SemanticMemoryListResponse,
+    SemanticMemoryResponse,
+    SemanticMemorySearchRequest,
+    SemanticMemoryUpdate,
+    WorkingMemoryCreate,
+    WorkingMemoryResponse,
 )
 from pico.schemas.message import (
     DataClassification,
@@ -60,4 +79,23 @@ __all__ = [
     "RoutingDecisionResponse",
     "TaskCategoryType",
     "ChatStreamRequest",
+    "ContextItem",
+    "SelectionDecision",
+    "CompiledContext",
+    "WorkingMemoryCreate",
+    "WorkingMemoryResponse",
+    "EpisodicMemoryCreate",
+    "EpisodicMemoryResponse",
+    "EpisodicMemoryListResponse",
+    "SemanticMemoryCreate",
+    "SemanticMemoryUpdate",
+    "SemanticMemoryResponse",
+    "SemanticMemoryListResponse",
+    "SemanticMemorySearchRequest",
+    "ProceduralMemoryCreate",
+    "ProceduralMemoryUpdate",
+    "ProceduralMemoryApprovalRequest",
+    "ProceduralMemoryResponse",
+    "ProceduralMemoryListResponse",
+    "MemoryStatusResponse",
 ]

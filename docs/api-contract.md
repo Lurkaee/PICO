@@ -308,13 +308,115 @@
 
 ---
 
+### 2.5 Memory Subsystems (Implemented in Milestone P4)
+
+- **`GET /api/memory/status`**
+  - **Description**: Return status metrics across all 4 memory subsystems and local SQLite FTS5 index.
+  - **Response (200 OK)**:
+    ```json
+    {
+      "working_memory_active_items": 3,
+      "episodic_memory_total_events": 12,
+      "semantic_memory_total_facts": 24,
+      "semantic_memory_verified_facts": 18,
+      "procedural_memory_total": 5,
+      "procedural_memory_active": 2,
+      "storage_type": "sqlite_fts5"
+    }
+    ```
+
+- **`POST /api/memory/working`**
+  - **Description**: Put or update an active, bounded working memory item.
+  - **Request Body**:
+    ```json
+    {
+      "session_id": "conv_123",
+      "key": "active_goal",
+      "content": "Refactor SQLite persistence schema",
+      "item_type": "working_state",
+      "data_classification": "INTERNAL",
+      "ttl_seconds": 3600
+    }
+    ```
+  - **Response (201 Created)**: `WorkingMemoryResponse`
+
+- **`GET /api/memory/working/{session_id}`**
+  - **Description**: List active, non-expired working memory items for a session.
+  - **Response (200 OK)**: List of `WorkingMemoryResponse`
+
+- **`DELETE /api/memory/working/{session_id}`**
+  - **Description**: Clear all active working memory entries for a session.
+  - **Response (200 OK)**: `{"cleared_count": 3}`
+
+- **`POST /api/memory/events`**
+  - **Description**: Record an episodic event with deduplication key support.
+  - **Request Body**:
+    ```json
+    {
+      "event_type": "task_completed",
+      "description": "Benchmark runs completed successfully",
+      "source_provenance": "task:task_01",
+      "data_classification": "INTERNAL",
+      "is_inferred": false,
+      "deduplication_key": "bench:qwen3.5:2b:run_1"
+    }
+    ```
+  - **Response (201 Created)**: `EpisodicMemoryResponse`
+
+- **`GET /api/memory/events`**
+  - **Description**: List and filter episodic memory events by type, task, date, or inference flag.
+  - **Response (200 OK)**: `EpisodicMemoryListResponse`
+
+- **`POST /api/memory/facts`**
+  - **Description**: Save or explicitly remember a factual preference/knowledge item.
+  - **Request Body**:
+    ```json
+    {
+      "subject": "User",
+      "predicate": "preferred_editor",
+      "content": "User prefers Neovim for Python coding.",
+      "is_verified": true,
+      "data_classification": "INTERNAL",
+      "source_provenance": "user:explicit"
+    }
+    ```
+  - **Response (201 Created)**: `SemanticMemoryResponse`
+
+- **`GET /api/memory/facts/search`**
+  - **Description**: Full-text search across semantic memories using SQLite FTS5 and BM25 ranking.
+  - **Query Parameters**: `q` (string), `limit` (int), `entity_type` (optional), `project_id` (optional).
+  - **Response (200 OK)**: List of `SemanticMemoryResponse`
+
+- **`DELETE /api/memory/facts/{fact_id}`**
+  - **Description**: User-directed forget operation: completely purges the fact from table and FTS index.
+  - **Response (200 OK)**: `{"status": "forgotten", "id": "sem_123"}`
+
+- **`POST /api/memory/procedures`**
+  - **Description**: Create a procedural memory skill draft. Always initializes in `draft` status.
+  - **Response (201 Created)**: `ProceduralMemoryResponse`
+
+- **`POST /api/memory/procedures/{id}/review`**
+  - **Description**: Transition procedure from `draft -> reviewed`.
+  - **Response (200 OK)**: `ProceduralMemoryResponse`
+
+- **`POST /api/memory/procedures/{id}/approve`**
+  - **Description**: Explicit human approval (`reviewed -> approved`). Requires `approver` string.
+  - **Response (200 OK)**: `ProceduralMemoryResponse`
+
+- **`POST /api/memory/procedures/{id}/activate`**
+  - **Description**: Activate approved procedure (`approved -> active`). Fails if not approved.
+  - **Response (200 OK)**: `ProceduralMemoryResponse`
+
+- **`POST /api/memory/procedures/{id}/retire`**
+  - **Description**: Retire procedure (`* -> retired`).
+  - **Response (200 OK)**: `ProceduralMemoryResponse`
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:
 
-- `GET /api/models/profiles` — List configured model profiles and benchmark statuses (Phase 1 Slice 3)
-- `POST /api/benchmarks/run` — Run local model verification benchmarks (Phase 1 Slice 3)
-- `GET /api/memory` & `POST /api/memory` — Four-part memory recall and manual ingestion (Phase 2)
 - `POST /api/jobs` & `GET /api/jobs/{job_id}` — Multi-step execution coordinator jobs (Phase 2)
 - `GET /api/approvals` & `POST /api/approvals/{id}/decide` — Human approval gate for tools (Phase 2)
 - `GET /api/ledger/events` — Replay and audit append-only ledger events (Phase 2)

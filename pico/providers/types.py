@@ -23,6 +23,13 @@ class GenerationOptions(BaseModel):
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     json_schema: dict[str, Any] | None = None
     stream: bool = True
+    think: bool | None = Field(
+        default=None,
+        description=(
+            "Control model internal thinking/reasoning process for reasoning-capable models (e.g. Ollama). "
+            "Precedence: GenerationOptions.think takes priority when not None; otherwise provider default is used."
+        ),
+    )
 
 
 class MetaEvent(BaseModel):

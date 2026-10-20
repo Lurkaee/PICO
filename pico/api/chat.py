@@ -22,6 +22,7 @@ from pico.repositories.conversation_repo import ConversationRepository
 from pico.repositories.message_repo import MessageRepository
 from pico.repositories.routing_decision_repo import RoutingDecisionRepository
 from pico.schemas.chat import ChatStreamRequest
+from pico.services.context_compiler import ContextCompiler
 from pico.services.routing_service import RoutingService, StepRoutingDecision
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
@@ -68,24 +69,20 @@ async def chat_stream(
         data_classification=classification,
     )
 
-    # 3. Fetch recent conversation context for prompt assembly (including newly inserted user message)
-    history_records = msg_repo.list_by_conversation(
-        payload.conversation_id, limit=20, offset=0
+    # 3. Compile context via ContextCompiler (budgeting, ranking, provenance, fail-closed classification)
+    compiler = ContextCompiler()
+    compiled_context = compiler.compile_conversation_context(
+        db=db,
+        conversation_id=payload.conversation_id,
+        user_message_id=user_msg_id,
+        user_content=payload.message,
+        user_classification=classification,
     )
-    chat_messages: list[ChatMessage] = [
-        ChatMessage(
-            role=rec.role,  # type: ignore[arg-type]
-            content=rec.content,
-            data_classification=routing_service.normalize_classification(rec.data_classification),
-        )
-        for rec in history_records
-    ]
+    chat_messages = compiled_context.messages
+    effective_classification = compiled_context.effective_classification
+    context_classifications = [it.data_classification for it in compiled_context.items]
 
-    # 4. Deterministic, fail-closed policy: compute effective classification across all assembled context items
-    context_classifications = [m.data_classification for m in chat_messages]
-    effective_classification = routing_service.compute_effective_classification(context_classifications)
-
-    # 5. Resolve routing decision based strictly on effective context classification
+    # 4. Resolve routing decision based strictly on compiled effective classification
     decision: StepRoutingDecision = routing_service.resolve_route(
         task_category=payload.task_category or "general_chat",
         data_classification=effective_classification,

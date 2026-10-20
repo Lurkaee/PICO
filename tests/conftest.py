@@ -42,6 +42,17 @@ def test_engine(temp_db_file: str) -> Generator[Engine, None, None]:
         cursor.close()
 
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memories_fts USING fts5(
+                memory_id UNINDEXED,
+                subject,
+                predicate,
+                object,
+                content
+            );
+        """))
+        conn.commit()
     yield engine
     engine.dispose()
 

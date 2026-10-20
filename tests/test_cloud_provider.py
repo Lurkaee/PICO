@@ -131,3 +131,126 @@ async def test_cloud_provider_rejects_non_public_messages_defense_in_depth() -> 
             async for _ in provider.stream_chat([msg]):
                 pass
         assert "cannot be sent to cloud" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_cloud_provider_upstream_error_sanitization_canary_secret() -> None:
+    canary_secret = "CANARY_SECRET_ALPHA_BRAVO_98765"
+    raw_payload = {
+        "error": {
+            "message": f"Fatal token error with raw canary: {canary_secret}",
+            "type": "invalid_request_error",
+            "code": "invalid_api_key",
+        }
+    }
+
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=400,
+            content=json.dumps(raw_payload).encode("utf-8"),
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        provider = CloudProvider(
+            enabled=True,
+            api_key="sk-client-cloud-key",
+            http_client=http_client,
+        )
+        with pytest.raises(ProviderResponseError) as exc_info:
+            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test", data_classification="PUBLIC")]):
+                pass
+
+        err_text = str(exc_info.value)
+        assert canary_secret not in err_text
+        assert "400" in err_text
+        assert "invalid_request_error" in err_text
+        assert "invalid_api_key" in err_text
+
+
+@pytest.mark.anyio
+async def test_cloud_provider_upstream_raw_body_canary_does_not_leak() -> None:
+    canary_secret = "CANARY_RAW_HTML_CRASH_SECRET_77777"
+    raw_content = f"<html><body>Internal server crash dump: {canary_secret}</body></html>".encode("utf-8")
+
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=500, content=raw_content)
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        provider = CloudProvider(
+            enabled=True,
+            api_key="sk-client-cloud-key",
+            http_client=http_client,
+        )
+        with pytest.raises(ProviderResponseError) as exc_info:
+            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test", data_classification="PUBLIC")]):
+                pass
+
+        err_text = str(exc_info.value)
+        assert canary_secret not in err_text
+        assert "500" in err_text
+        assert "Internal Server Error" in err_text
+
+
+@pytest.mark.anyio
+async def test_cloud_provider_malformed_chunk_canary_does_not_leak() -> None:
+    canary_secret = "CANARY_CHUNK_SYNTAX_ERROR_66666"
+
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            headers={"Content-Type": "text/event-stream"},
+            content=f"data: {{unquoted_key: {canary_secret}\n\n".encode("utf-8"),
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        provider = CloudProvider(
+            enabled=True,
+            api_key="sk-client-cloud-key",
+            http_client=http_client,
+        )
+        with pytest.raises(ProviderResponseError) as exc_info:
+            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test", data_classification="PUBLIC")]):
+                pass
+
+        err_text = str(exc_info.value)
+        assert canary_secret not in err_text
+        assert "Malformed SSE chunk received from cloud provider." in err_text
+
+
+@pytest.mark.anyio
+async def test_cloud_provider_streamed_error_event_canary_does_not_leak() -> None:
+    canary_secret = "CANARY_STREAM_ERR_33333"
+    streamed_err = {
+        "error": {
+            "message": f"Stream dropped mid-way with secret: {canary_secret}",
+            "type": "server_error",
+            "code": "overloaded",
+        }
+    }
+
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            headers={"Content-Type": "text/event-stream"},
+            content=f"data: {json.dumps(streamed_err)}\n\n".encode("utf-8"),
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        provider = CloudProvider(
+            enabled=True,
+            api_key="sk-client-cloud-key",
+            http_client=http_client,
+        )
+        with pytest.raises(ProviderResponseError) as exc_info:
+            async for _ in provider.stream_chat([ChatMessage(role="user", content="Test", data_classification="PUBLIC")]):
+                pass
+
+        err_text = str(exc_info.value)
+        assert canary_secret not in err_text
+        assert "Cloud provider streamed an error event" in err_text
+        assert "server_error" in err_text
+        assert "overloaded" in err_text

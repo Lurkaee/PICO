@@ -191,10 +191,21 @@ def get_gpu_memory() -> GpuMemorySnapshot:
         )
 
 
+def get_free_disk_gb(path: str = ".") -> float | None:
+    """Measure free disk space in GB on the drive containing path."""
+    try:
+        import shutil
+        total, used, free = shutil.disk_usage(path)
+        return round(free / (1024 ** 3), 2)
+    except Exception:
+        return None
+
+
 def get_hardware_environment() -> dict[str, Any]:
     """Capture snapshot of the host execution environment."""
     sys_mem = get_system_memory()
     gpu_mem = get_gpu_memory()
+    free_disk = get_free_disk_gb()
 
     return {
         "os": f"{platform.system()} {platform.release()} ({platform.version()})",
@@ -210,4 +221,5 @@ def get_hardware_environment() -> dict[str, Any]:
         "gpu_vram_used_mb": gpu_mem.used_vram_mb if gpu_mem.available else None,
         "gpu_telemetry_source": gpu_mem.source if gpu_mem.available else "unavailable",
         "gpu_error_reason": gpu_mem.error_reason,
+        "free_disk_gb": free_disk,
     }

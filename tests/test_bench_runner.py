@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from tools.bench.models import BenchmarkReport
+from tools.bench.prompts import BENCHMARK_PROMPTS
 from tools.bench.runner import (
     LocalBenchmarkRunner,
     check_ollama_preflight,
@@ -119,7 +120,7 @@ async def test_mock_benchmark_execution_and_reports() -> None:
         assert report.repetitions == 2
         assert report.warmup_run is not None
         assert report.warmup_run.is_warmup is True
-        assert len(report.measured_runs) == 2
+        assert len(report.measured_runs) == 2 * len(BENCHMARK_PROMPTS)
 
         for r in report.measured_runs:
             assert r.status == "SUCCESS"

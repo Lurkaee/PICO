@@ -49,8 +49,14 @@ class RunMeasurement(BaseModel):
 
     # Memory telemetry sampled during run
     memory: MemoryMetric = Field(default_factory=MemoryMetric)
+    generated_text: str = ""
     generated_text_length: int = 0
     finish_reason: str = "stop"
+
+    # Response quality evaluation
+    quality_score: float | None = None
+    quality_passed: bool | None = None
+    quality_details: str | None = None
 
 
 class MetricSummary(BaseModel):
@@ -71,6 +77,8 @@ class AggregateMetrics(BaseModel):
     gpu_vram_used_mb: MetricSummary = Field(default_factory=MetricSummary)
     error_rate: float = 0.0
     incomplete_stream_rate: float = 0.0
+    quality_pass_rate: float = 1.0
+    average_quality_score: float = 1.0
 
 
 class QualityGateResult(BaseModel):
@@ -93,10 +101,14 @@ class BenchmarkReport(BaseModel):
     is_mock: bool = False
     context_window: int = 4096
     max_tokens: int = 128
-    repetitions: int = 3
+    repetitions: int = 5
+
+    free_disk_before_gb: float | None = None
+    free_disk_after_gb: float | None = None
 
     environment: dict[str, Any] = Field(default_factory=dict)
     warmup_run: RunMeasurement | None = None
     measured_runs: list[RunMeasurement] = Field(default_factory=list)
     aggregates: AggregateMetrics = Field(default_factory=AggregateMetrics)
+    per_prompt_summary: dict[str, Any] = Field(default_factory=dict)
     quality_gates: list[QualityGateResult] = Field(default_factory=list)

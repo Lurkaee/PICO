@@ -61,3 +61,5 @@ Thumbs.db
 # PICO runtime artifacts
 logs/
 bench_reports/
+PICO_publication/
+PICO_backup_recoverable/

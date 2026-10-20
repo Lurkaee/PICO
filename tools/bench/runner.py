@@ -1,7 +1,7 @@
 """PICO Local Model Benchmark Runner.
 
 Measures Time to First Token (TTFT), generation throughput (tokens/sec),
-prompt processing throughput, RAM and VRAM usage on the actual local machine.
+prompt processing throughput, RAM, VRAM usage, and output quality on the actual machine.
 Supports both real Ollama execution and deterministic offline mock runs.
 """
 
@@ -30,8 +30,14 @@ from tools.bench.models import (
     QualityGateResult,
     RunMeasurement,
 )
-from tools.bench.prompts import BENCHMARK_PROMPTS, WARMUP_PROMPT, BenchmarkPrompt
+from tools.bench.prompts import (
+    BENCHMARK_PROMPTS,
+    WARMUP_PROMPT,
+    BenchmarkPrompt,
+    evaluate_response_quality,
+)
 from tools.bench.telemetry import (
+    get_free_disk_gb,
     get_gpu_memory,
     get_hardware_environment,
     get_system_memory,
@@ -141,6 +147,7 @@ async def run_single_benchmark_iteration(
     first_token_time: float | None = None
     accumulated_chars = 0
     token_count = 0
+    generated_chunks: list[str] = []
     finish_reason = "stop"
     error_msg: str | None = None
     status: Any = "SUCCESS"
@@ -158,6 +165,7 @@ async def run_single_benchmark_iteration(
                 if first_token_time is None:
                     first_token_time = time.perf_counter()
                 accumulated_chars += len(event.delta)
+                generated_chunks.append(event.delta)
                 token_count += 1
             elif isinstance(event, DoneEvent):
                 finish_reason = event.finish_reason
@@ -220,6 +228,9 @@ async def run_single_benchmark_iteration(
         gpu_error_reason=gpu_before.error_reason,
     )
 
+    generated_text = "".join(generated_chunks)
+    q_score, q_passed, q_details = evaluate_response_quality(prompt.prompt_id, generated_text)
+
     return RunMeasurement(
         run_index=run_index,
         is_warmup=is_warmup,
@@ -241,8 +252,12 @@ async def run_single_benchmark_iteration(
         runtime_eval_tok_per_sec=runtime_eval_tok_s,
         runtime_prompt_eval_tok_per_sec=runtime_prompt_tok_s,
         memory=memory_metric,
+        generated_text=generated_text,
         generated_text_length=accumulated_chars,
         finish_reason=finish_reason,
+        quality_score=q_score,
+        quality_passed=q_passed,
+        quality_details=q_details,
     )
 
 
@@ -251,7 +266,7 @@ class LocalBenchmarkRunner:
         self,
         model_name: str = "qwen3.5:2b",
         base_url: str = "http://127.0.0.1:11434",
-        repetitions: int = 3,
+        repetitions: int = 5,
         context_size: int = 4096,
         max_tokens: int = 128,
         output_dir: str = "bench_reports",
@@ -259,6 +274,8 @@ class LocalBenchmarkRunner:
         min_tokens_per_sec: float | None = None,
         max_ttft_ms: float | None = None,
         max_error_rate: float = 0.0,
+        min_quality_pass_rate: float | None = None,
+        max_vram_used_mb: float | None = None,
     ) -> None:
         self.model_name = model_name
         self.base_url = base_url
@@ -270,11 +287,14 @@ class LocalBenchmarkRunner:
         self.min_tokens_per_sec = min_tokens_per_sec
         self.max_ttft_ms = max_ttft_ms
         self.max_error_rate = max_error_rate
+        self.min_quality_pass_rate = min_quality_pass_rate
+        self.max_vram_used_mb = max_vram_used_mb
 
     async def execute(self) -> BenchmarkReport:
         bench_id = generate_id("bench")
         now_iso = datetime.now(timezone.utc).isoformat()
         env_snapshot = get_hardware_environment()
+        disk_before = get_free_disk_gb()
 
         # Step 1: Pre-flight check
         model_digest: str | None = None
@@ -295,6 +315,8 @@ class LocalBenchmarkRunner:
                     context_window=self.context_size,
                     max_tokens=self.max_tokens,
                     repetitions=self.repetitions,
+                    free_disk_before_gb=disk_before,
+                    free_disk_after_gb=get_free_disk_gb(),
                     environment=env_snapshot,
                 )
                 self._save_reports(report)
@@ -316,30 +338,36 @@ class LocalBenchmarkRunner:
             )
             provider_name = "ollama"
 
-        # Step 3: Warm-up run
+        # Step 3: Warm-up run (Cold start measurement)
         warmup_run = await run_single_benchmark_iteration(
             provider=provider,
             prompt=WARMUP_PROMPT,
             run_index=0,
             is_warmup=True,
-            max_tokens=16,
+            max_tokens=WARMUP_PROMPT.max_tokens,
         )
 
-        # Step 4: Measured runs
+        # Step 4: Measured runs (5 measured repetitions per benchmark case)
         measured_runs: list[RunMeasurement] = []
-        for i in range(self.repetitions):
-            prompt = BENCHMARK_PROMPTS[i % len(BENCHMARK_PROMPTS)]
-            run_result = await run_single_benchmark_iteration(
-                provider=provider,
-                prompt=prompt,
-                run_index=i + 1,
-                is_warmup=False,
-                max_tokens=self.max_tokens,
-            )
-            measured_runs.append(run_result)
+        run_counter = 1
+        for rep in range(self.repetitions):
+            for prompt in BENCHMARK_PROMPTS:
+                eff_max = prompt.max_tokens if prompt.max_tokens > 0 else self.max_tokens
+                run_result = await run_single_benchmark_iteration(
+                    provider=provider,
+                    prompt=prompt,
+                    run_index=run_counter,
+                    is_warmup=False,
+                    max_tokens=eff_max,
+                )
+                measured_runs.append(run_result)
+                run_counter += 1
 
-        # Step 5: Aggregation
+        disk_after = get_free_disk_gb()
+
+        # Step 5: Aggregation & Per-Prompt Breakdown
         aggregates = self._calculate_aggregates(measured_runs)
+        per_prompt_summary = self._calculate_per_prompt_summary(measured_runs)
 
         # Step 6: Quality Gates evaluation
         quality_gates, final_status, status_reason = self._evaluate_quality_gates(
@@ -358,15 +386,51 @@ class LocalBenchmarkRunner:
             context_window=self.context_size,
             max_tokens=self.max_tokens,
             repetitions=self.repetitions,
+            free_disk_before_gb=disk_before,
+            free_disk_after_gb=disk_after,
             environment=env_snapshot,
             warmup_run=warmup_run,
             measured_runs=measured_runs,
             aggregates=aggregates,
+            per_prompt_summary=per_prompt_summary,
             quality_gates=quality_gates,
         )
 
         self._save_reports(report)
         return report
+
+    def _calculate_per_prompt_summary(self, runs: list[RunMeasurement]) -> dict[str, Any]:
+        prompt_groups: dict[str, list[RunMeasurement]] = {}
+        for r in runs:
+            prompt_groups.setdefault(r.prompt_id, []).append(r)
+
+        summary: dict[str, Any] = {}
+        for p_id, p_runs in prompt_groups.items():
+            succ = [r for r in p_runs if r.status == "SUCCESS"]
+            ttfts = [r.time_to_first_token_ms for r in succ if r.time_to_first_token_ms is not None]
+            tok_s = [
+                (r.runtime_eval_tok_per_sec or r.runner_eval_tok_per_sec)
+                for r in succ
+                if (r.runtime_eval_tok_per_sec or r.runner_eval_tok_per_sec) is not None
+            ]
+            durs = [r.total_duration_ms for r in succ if r.total_duration_ms is not None]
+            eval_toks = [r.completion_tokens for r in succ if r.completion_tokens is not None]
+            q_scores = [r.quality_score for r in succ if r.quality_score is not None]
+            q_passed = [r for r in succ if r.quality_passed is True]
+
+            category = p_runs[0].category if p_runs else "unknown"
+            summary[p_id] = {
+                "category": category,
+                "reps": len(p_runs),
+                "successful_reps": len(succ),
+                "ttft_ms_median": round(statistics.median(ttfts), 2) if ttfts else None,
+                "eval_tok_per_sec_median": round(statistics.median(tok_s), 2) if tok_s else None,
+                "total_duration_ms_median": round(statistics.median(durs), 2) if durs else None,
+                "completion_tokens_mean": round(statistics.mean(eval_toks), 1) if eval_toks else None,
+                "quality_pass_rate": round(len(q_passed) / len(succ), 2) if succ else 0.0,
+                "quality_score_mean": round(statistics.mean(q_scores), 2) if q_scores else 0.0,
+            }
+        return summary
 
     def _calculate_aggregates(self, runs: list[RunMeasurement]) -> AggregateMetrics:
         successful_runs = [r for r in runs if r.status == "SUCCESS"]
@@ -379,7 +443,6 @@ class LocalBenchmarkRunner:
         ttft_vals = [r.time_to_first_token_ms for r in successful_runs if r.time_to_first_token_ms is not None]
         dur_vals = [r.total_duration_ms for r in successful_runs if r.total_duration_ms is not None]
 
-        # Prefer runtime eval tok/s if available; otherwise runner-measured
         tok_s_vals = [
             (r.runtime_eval_tok_per_sec or r.runner_eval_tok_per_sec)
             for r in successful_runs
@@ -410,6 +473,12 @@ class LocalBenchmarkRunner:
             if r.memory.gpu_vram_used_mb is not None
         ]
 
+        q_passed_count = sum(1 for r in successful_runs if r.quality_passed is True)
+        quality_pass_rate = round(q_passed_count / len(successful_runs), 3) if successful_runs else 0.0
+
+        q_scores = [r.quality_score for r in successful_runs if r.quality_score is not None]
+        average_quality_score = round(statistics.mean(q_scores), 3) if q_scores else 0.0
+
         return AggregateMetrics(
             time_to_first_token_ms=compute_metric_summary(ttft_vals),
             total_duration_ms=compute_metric_summary(dur_vals),
@@ -420,6 +489,8 @@ class LocalBenchmarkRunner:
             gpu_vram_used_mb=compute_metric_summary(gpu_vram_vals),
             error_rate=error_rate,
             incomplete_stream_rate=incomplete_rate,
+            quality_pass_rate=quality_pass_rate,
+            average_quality_score=average_quality_score,
         )
 
     def _evaluate_quality_gates(
@@ -477,9 +548,40 @@ class LocalBenchmarkRunner:
                 )
             )
 
+        # Minimum quality pass rate threshold
+        if self.min_quality_pass_rate is not None:
+            custom_thresholds_configured = True
+            q_passed = aggregates.quality_pass_rate >= self.min_quality_pass_rate
+            if not q_passed:
+                all_passed = False
+            gates.append(
+                QualityGateResult(
+                    threshold_name="min_quality_pass_rate",
+                    target_value=self.min_quality_pass_rate,
+                    measured_value=aggregates.quality_pass_rate,
+                    passed=q_passed,
+                    description=f"Quality pass rate must be >= {self.min_quality_pass_rate * 100}%.",
+                )
+            )
+
+        # Maximum VRAM limit (RTX 3050 Laptop 4094 MB ceiling)
+        if self.max_vram_used_mb is not None:
+            custom_thresholds_configured = True
+            vram_med = aggregates.gpu_vram_used_mb.median or 0.0
+            vram_passed = vram_med <= self.max_vram_used_mb
+            if not vram_passed:
+                all_passed = False
+            gates.append(
+                QualityGateResult(
+                    threshold_name="max_vram_used_mb",
+                    target_value=self.max_vram_used_mb,
+                    measured_value=vram_med,
+                    passed=vram_passed,
+                    description=f"Median VRAM footprint must not exceed {self.max_vram_used_mb} MB.",
+                )
+            )
+
         if not custom_thresholds_configured:
-            # Per Gate 4: "Until thresholds are deliberately configured and justified by measurements,
-            # report performance as a baseline instead of claiming the model passed a production-readiness gate."
             final_status = "BASELINE_RECORDED"
             reason = "Benchmark completed successfully. Performance metrics recorded as hardware baseline."
         elif all_passed:
@@ -518,7 +620,8 @@ class LocalBenchmarkRunner:
             f"- **Status Summary**: {report.status_reason}",
             f"- **Model Digest**: `{report.model_digest or 'N/A'}`",
             f"- **Context Window**: `{report.context_window}` tokens",
-            f"- **Repetitions**: `{report.repetitions}` measured runs",
+            f"- **Repetitions**: `{report.repetitions}` measured runs per benchmark case",
+            f"- **Total Measured Iterations**: `{len(report.measured_runs)}` runs",
             "",
             "## 1. Hardware Environment",
             "",
@@ -529,6 +632,7 @@ class LocalBenchmarkRunner:
             f"- **Host System RAM**: {report.environment.get('system_ram_total_mb', 'N/A')} MB total",
             f"- **GPU**: {report.environment.get('gpu_name') or 'None detected'}",
             f"- **Dedicated VRAM**: {report.environment.get('gpu_vram_total_mb', 'N/A')} MB (Source: {report.environment.get('gpu_telemetry_source', 'unavailable')})",
+            f"- **Free Disk Space**: {report.free_disk_before_gb} GB (before) -> {report.free_disk_after_gb} GB (after)",
             "",
         ]
 
@@ -561,8 +665,26 @@ class LocalBenchmarkRunner:
             f"| **GPU VRAM Peak** | `{report.aggregates.gpu_vram_used_mb.median or 'N/A'} MB` | `{report.aggregates.gpu_vram_used_mb.min or 'N/A'} - {report.aggregates.gpu_vram_used_mb.max or 'N/A'} MB` | `{report.aggregates.gpu_vram_used_mb.mean or 'N/A'} MB` | nvidia-smi |",
             f"| **Error Rate** | `{report.aggregates.error_rate * 100}%` | - | - | Runner-measured |",
             f"| **Incomplete Stream Rate** | `{report.aggregates.incomplete_stream_rate * 100}%` | - | - | Runner-measured |",
+            f"| **Quality Pass Rate** | `{round(report.aggregates.quality_pass_rate * 100, 1)}%` | - | - | Evaluated Criteria |",
+            f"| **Average Quality Score** | `{report.aggregates.average_quality_score}` / 1.0 | - | - | Evaluated Criteria |",
             "",
-            "## 3. Quality Gate Evaluation",
+            "## 3. Per-Workload Performance & Quality Breakdown",
+            "",
+            "| Prompt ID | Category | Reps | TTFT Median (ms) | Tok/s Median | Latency Median (ms) | Mean Tokens | Pass Rate | Mean Score |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+        ])
+
+        for p_id, p_info in report.per_prompt_summary.items():
+            lines.append(
+                f"| `{p_id}` | `{p_info.get('category')}` | {p_info.get('successful_reps')}/{p_info.get('reps')} | "
+                f"`{p_info.get('ttft_ms_median') or 'N/A'}` | `{p_info.get('eval_tok_per_sec_median') or 'N/A'}` | "
+                f"`{p_info.get('total_duration_ms_median') or 'N/A'}` | `{p_info.get('completion_tokens_mean') or 'N/A'}` | "
+                f"`{round((p_info.get('quality_pass_rate') or 0.0) * 100, 1)}%` | `{p_info.get('quality_score_mean') or 0.0}` |"
+            )
+
+        lines.extend([
+            "",
+            "## 4. Quality Gate Evaluation",
             "",
             "| Gate | Target | Measured | Result | Details |",
             "| :--- | :--- | :--- | :--- | :--- |",
@@ -576,21 +698,21 @@ class LocalBenchmarkRunner:
 
         lines.extend([
             "",
-            "## 4. Auditable Run Log",
+            "## 5. Auditable Run Log",
             "",
-            "| Run # | Type | Prompt ID | Status | TTFT (ms) | Total (ms) | Tok/s | Completion Tok | Memory (RAM/VRAM MB) |",
-            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+            "| Run # | Type | Prompt ID | Status | TTFT (ms) | Total (ms) | Tok/s | Completion Tok | Quality | Memory (RAM/VRAM MB) |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ])
 
         if report.warmup_run:
             w = report.warmup_run
             lines.append(
-                f"| 0 (Warmup) | Warmup | `{w.prompt_id}` | `{w.status}` | `{w.time_to_first_token_ms or 'N/A'}` | `{w.total_duration_ms}` | `{w.runner_eval_tok_per_sec or 'N/A'}` | `{w.completion_tokens}` | `{w.memory.system_ram_used_mb or 'N/A'} / {w.memory.gpu_vram_used_mb or 'N/A'}` |"
+                f"| 0 (Warmup) | Warmup | `{w.prompt_id}` | `{w.status}` | `{w.time_to_first_token_ms or 'N/A'}` | `{w.total_duration_ms}` | `{w.runner_eval_tok_per_sec or 'N/A'}` | `{w.completion_tokens}` | `{'PASS' if w.quality_passed else 'FAIL'}` | `{w.memory.system_ram_used_mb or 'N/A'} / {w.memory.gpu_vram_used_mb or 'N/A'}` |"
             )
 
         for r in report.measured_runs:
             lines.append(
-                f"| {r.run_index} | Measured | `{r.prompt_id}` | `{r.status}` | `{r.time_to_first_token_ms or 'N/A'}` | `{r.total_duration_ms}` | `{r.runner_eval_tok_per_sec or r.runtime_eval_tok_per_sec or 'N/A'}` | `{r.completion_tokens}` | `{r.memory.system_ram_used_mb or 'N/A'} / {r.memory.gpu_vram_used_mb or 'N/A'}` |"
+                f"| {r.run_index} | Measured | `{r.prompt_id}` | `{r.status}` | `{r.time_to_first_token_ms or 'N/A'}` | `{r.total_duration_ms}` | `{r.runner_eval_tok_per_sec or r.runtime_eval_tok_per_sec or 'N/A'}` | `{r.completion_tokens}` | `{'PASS' if r.quality_passed else 'FAIL'}` | `{r.memory.system_ram_used_mb or 'N/A'} / {r.memory.gpu_vram_used_mb or 'N/A'}` |"
             )
 
         lines.append("")
@@ -617,8 +739,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repetitions",
         type=int,
-        default=3,
-        help="Number of measured benchmark runs (default: 3)",
+        default=5,
+        help="Number of measured benchmark runs per benchmark case (default: 5)",
     )
     parser.add_argument(
         "--context-size",
@@ -655,6 +777,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional quality gate: maximum acceptable median TTFT in milliseconds",
     )
+    parser.add_argument(
+        "--min-quality-pass-rate",
+        type=float,
+        default=None,
+        help="Optional quality gate: minimum acceptable quality pass rate (0.0 - 1.0)",
+    )
+    parser.add_argument(
+        "--max-vram-mb",
+        type=float,
+        default=None,
+        help="Optional quality gate: maximum acceptable median VRAM usage in MB",
+    )
     return parser.parse_args()
 
 
@@ -670,13 +804,15 @@ async def main_async() -> int:
         is_mock=args.mock,
         min_tokens_per_sec=args.min_tokens_per_sec,
         max_ttft_ms=args.max_ttft_ms,
+        min_quality_pass_rate=args.min_quality_pass_rate,
+        max_vram_used_mb=args.max_vram_mb,
     )
 
     print("=================================================================")
     print("  PICO Local Model Hardware Benchmark Runner")
     print(f"  Target Model : {args.model}")
     print(f"  Runtime Mode : {'MOCK (Offline)' if args.mock else 'LIVE OLLAMA'}")
-    print(f"  Repetitions  : {args.repetitions} (+1 warmup)")
+    print(f"  Repetitions  : {args.repetitions} per case (+1 warmup)")
     print("=================================================================\n")
 
     report = await runner.execute()
@@ -689,11 +825,15 @@ async def main_async() -> int:
 
     print(f"[+] Status: {report.status}")
     print(f"    {report.status_reason}")
+    print(f"    Total Runs: {len(report.measured_runs)} across {len(report.per_prompt_summary)} workload categories")
     print(f"    Median TTFT: {report.aggregates.time_to_first_token_ms.median or 'N/A'} ms")
     print(f"    Median Throughput: {report.aggregates.generation_tokens_per_sec.median or 'N/A'} tok/s")
     print(f"    Median Latency: {report.aggregates.total_duration_ms.median or 'N/A'} ms")
+    print(f"    Quality Pass Rate: {round(report.aggregates.quality_pass_rate * 100, 1)}%")
+    print(f"    Average Quality Score: {report.aggregates.average_quality_score} / 1.0")
     print(f"    Peak RAM: {report.aggregates.system_ram_used_mb.median or 'N/A'} MB")
     print(f"    Peak VRAM: {report.aggregates.gpu_vram_used_mb.median or 'N/A'} MB")
+    print(f"    Free Disk: {report.free_disk_before_gb} GB -> {report.free_disk_after_gb} GB")
     print(f"\n[*] Artifacts saved to: {args.output_dir}/\n")
 
     return 0 if report.status in ("PASSED", "BASELINE_RECORDED") else 1

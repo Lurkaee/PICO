@@ -34,13 +34,34 @@ class OllamaProvider(ModelProvider):
         model_name: str = "qwen3.5:2b",
         context_window: int = 4096,
         timeout: float = 60.0,
+        think: bool | None = False,
         http_client: httpx.AsyncClient | None = None,
+        default_max_tokens: int = 512,
     ) -> None:
+        """Initialize OllamaProvider.
+
+        Args:
+            base_url: Ollama daemon base URL.
+            model_name: Target model tag (e.g. 'qwen3.5:2b').
+            context_window: Active context token limit.
+            timeout: HTTP request timeout in seconds.
+            think: Provider-level default for model thinking/reasoning process.
+                Defaults to False for fast, bounded routine local inference.
+                Precedence contract:
+                - GenerationOptions.think when not None.
+                - Otherwise, this provider default when configured (not None).
+                - Otherwise, omit the 'think' field from the payload.
+            http_client: Optional injected httpx client (e.g. for offline testing).
+            default_max_tokens: Bound on generated completion tokens (num_predict).
+                Defaults to 512 tokens to enforce context budget boundary.
+        """
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
         self.context_window = context_window
         self.timeout = timeout
+        self.think = think
         self._http_client = http_client
+        self.default_max_tokens = default_max_tokens
         self._metadata = ProviderMetadata(
             name="ollama",
             default_model=self.model_name,
@@ -91,13 +112,31 @@ class OllamaProvider(ModelProvider):
             },
         }
 
+        # Resolve 'think' parameter per precedence contract:
+        # 1. GenerationOptions.think when not None.
+        # 2. Otherwise, OllamaProvider default (self.think) when configured (not None).
+        # 3. Otherwise, omit the field.
+        effective_think = (
+            options.think
+            if (options is not None and options.think is not None)
+            else self.think
+        )
+        if effective_think is not None:
+            payload["think"] = effective_think
+
+        effective_max_tokens = (
+            options.max_tokens
+            if (options is not None and options.max_tokens is not None)
+            else self.default_max_tokens
+        )
+        if effective_max_tokens is not None:
+            payload["options"]["num_predict"] = effective_max_tokens
+
         if options:
             if options.temperature is not None:
                 payload["options"]["temperature"] = options.temperature
             if options.top_p is not None:
                 payload["options"]["top_p"] = options.top_p
-            if options.max_tokens is not None:
-                payload["options"]["num_predict"] = options.max_tokens
             if options.json_schema is not None:
                 payload["format"] = options.json_schema
 
