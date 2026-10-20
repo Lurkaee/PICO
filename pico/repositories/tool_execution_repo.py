@@ -88,6 +88,7 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
         verification_status: str | None = None,
         verification_details_json: dict[str, Any] | None = None,
         increment_retry: bool = False,
+        metadata_json: dict[str, Any] | None = None,
     ) -> ToolExecution | None:
         item = self.get_by_id(execution_id)
         if not item:
@@ -112,6 +113,8 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
             item.verification_status = verification_status
         if verification_details_json is not None:
             item.verification_details_json = verification_details_json
+        if metadata_json is not None:
+            item.metadata_json = metadata_json
         if increment_retry:
             item.retry_count += 1
 

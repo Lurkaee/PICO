@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     HOME_ASSISTANT_ALLOW_LIVE_SUBSCRIPTION: bool = False
     HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT: bool = False
 
+    # Home Assistant Actuation Settings (Strictly disabled by default, Milestone P7.3)
+    HOME_ASSISTANT_ACTUATION_ENABLED: bool = False
+    HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID: str | None = None
+    HOME_ASSISTANT_ACTUATION_TIMEOUT_SECONDS: float = 5.0
+    HOME_ASSISTANT_VERIFICATION_TIMEOUT_SECONDS: float = 5.0
+    HOME_ASSISTANT_VERIFICATION_POLL_INTERVAL_SECONDS: float = 0.5
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

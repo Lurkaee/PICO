@@ -60,3 +60,31 @@ class EntityOverviewOutput(BaseModel):
     domain_counts: dict[str, int]
     highlights: list[EntityState]
     data_classification: str = "INTERNAL"
+
+
+class TestLightActuationPlan(BaseModel):
+    __test__ = False
+    plan_id: str
+    entity_id: str
+    requested_state: str
+    current_state: str
+    service: str
+    is_mutation_needed: bool
+    preconditions: list[str]
+    expected_postconditions: list[str]
+    input_digest: str
+    expires_at: str
+    data_classification: str = "INTERNAL"
+
+
+class TestLightActuationResult(BaseModel):
+    __test__ = False
+    success: bool
+    entity_id: str
+    requested_state: str
+    reported_state: str
+    dispatch_status: str
+    verification_status: str
+    verification_details: dict[str, Any] = Field(default_factory=dict)
+    message: str
+    physical_device_connectivity_claimed: bool = False

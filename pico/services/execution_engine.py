@@ -166,6 +166,7 @@ class ToolExecutionEngine:
         approver: str,
         notes: str | None = None,
         correlation_id: str | None = None,
+        approval_token: str | None = None,
     ) -> ToolExecution:
         """
         Record explicit human approval for an awaiting_approval capability.
@@ -189,6 +190,22 @@ class ToolExecutionEngine:
             raise AuthorizationError(
                 f"Principal '{clean_approver}' is not authorized to approve executions. Must be in {settings.TRUSTED_APPROVER_IDENTITIES}."
             )
+
+        # Physical actuation authorization invariant: fails closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid
+        if execution.capability_id == "homeassistant.test_light_actuate":
+            if not settings.APPROVAL_SECRET_TOKEN or not approval_token or approval_token != settings.APPROVAL_SECRET_TOKEN:
+                self.ledger_repo.append(
+                    event_type="approval_denied",
+                    execution_id=execution.id,
+                    task_id=execution.task_id,
+                    correlation_id=correlation_id,
+                    capability_id=execution.capability_id,
+                    payload_json={"attempted_approver": clean_approver, "reason": "Missing or invalid server approval secret token"},
+                    data_classification=execution.data_classification,
+                )
+                raise AuthorizationError(
+                    "Physical actuation approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
+                )
 
         if execution.status != "awaiting_approval":
             raise ValidationError(
@@ -237,15 +254,85 @@ class ToolExecutionEngine:
 
         capability = self.registry.get(execution.capability_id, version=execution.capability_version)
 
-        # Consequential check: ensure approval is valid and input hasn't mutated
-        if capability.metadata.consequential:
-            if not execution.approved_by or not execution.approved_at:
-                raise AuthorizationError(f"Consequential capability '{execution.capability_id}' lacks human approval.")
-            if execution.approval_input_digest != execution.input_digest:
-                raise AuthorizationError("Approval invalidated: Input digest does not match approved digest.")
+        # 1. Enforce permission at the real execution boundary
+        required_perm = capability.metadata.required_permission
+        effective_perms = caller_permissions or set()
+        if required_perm and required_perm not in effective_perms:
+            self.ledger_repo.append(
+                event_type="authorization_denied",
+                execution_id=execution.id,
+                task_id=execution.task_id,
+                correlation_id=correlation_id,
+                capability_id=execution.capability_id,
+                capability_version=capability.metadata.version,
+                payload_json={"required_permission": required_perm, "caller_permissions": sorted(list(effective_perms))},
+                data_classification=execution.data_classification,
+            )
+            raise AuthorizationError(
+                f"Unauthorized: Caller lacks required permission '{required_perm}' for capability '{execution.capability_id}'."
+            )
 
-        # Transition to running
-        execution = self.exec_repo.update_status(execution_id, status="running")
+        # 2. Consequential action checks: human approval, single-use dispatch, and triple-digest agreement
+        if capability.metadata.consequential:
+            if not execution.approved_by or not execution.approved_at or not execution.approval_input_digest:
+                raise AuthorizationError(f"Consequential capability '{execution.capability_id}' lacks human approval.")
+
+            # Immediately before dispatch: recompute canonical SHA-256 digest from currently persisted input
+            recomputed_digest = compute_input_digest(execution.input_json)
+            # Require all 3 to agree:
+            # - Recomputed digest from current input
+            # - Stored input digest
+            # - Digest bound to approved execution
+            if (
+                execution.input_digest != recomputed_digest
+                or execution.approval_input_digest != execution.input_digest
+                or execution.approval_input_digest != recomputed_digest
+            ):
+                self.ledger_repo.append(
+                    event_type="authorization_denied",
+                    execution_id=execution.id,
+                    task_id=execution.task_id,
+                    correlation_id=correlation_id,
+                    capability_id=execution.capability_id,
+                    payload_json={
+                        "reason": "Digest mismatch on execution",
+                        "stored_digest": execution.input_digest,
+                        "approved_digest": execution.approval_input_digest,
+                        "recomputed_digest": recomputed_digest,
+                    },
+                    data_classification=execution.data_classification,
+                )
+                raise AuthorizationError(
+                    "Approval invalidated: Persisted input digest does not match recomputed or approved digest."
+                )
+
+            # Single-use approval and replay protection
+            exec_metadata = dict(execution.metadata_json or {})
+            if exec_metadata.get("dispatch_consumed") or exec_metadata.get("dispatched_at"):
+                self.ledger_repo.append(
+                    event_type="authorization_denied",
+                    execution_id=execution.id,
+                    task_id=execution.task_id,
+                    correlation_id=correlation_id,
+                    capability_id=execution.capability_id,
+                    payload_json={"reason": "Replay attempt: approval ticket already consumed"},
+                    data_classification=execution.data_classification,
+                )
+                raise AuthorizationError(
+                    f"Approval for execution '{execution_id}' has already been consumed and cannot be replayed."
+                )
+
+        # 3. Transition to running and consume approval ticket atomically
+        exec_metadata = dict(execution.metadata_json or {})
+        if capability.metadata.consequential:
+            exec_metadata["dispatch_consumed"] = True
+            exec_metadata["dispatched_at"] = utc_now().isoformat()
+
+        execution = self.exec_repo.update_status(
+            execution_id,
+            status="running",
+            metadata_json=exec_metadata,
+        )
         self.ledger_repo.append(
             event_type="execution_started",
             execution_id=execution.id,
@@ -290,7 +377,7 @@ class ToolExecutionEngine:
             )
         except Exception as exc:
             return await self._handle_execution_failure(
-                execution, capability, str(exc), correlation_id
+                execution, capability, str(exc), correlation_id, caller_permissions=effective_perms
             )
 
         # Output payload size enforcement
@@ -299,12 +386,12 @@ class ToolExecutionEngine:
             if out_bytes > capability.metadata.max_output_bytes:
                 err = f"Output size ({out_bytes} bytes) exceeded limit of {capability.metadata.max_output_bytes} bytes."
                 return await self._handle_execution_failure(
-                    execution, capability, err, correlation_id
+                    execution, capability, err, correlation_id, caller_permissions=effective_perms
                 )
 
         if not result.success:
             return await self._handle_execution_failure(
-                execution, capability, result.error_message or "Handler reported failure.", correlation_id
+                execution, capability, result.error_message or "Handler reported failure.", correlation_id, caller_permissions=effective_perms
             )
 
         # Transition to verifying
@@ -378,6 +465,7 @@ class ToolExecutionEngine:
         capability: BaseCapability,
         error_msg: str,
         correlation_id: str | None,
+        caller_permissions: set[str] | None = None,
     ) -> ToolExecution:
         # Check retry eligibility: capability must be idempotent and retry limit not reached
         can_retry = capability.metadata.idempotent and execution.retry_count < execution.max_retries
@@ -399,7 +487,7 @@ class ToolExecutionEngine:
                 increment_retry=True,
             )
             # Re-execute immediately or caller can trigger next attempt
-            return await self.execute(execution.id, correlation_id=correlation_id)
+            return await self.execute(execution.id, caller_permissions=caller_permissions, correlation_id=correlation_id)
         else:
             self.ledger_repo.append(
                 event_type="execution_failed",

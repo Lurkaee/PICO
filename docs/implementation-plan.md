@@ -85,9 +85,16 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 ### Milestone P7: Home Automation & Physical Actuation
 - [x] **P7.1 Home Assistant Hub Connector**: Authenticated REST and pure-Python asyncio WebSocket client with fail-closed URL validation, token protection, request/response correlation, and strict read-only command allowlisting. Zero new external dependencies.
 - [x] **P7.2 Stage A Read-Only Awareness**: Read-only entity discovery (`GET /api/homeassistant/entities`), single entity state inspection (`GET /api/homeassistant/entities/{id}`), bounded overview (`GET /api/homeassistant/overview`), trusted classification (`INTERNAL`/`SENSITIVE`), context compiler integration (`format_homeassistant_context_items`), and tool capabilities (`homeassistant.status`, `homeassistant.list_entities`, `homeassistant.get_entity_state`, `homeassistant.overview`). Absolute read-only boundary enforced: zero actuation or state mutation paths.
-- [ ] **P7.3 Stage B Verified Light Toggle**: Intent -> Plan -> Approval -> Act -> State Verification -> Event Ledger.
+- [x] **P7.3 Stage B Verified Light Toggle (First Physical Action)**:
+  - Single configured entity limit (`HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID`) restricted strictly to the `light` domain with `turn_on` and `turn_off` actions only.
+  - Fail-closed authorization gate requiring server-side `APPROVAL_SECRET_TOKEN` validation via `X-Pico-Approval-Token` header for proposal, approval, and execution. No loopback bypass for physical actuation. `homeassistant:actuate` permission separated from default tool permissions.
+  - Triple-digest integrity verification immediately before dispatch (recomputed input SHA-256 == stored execution digest == approval bound digest).
+  - Single-use approval ticket tracking preventing replayed or duplicate dispatches.
+  - Dedicated REST mutation client isolated from read-only WebSocket commands; independent read-after-write verification polling via read-only state API; strictly zero automatic retries on timeout or failure.
+  - Audit trail in immutable event ledger recording intent, approval, dispatch, and verification outcomes without credential leaks.
+  - Read-only planning endpoint (`POST /api/homeassistant/actuation/plan`) and execution proposal endpoint (`POST /api/homeassistant/actuation/propose`).
 - [ ] **P7.4 Stage C/D Everyday Appliances**: Authorized switches, plugs, and climate controls.
-- **Status**: **STAGE A VERIFIED (P7.1 & P7.2 COMPLETED; P7.3 & P7.4 PLANNED)**.
+- **Status**: **STAGE A & STAGE B (P7.1, P7.2, P7.3) COMPLETED & VERIFIED; P7.4 PLANNED**.
 
 ### Milestone P8: Computer Control & Engineering Workspace
 - [ ] **P8.1 OS & Application Automation**: Sandboxed application launching and window state inspection.
