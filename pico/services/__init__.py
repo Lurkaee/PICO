@@ -1,5 +1,6 @@
 from pico.services.context_compiler import ContextCompiler
 from pico.services.conversation_service import ConversationService
+from pico.services.execution_engine import ToolExecutionEngine
 from pico.services.memory_service import MemoryService
 from pico.services.project_service import ProjectService
 from pico.services.routing_service import RoutingService, StepRoutingDecision
@@ -13,4 +14,5 @@ __all__ = [
     "RoutingService",
     "StepRoutingDecision",
     "MemoryService",
+    "ToolExecutionEngine",
 ]

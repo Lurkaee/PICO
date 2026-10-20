@@ -63,12 +63,16 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - [x] **P4.5 Context Compiler Integration**: Memory retrieval propagates source provenance (`mem:...`, `wmem:...`) and data classification, enforcing fail-closed privacy.
 - **Status**: **CLOSED & FULLY VERIFIED** (`pico/models/`, `pico/repositories/`, `pico/services/memory_service.py`, `pico/api/memory.py`, 130 passing tests).
 
-### Milestone P5: Task Engine, Capability Registry & Event Ledger
-- [ ] **P5.1 Stateful Task DAG Coordinator**: Checkpoints, idempotency keys, interruption recovery.
-- [ ] **P5.2 Capability Allowlist**: Strict JSON schemas and sandboxed tool execution.
-- [ ] **P5.3 Policy & Approval Engine**: Interactive approval tickets for consequential actions.
-- [ ] **P5.4 Append-Only Event Ledger**: Write-once audit log for all system events.
-- **Status**: **PLANNED**.
+### Milestone P5: Tool Execution & Verification Engine
+- [x] **P5.1 Capability Registry & Built-ins**: Explicit capability allowlist with declared input/output JSON schemas, risk tiers, permissions, idempotency flags, timeouts, and output bounds (`core.calculator`, `core.validate_json`, `db.read_project`, `db.read_task`, `system.diagnostics`, and test capabilities).
+- [x] **P5.2 Task Execution State Machine & Lifecycle**: Transitions `queued -> running -> verifying -> succeeded` with `awaiting_approval`, `failed`, `cancelled`, `timed_out`, `verification_failed`, and `retry_scheduled`. Transactional state changes and startup crash recovery.
+- [x] **P5.3 Idempotency, Deadlines & Cancellation**: Deterministic idempotency key deduplication, execution timeouts (`timeout_seconds`), cooperative cancellation, bounded retries.
+- [x] **P5.4 Independent Deterministic Verification**: Verifier stage independent from handler result checking schema adherence, mathematical or state consistency, and execution evidence; verifier failures fail closed (`verification_failed`).
+- [x] **P5.5 Trusted Authorization & Human Approval**: Consequential capabilities bound to SHA-256 `input_digest` requiring trusted human approver identity (`settings.TRUSTED_APPROVER_IDENTITIES`) and token before execution; tampered inputs invalidate approval; memory/caller cannot escalate privileges.
+- [x] **P5.6 Append-Only Event Ledger**: Immutable audit log (`event_ledger`) for lifecycle transitions with automatic secret/credential redaction.
+- [x] **P5.7 Procedural Memory Integration**: Skill validation endpoint (`/api/tools/procedures/{id}/validate`) ensuring procedural steps map to valid registered capabilities without self-activation.
+- [x] **P5.8 REST API Endpoints**: Endpoints under `/api/tools/` for capabilities discovery, execution submission/running/cancellation/events, and approvals.
+- **Status**: **CLOSED & FULLY VERIFIED** (151 total passing tests, 21 dedicated P5 tests, 0 failures).
 
 ### Milestone P6: Multimodal Perception Layer
 - [ ] **P6.1 Push-to-Talk Voice Adapter**: Local STT/TTS with visual microphone indicator.

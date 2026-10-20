@@ -51,6 +51,16 @@ from pico.schemas.task import (
     TaskStatus,
     TaskUpdate,
 )
+from pico.schemas.tools import (
+    CapabilityResponse,
+    LedgerEventListResponse,
+    LedgerEventResponse,
+    ProcedureValidationResponse,
+    ToolApprovalRequest,
+    ToolExecutionCreate,
+    ToolExecutionListResponse,
+    ToolExecutionResponse,
+)
 
 __all__ = [
     "PaginatedResponse",
@@ -98,4 +108,12 @@ __all__ = [
     "ProceduralMemoryResponse",
     "ProceduralMemoryListResponse",
     "MemoryStatusResponse",
+    "CapabilityResponse",
+    "ToolExecutionCreate",
+    "ToolExecutionResponse",
+    "ToolExecutionListResponse",
+    "ToolApprovalRequest",
+    "LedgerEventResponse",
+    "LedgerEventListResponse",
+    "ProcedureValidationResponse",
 ]

@@ -222,3 +222,46 @@ The following entities are planned for subsequent phases and do NOT form part of
   - `created_at` (DATETIME): UTC timestamp.
   - `updated_at` (DATETIME): UTC timestamp.
   - `metadata_json` (JSON, NULLABLE).
+
+---
+
+## 6. Tool Execution & Event Ledger Subsystems (Implemented in Milestone P5)
+
+### 6.1 `tool_executions` (Tool Execution Engine)
+- Persisted state machine tracking capability executions, deadlines, retries, approvals, and verification outcomes.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `exec_`.
+  - `task_id` (VARCHAR(64), FK `tasks.id`, ON DELETE SET NULL, NULLABLE, INDEX): Associated task.
+  - `capability_id` (VARCHAR(128), INDEX): Identifier of registered capability (e.g. `core.calculator`).
+  - `capability_version` (VARCHAR(32)): Semantic version of executed capability.
+  - `status` (VARCHAR(32), INDEX): State machine status: `queued`, `awaiting_approval`, `running`, `verifying`, `succeeded`, `failed`, `cancelled`, `timed_out`, `verification_failed`, `retry_scheduled`.
+  - `idempotency_key` (VARCHAR(128), NULLABLE, UNIQUE, INDEX): Deduplication key preventing redundant execution.
+  - `input_params` (JSON): Validated input parameter payload.
+  - `input_digest` (VARCHAR(64), INDEX): Deterministic SHA-256 hash of canonicalized JSON input parameters.
+  - `output_payload` (JSON, NULLABLE): Output payload returned from capability handler.
+  - `error_message` (TEXT, NULLABLE): Execution or verification failure reason.
+  - `duration_ms` (FLOAT, NULLABLE): Handler execution wall-clock time in milliseconds.
+  - `retry_count` (INTEGER, DEFAULT 0): Number of retries attempted.
+  - `max_retries` (INTEGER, DEFAULT 0): Maximum allowed retry attempts.
+  - `timeout_seconds` (INTEGER, DEFAULT 30): Strict deadline in seconds.
+  - `requires_approval` (BOOLEAN, DEFAULT FALSE): Flag indicating consequential capability requiring human approval.
+  - `approved_by` (VARCHAR(128), NULLABLE): Verified human approver identity.
+  - `approved_at` (DATETIME, NULLABLE): Timestamp when approval was granted.
+  - `approval_notes` (TEXT, NULLABLE): Optional approval rationale.
+  - `verification_passed` (BOOLEAN, NULLABLE): Result of independent deterministic verification.
+  - `verification_notes` (TEXT, NULLABLE): Verifier details, output schema validation, or discrepancy notes.
+  - `created_at` (DATETIME): UTC timestamp.
+  - `started_at` (DATETIME, NULLABLE): UTC timestamp when handler began running.
+  - `completed_at` (DATETIME, NULLABLE): UTC timestamp when execution concluded.
+  - `metadata_json` (JSON, NULLABLE): Extensible metadata.
+
+### 6.2 `event_ledger` (Append-Only Audit Ledger)
+- Write-once, append-only historical audit log of all system transitions and execution lifecycles.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `evt_`.
+  - `event_type` (VARCHAR(64), INDEX): Lifecycle transition type (e.g. `task_submitted`, `execution_started`, `verification_passed`).
+  - `execution_id` (VARCHAR(64), FK `tool_executions.id`, ON DELETE SET NULL, NULLABLE, INDEX): Related execution record.
+  - `capability_id` (VARCHAR(128), NULLABLE, INDEX): Associated capability ID.
+  - `actor` (VARCHAR(128)): Initiating actor (e.g. `system`, `lead_engineer`, `caller`).
+  - `payload_json` (JSON): Sanitized event payload with automatic credential/secret redaction.
+  - `created_at` (DATETIME, INDEX): UTC timestamp.

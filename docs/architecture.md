@@ -241,11 +241,33 @@ sequenceDiagram
    - `cloud-strong`: Configurable cloud model (OpenAI, Anthropic, Gemini) for deep reasoning on purely `PUBLIC` data.
    - `mock`: Deterministic offline test provider for CI and zero-dependency unit tests.
 
-### 4.5 Task Engine & Workflow Coordination
-- Stateful, persistent execution engine modeled as a Directed Acyclic Graph (DAG) in SQLite.
-- States: `QUEUED`, `RUNNING`, `AWAITING_APPROVAL`, `COMPLETED`, `FAILED`, `CANCELLED`.
-- Idempotency Keys: Every tool execution carries a deterministic idempotency key to prevent accidental duplicate actions upon retry.
-- Interruption Recovery: Resumes workflows from the last verified checkpoint following system restart.
+### 4.5 Tool Execution & Verification Engine (Implemented in Milestone P5)
+1. **Explicit Capability Registry**:
+   - Capabilities must be registered explicitly in trusted server-side code (`pico.capabilities.registry.registry`). Dynamic execution of arbitrary code, shell commands, or unvetted scripts is strictly prohibited.
+   - Declarative metadata per capability: `capability_id`, `version`, `name`, `description`, `risk_tier` (`READ_ONLY`, `LOW`, `MEDIUM`, `HIGH`, `CONSEQUENTIAL`), `required_permission`, `required_classification`, `timeout_seconds`, `max_output_bytes`, `idempotent`, `consequential`.
+   - Initial safe capabilities: `core.calculator` (bounded AST arithmetic), `core.validate_json` (syntax & key validator), `db.read_project` / `db.read_task` (read-only SQLite repository access), `system.diagnostics` (deterministic health and connection check), and test capabilities.
+2. **Task Execution State Machine**:
+   - Documented lifecycle transitions: `queued -> running -> verifying -> succeeded`, with error/recovery states: `awaiting_approval`, `failed`, `cancelled`, `timed_out`, `verification_failed`, `retry_scheduled`.
+   - Database transactions for all state transitions, surviving engine disposal and system crashes.
+   - Crash Recovery: Startup hook (`ToolExecutionEngine.recover_interrupted_executions()`) scans for executions left in `running` or `verifying` states across application restart and marks them as `failed` with explicit crash recovery notes.
+3. **Idempotency, Deadlines & Cooperative Cancellation**:
+   - Unique `idempotency_key` enforcement at submission time; duplicate submissions return existing execution records without re-execution.
+   - Strict deadline tracking with configurable `timeout_seconds` enforced via `asyncio.wait_for`.
+   - Cooperative cancellation supported for `queued` and `awaiting_approval` tickets.
+4. **Independent Deterministic Verification**:
+   - Independent verification stage executed after capability handler completion.
+   - Verifies returned payload against output schema, verifies mathematical or state consistency independently, and validates execution evidence.
+   - Verifier failure marks execution as `verification_failed` — an execution is never marked successful merely because its handler did not throw an exception.
+5. **Trusted Authorization & Human Approval**:
+   - Consequential capabilities strictly require human approval bound to an immutable SHA-256 `input_digest`.
+   - Tampered input parameters invalidate existing approval tickets.
+   - Approval identity is verified against server-side trusted identities (`settings.TRUSTED_APPROVER_IDENTITIES`) and token (`X-Pico-Approval-Token`). Model-generated strings or untrusted callers cannot authorize actions.
+6. **Append-Only Event Ledger**:
+   - Write-once audit log (`event_ledger`) tracking all lifecycle events (`task_submitted`, `execution_started`, `verification_passed`, etc.).
+   - Automatic recursive credential and secret scrubbing (`api_key`, `token`, `secret`, `password`, `authorization`).
+7. **Procedural Memory Integration**:
+   - Procedure validation (`/api/tools/procedures/{id}/validate`) checks each procedure step against the Capability Registry, verifying capability availability and flagging required approval tickets without allowing procedures to self-activate.
+
 
 ### 4.6 Computer Control & Engineering Workspace
 - Controlled OS automation: application launch, window inspection, file reading/writing via staged diffs.

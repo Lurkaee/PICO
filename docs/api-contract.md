@@ -413,11 +413,58 @@
 
 ---
 
+### 2.7 Tool Execution Engine (Milestone P5)
+
+- **`GET /api/tools/capabilities`**
+  - **Description**: List all explicitly registered system capabilities with schemas, risk tiers, and permission scopes.
+  - **Response (200 OK)**: List of `CapabilityResponse` objects.
+
+- **`GET /api/tools/capabilities/{capability_id}`**
+  - **Description**: Retrieve detailed capability definition and parameter requirements.
+  - **Response (200 OK)**: `CapabilityResponse`
+  - **Response (404 Not Found)**: Unknown capability ID.
+
+- **`POST /api/tools/executions`**
+  - **Description**: Submit a tool execution request with schema validation and idempotency checking. If the capability is consequential, execution enters `awaiting_approval`.
+  - **Request Body**: `ToolExecutionCreate` (`capability_id`, `input_params`, optional `idempotency_key`, `task_id`, `timeout_seconds`).
+  - **Response (201 Created)**: `ToolExecutionResponse`
+
+- **`GET /api/tools/executions`**
+  - **Description**: List historical tool executions with optional status, task, or capability filters.
+  - **Query Parameters**: `status`, `capability_id`, `task_id`, `limit`, `offset`.
+  - **Response (200 OK)**: `ToolExecutionListResponse`
+
+- **`GET /api/tools/executions/{execution_id}`**
+  - **Description**: Retrieve current execution status, timings, verification results, and failure details.
+  - **Response (200 OK)**: `ToolExecutionResponse`
+
+- **`POST /api/tools/executions/{execution_id}/execute`**
+  - **Description**: Trigger execution of a queued or approved execution ticket. Runs handler, applies timeout bounds, and runs independent verifier.
+  - **Response (200 OK)**: `ToolExecutionResponse`
+
+- **`POST /api/tools/executions/{execution_id}/approve`**
+  - **Description**: Explicit human approval for consequential actions. Validates trusted approver identity and secret token (`X-Pico-Approval-Token`).
+  - **Request Body**: `ToolApprovalRequest` (`approver`, `notes`).
+  - **Response (200 OK)**: `ToolExecutionResponse`
+  - **Response (403 Forbidden)**: Untrusted approver or missing/invalid token.
+
+- **`POST /api/tools/executions/{execution_id}/cancel`**
+  - **Description**: Cooperative cancellation of queued or awaiting-approval execution.
+  - **Response (200 OK)**: `ToolExecutionResponse`
+
+- **`GET /api/tools/executions/{execution_id}/events`**
+  - **Description**: Retrieve append-only audit event trace for a specific execution.
+  - **Response (200 OK)**: `LedgerEventListResponse`
+
+- **`POST /api/tools/procedures/{procedure_id}/validate`**
+  - **Description**: Validate procedural memory steps against the Capability Registry. Rejects procedures with unknown, unauthorized, or retired capability actions.
+  - **Response (200 OK)**: `ProcedureValidationResponse`
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:
 
-- `POST /api/jobs` & `GET /api/jobs/{job_id}` — Multi-step execution coordinator jobs (Phase 2)
-- `GET /api/approvals` & `POST /api/approvals/{id}/decide` — Human approval gate for tools (Phase 2)
-- `GET /api/ledger/events` — Replay and audit append-only ledger events (Phase 2)
+- `POST /api/jobs` & `GET /api/jobs/{job_id}` — Multi-step execution coordinator jobs (DAG workflow coordinator)
 - `GET /api/evaluations/reports` — Evaluation harness metrics and test suite results (Phase 3)
