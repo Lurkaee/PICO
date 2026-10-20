@@ -11,10 +11,11 @@ from pico.api.health import router as health_router
 from pico.api.memory import router as memory_router
 from pico.api.projects import router as projects_router
 from pico.api.tasks import router as tasks_router
+from pico.api.tools import router as tools_router
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
 from pico.db.base import Base
-from pico.db.session import engine
+from pico.db.session import SessionLocal, engine
 from pico.providers.errors import (
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -22,12 +23,17 @@ from pico.providers.errors import (
     ProviderModelNotFoundError,
     ProviderTimeoutError,
 )
+from pico.services.execution_engine import ToolExecutionEngine
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Ensure tables exist on startup
     Base.metadata.create_all(bind=engine)
+    # Recover any interrupted executions from prior crash
+    with SessionLocal() as db:
+        engine_svc = ToolExecutionEngine(db)
+        engine_svc.recover_interrupted_executions()
     yield
 
 
@@ -157,3 +163,4 @@ app.include_router(projects_router)
 app.include_router(tasks_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
+app.include_router(tools_router)
