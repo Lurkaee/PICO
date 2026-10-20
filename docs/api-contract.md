@@ -515,7 +515,29 @@
 - **`GET /api/perception/events`**
   - **Description**: Query recent normalized perception events with bounded limit and optional modality filter.
   - **Query Parameters**: `limit` (1-100, default 20), `modality` (optional).
-  - **Response (200 OK)**: List of `NormalizedPerceptionEvent`
+---
+
+### 2.8 Home Assistant Read-Only Awareness (Stage A)
+
+- **`GET /api/homeassistant/status`**
+  - **Description**: Inspect Home Assistant hub integration readiness and connectivity state (`disabled`, `missing_configuration`, `connection_unavailable`, `authentication_rejected`, `connected`, `read_failed`). Never claims physical device connectivity.
+  - **Response (200 OK)**: `HomeAssistantStatus`
+
+- **`GET /api/homeassistant/entities`**
+  - **Description**: Discover available smart-home entities and their reported states without mutation. Attributes are strictly sanitized (GPS, tokens, and personal info stripped).
+  - **Query Parameters**: `domain` (optional string, e.g. `light`, `sensor`, `lock`).
+  - **Response (200 OK)**: `EntityListOutput` (`total_count`, `domain_filter`, `entities`, `data_classification`).
+
+- **`GET /api/homeassistant/entities/{entity_id}`**
+  - **Description**: Read reported state and bounded attributes of a specific smart-home entity.
+  - **Validation**: `entity_id` must match `<domain>.<object_id>`.
+  - **Response (200 OK)**: `EntityState`
+  - **Response (404 Not Found)**: If entity does not exist.
+
+- **`GET /api/homeassistant/overview`**
+  - **Description**: Bounded summary overview of smart-home entities suitable for assistant situational awareness.
+  - **Query Parameters**: `domains` (optional list of domains to highlight).
+  - **Response (200 OK)**: `EntityOverviewOutput` (`total_entities`, `domain_counts`, `highlights`, `data_classification`).
 
 ---
 

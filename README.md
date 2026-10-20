@@ -225,6 +225,20 @@ Safely orchestrates hardware benchmarks:
 
 ---
 
+## Home Assistant Integration (Milestone P7 Stage A)
+
+PICO integrates with Home Assistant as a local read-only hub for situational awareness:
+- **Strictly Disabled by Default**: Set `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_BASE_URL`, and `HOME_ASSISTANT_ACCESS_TOKEN` in `.env` to enable.
+- **REST & Pure-Python WebSocket Clients**:
+  - `GET /api/homeassistant/status` — Inspect integration health and connection state.
+  - `GET /api/homeassistant/entities` — Discover entities and reported states with sanitized attributes.
+  - `GET /api/homeassistant/entities/{entity_id}` — Inspect a specific entity.
+  - `GET /api/homeassistant/overview` — Bounded smart-home summary for assistant awareness.
+- **Absolute Read-Only Boundary**: Stage A only reads state. Zero actuation or service-call (`call_service`) paths exist.
+- **Trusted Privacy Gate**: Household data defaults to `INTERNAL` (or `SENSITIVE` for locks, alarms, cameras, and entry points). Never sent to cloud models.
+
+---
+
 ## Troubleshooting & Common Failures
 
 - **`BENCHMARK BLOCKED`**:

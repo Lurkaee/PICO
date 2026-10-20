@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     ENVIRONMENTAL_COOLDOWN_SECONDS: float = 5.0
     PERCEPTION_EVENT_RETENTION_HOURS: int = 24
 
+    # Home Assistant Integration Settings (Disabled by default)
+    HOME_ASSISTANT_ENABLED: bool = False
+    HOME_ASSISTANT_BASE_URL: str = "http://127.0.0.1:8123"
+    HOME_ASSISTANT_ACCESS_TOKEN: str | None = None
+    HOME_ASSISTANT_TIMEOUT_SECONDS: float = 10.0
+    HOME_ASSISTANT_MAX_ENTITIES_LIMIT: int = 500
+    HOME_ASSISTANT_ALLOW_LIVE_SUBSCRIPTION: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

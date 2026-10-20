@@ -10,6 +10,12 @@ from pico.capabilities.core.calculator import CalculatorCapability
 from pico.capabilities.core.validate_json import ValidateJsonCapability
 from pico.capabilities.database.read_project import ReadProjectCapability
 from pico.capabilities.database.read_task import ReadTaskCapability
+from pico.capabilities.homeassistant.ha_capabilities import (
+    HomeAssistantGetEntityStateCapability,
+    HomeAssistantListEntitiesCapability,
+    HomeAssistantOverviewCapability,
+    HomeAssistantStatusCapability,
+)
 from pico.capabilities.perception.perception_capabilities import (
     PerceptionAnalyzeMotionCapability,
     PerceptionGetRecentEventsCapability,
@@ -43,6 +49,10 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(PerceptionGetRecentEventsCapability())
     reg.register(PerceptionValidateSensorPayloadCapability())
     reg.register(PerceptionAnalyzeMotionCapability())
+    reg.register(HomeAssistantStatusCapability())
+    reg.register(HomeAssistantListEntitiesCapability())
+    reg.register(HomeAssistantGetEntityStateCapability())
+    reg.register(HomeAssistantOverviewCapability())
 
 
 # Automatically populate the default registry
@@ -72,4 +82,8 @@ __all__ = [
     "PerceptionGetRecentEventsCapability",
     "PerceptionValidateSensorPayloadCapability",
     "PerceptionAnalyzeMotionCapability",
+    "HomeAssistantStatusCapability",
+    "HomeAssistantListEntitiesCapability",
+    "HomeAssistantGetEntityStateCapability",
+    "HomeAssistantOverviewCapability",
 ]
