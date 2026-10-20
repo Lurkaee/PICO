@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -126,6 +127,7 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
         self,
         execution_id: str,
         expected_digest: str,
+        expected_input: dict[str, Any] | None = None,
         expected_approval_digest: str | None = None,
         expected_statuses: tuple[str, ...] = ("queued", "retry_scheduled"),
         is_consequential: bool = False,
@@ -135,6 +137,7 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
         Atomically transition an execution from queued/retry_scheduled to running.
         Uses a database-level compare-and-set WHERE clause to guarantee single-winner
         execution claiming across concurrent requests, engine instances, and processes.
+        Binds the claim to the exact persisted input snapshot, input digest, and approval digest.
         """
         now = utc_now()
         stmt = (
@@ -147,6 +150,9 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
         )
         if expected_approval_digest is not None:
             stmt = stmt.where(ToolExecution.approval_input_digest == expected_approval_digest)
+
+        if expected_input is not None:
+            stmt = stmt.where(ToolExecution.input_json == expected_input)
 
         if is_consequential:
             stmt = stmt.where(

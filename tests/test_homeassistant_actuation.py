@@ -948,3 +948,104 @@ def test_api_approval_principal_cannot_be_forged_by_request_body(monkeypatch: py
         # The recorded principal MUST be the server-defined principal, NOT the caller-supplied name!
         assert approved_data["approved_by"] == "authenticated_token_holder"
         assert approved_data["approved_by"] != "forged_alice_impersonator"
+
+
+@pytest.mark.anyio
+async def test_tampered_input_snapshot_before_atomic_claim_fails_closed(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent change to input_json after digest validation but before atomic claim fails closed.
+
+    Guarantees:
+    1. Database compare-and-set claim is strictly bound to the exact input snapshot validated.
+    2. Zero mutation requests are sent to Home Assistant.
+    3. The capability is never invoked.
+    4. The previously approved action is not executed with modified input.
+    """
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ACTUATION_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID", TEST_LIGHT_ID)
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "secret_snapshot_token")
+
+    mutation_calls: list[httpx.Request] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/api/services/light/" in url:
+            mutation_calls.append(request)
+            return httpx.Response(200, json=[{"entity_id": TEST_LIGHT_ID, "state": "on"}])
+        elif f"/api/states/{TEST_LIGHT_ID}" in url:
+            return httpx.Response(200, json={"entity_id": TEST_LIGHT_ID, "state": "off", "attributes": {}})
+        return httpx.Response(404, json={"message": "Not found"})
+
+    transport = httpx.MockTransport(mock_transport_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HomeAssistantClient(
+            enabled=True,
+            base_url=MOCK_BASE_URL,
+            access_token=MOCK_TOKEN,
+            http_client=http_client,
+        )
+        service = HomeAssistantActuationService(readonly_client=client, http_client=http_client)
+        capability = HomeAssistantTestLightActuationCapability(service=service)
+
+        test_registry = CapabilityRegistry()
+        test_registry.register(capability)
+
+        SessionLocal = sessionmaker(bind=db_session.get_bind(), autocommit=False, autoflush=False)
+        session1 = SessionLocal()
+        session2 = SessionLocal()
+        try:
+            engine = ToolExecutionEngine(session1, test_registry)
+            perms = {"homeassistant:actuate"}
+
+            # 1. Create and approve a test-light execution
+            item = engine.submit(
+                capability_id="homeassistant.test_light_actuate",
+                input_data={"target_state": "on"},
+                caller_permissions=perms,
+            )
+            approved = engine.approve(
+                item.id,
+                approver="alice_engineer",
+                approval_token="secret_snapshot_token",
+            )
+            assert approved.status == "queued"
+            orig_input_digest = approved.input_digest
+            orig_approval_digest = approved.approval_input_digest
+
+            # 2. Pause hook: after digest validation, immediately before database claim,
+            # use separate database session (session2) to tamper with persisted input_json
+            # WITHOUT updating stored input_digest or approval_input_digest!
+            def pause_and_tamper_input_snapshot() -> None:
+                mod_item = session2.get(ToolExecution, item.id)
+                assert mod_item is not None
+                # Change the persisted action input to "off"
+                mod_item.input_json = {"target_state": "off"}
+                # Stored digests remain unchanged (stale digests for "on")
+                assert mod_item.input_digest == orig_input_digest
+                assert mod_item.approval_input_digest == orig_approval_digest
+                session2.commit()
+
+            # 3. Resume claim attempt with pause hook injected at claim boundary
+            with pytest.raises(AuthorizationError) as exc:
+                await engine.execute(
+                    item.id,
+                    caller_permissions=perms,
+                    claim_barrier=pause_and_tamper_input_snapshot,
+                )
+
+            assert "could not be claimed" in str(exc.value).lower() or "input verification failed" in str(exc.value).lower()
+
+            # 4. Assert ZERO mutation requests were dispatched to Home Assistant!
+            assert len(mutation_calls) == 0
+
+            # 5. Assert the item in the database was NOT transitioned to running or succeeded with the modified input
+            refreshed = session2.get(ToolExecution, item.id)
+            assert refreshed is not None
+            assert refreshed.status != "running"
+            assert refreshed.status != "succeeded"
+
+        finally:
+            session1.close()
+            session2.close()
