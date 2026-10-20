@@ -574,6 +574,13 @@
   - **Description**: Inspect approval state, execution status, and independent verification outcome of an actuation execution.
   - **Response (200 OK)**: `ToolExecutionResponse`.
 
+- **`GET /api/homeassistant/actuation/readiness`**
+  - **Description**: Evaluates commissioning and physical action readiness for the single configured test light without executing mutations. Provides structured, actionable check items (`PASS`, `FAIL`, `NOT_CONFIGURED`, `NOT_CHECKED`). Live read-only connectivity inspection is performed strictly upon explicit operator request (`check_live=true`).
+  - **Query Parameters**: `check_live: bool` (default: `false`).
+  - **Security Invariant**: Never calls Home Assistant service endpoints, mutates device state, automatically enables actuation, exposes secrets, or claims physical connectivity unless explicitly observed via read-only check.
+  - **Response (200 OK)**: `ActuationReadinessReport` (`ready_for_commissioning`, `target_entity_id`, `live_check_performed`, `live_passed`, `reported_state`, `actuation_enabled`, `checks`, `summary`).
+
+
 ---
 
 ## 3. Planned Endpoints (Future Phases)

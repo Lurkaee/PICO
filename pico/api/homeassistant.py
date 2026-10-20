@@ -9,12 +9,14 @@ from pico.core.errors import AuthorizationError, EntityNotFoundError
 from pico.db.session import get_db
 from pico.homeassistant.actuation import HomeAssistantActuationService
 from pico.homeassistant.contracts import (
+    ActuationReadinessReport,
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
     HomeAssistantStatus,
     TestLightActuationPlan,
 )
+from pico.homeassistant.readiness import evaluate_actuation_readiness
 from pico.homeassistant.service import HomeAssistantService
 from pico.homeassistant.ws_client import is_loopback_host
 from pico.repositories.tool_execution_repo import ToolExecutionRepository
@@ -166,6 +168,26 @@ def propose_test_light_actuation(
         caller_permissions={"homeassistant:actuate"},
     )
     return ToolExecutionResponse.model_validate(execution)
+
+
+@router.get(
+    "/actuation/readiness",
+    response_model=ActuationReadinessReport,
+    summary="Evaluate commissioning and physical action readiness (strictly read-only)",
+)
+async def get_actuation_readiness(
+    check_live: bool = Query(
+        default=False,
+        description="Whether to perform an explicit live read-only connectivity check against the configured test light. Offline preflight is performed when False.",
+    ),
+) -> ActuationReadinessReport:
+    """Evaluate commissioning and physical action readiness for the configured test light.
+
+    This endpoint NEVER dispatches a mutation request, executes actions, or enables actuation.
+    Live inspection requires explicit operator opt-in via check_live=True and performs
+    only read-only state inspection.
+    """
+    return await evaluate_actuation_readiness(check_live=check_live)
 
 
 @router.get(
