@@ -162,4 +162,3 @@ def test_api_validate_procedural_memory_against_capabilities(
     val_bad_data = val_bad_res.json()
     assert val_bad_data["is_valid"] is False
     assert "arbitrary.shell.exec" in val_bad_data["missing_capabilities"]
-
