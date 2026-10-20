@@ -1,26 +1,58 @@
 import asyncio
 import base64
+import hashlib
+import ipaddress
 import json
+import logging
 import os
 import re
 import ssl
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Coroutine
+from typing import Any
 from urllib.parse import urlparse
 
+from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ValidationError
 from pico.homeassistant.contracts import HomeAssistantConnectionError
 
 ConnectionError = HomeAssistantConnectionError
 
-# Strictly approved read-only WebSocket command types
+logger = logging.getLogger(__name__)
+
+# RFC 6455 GUID for Sec-WebSocket-Accept handshake calculation
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+# Maximum allowed WebSocket frame size before memory allocation (2 MB)
+MAX_WS_FRAME_SIZE = 2 * 1024 * 1024
+
+# Strictly approved read-only WebSocket command types (no live subscription/mutation commands)
 ALLOWED_READONLY_WS_COMMANDS = {
     "get_states",
     "get_config",
     "ping",
-    "subscribe_events",
-    "unsubscribe_events",
 }
+
+# Reserved protocol fields that must never be caller-supplied or overridden
+RESERVED_WS_FIELDS = {
+    "id",
+    "type",
+    "access_token",
+    "api_password",
+    "auth",
+}
+
+
+def is_loopback_host(hostname: str | None) -> bool:
+    """Determine whether a hostname or IP string represents a local loopback target."""
+    if not hostname:
+        return False
+    clean = hostname.strip().lower()
+    if clean in ("localhost", "127.0.0.1", "::1", "testclient"):
+        return True
+    try:
+        return ipaddress.ip_address(clean).is_loopback
+    except ValueError:
+        return False
 
 
 class BaseWebSocketTransport(ABC):
@@ -46,12 +78,17 @@ class BaseWebSocketTransport(ABC):
 
 
 class AsyncioWebSocketTransport(BaseWebSocketTransport):
-    """Pure-Python asyncio RFC 6455 WebSocket client transport with zero external dependencies."""
+    """Pure-Python asyncio RFC 6455 WebSocket client transport with standards-compliant validation."""
 
-    def __init__(self) -> None:
+    def __init__(self, allow_insecure_transport: bool | None = None) -> None:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
+        self._allow_insecure = (
+            allow_insecure_transport
+            if allow_insecure_transport is not None
+            else settings.HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT
+        )
 
     def is_connected(self) -> bool:
         return self._connected and self._writer is not None and not self._writer.is_closing()
@@ -68,6 +105,15 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
         if parsed.query:
             path += f"?{parsed.query}"
 
+        # Enforce transport security policy
+        if scheme == "ws" and not is_loopback_host(host):
+            if not self._allow_insecure:
+                raise ValidationError(
+                    f"Insecure plaintext WebSocket transport ('ws://') to non-loopback host '{host}' is prohibited. "
+                    f"Use 'wss://' or set HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT=true."
+                )
+            logger.warning("INSECURE TRANSPORT: Plaintext WebSocket connection allowed to non-loopback host by operator opt-in.")
+
         ssl_ctx: ssl.SSLContext | None = None
         if scheme == "wss":
             ssl_ctx = ssl.create_default_context()
@@ -78,8 +124,12 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
                 timeout=timeout,
             )
 
-            # Perform HTTP Upgrade Handshake
+            # Perform RFC 6455 HTTP Upgrade Handshake
             key = base64.b64encode(os.urandom(16)).decode("ascii")
+            expected_accept = base64.b64encode(
+                hashlib.sha1((key + WS_GUID).encode("ascii")).digest()
+            ).decode("ascii")
+
             request = (
                 f"GET {path} HTTP/1.1\r\n"
                 f"Host: {host}:{port}\r\n"
@@ -95,9 +145,21 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
             # Read Handshake Response
             response_bytes = await asyncio.wait_for(self._reader.readuntil(b"\r\n\r\n"), timeout=timeout)
             response_header = response_bytes.decode("utf-8", errors="replace")
-            status_line = response_header.split("\r\n")[0]
+            lines = response_header.split("\r\n")
+            status_line = lines[0]
             if "101" not in status_line:
                 raise ConnectionError(f"WebSocket upgrade rejected by server: {status_line}")
+
+            headers: dict[str, str] = {}
+            for line in lines[1:]:
+                if ":" in line:
+                    hname, hval = line.split(":", 1)
+                    headers[hname.strip().lower()] = hval.strip()
+
+            # Validate Sec-WebSocket-Accept header (RFC 6455 Section 4.2.2)
+            server_accept = headers.get("sec-websocket-accept")
+            if server_accept != expected_accept:
+                raise ConnectionError("WebSocket handshake failed: invalid Sec-WebSocket-Accept response header.")
 
             self._connected = True
         except (asyncio.TimeoutError, TimeoutError):
@@ -105,7 +167,9 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
             raise ConnectionError(f"WebSocket connection to '{host}:{port}' timed out after {timeout}s.")
         except Exception as exc:
             await self.close()
-            raise ConnectionError(f"WebSocket connection failed: {str(exc)}")
+            if isinstance(exc, (ValidationError, ConnectionError)):
+                raise
+            raise ConnectionError(f"WebSocket connection failed: {type(exc).__name__}")
 
     async def send_json(self, payload: dict[str, Any]) -> None:
         if not self.is_connected() or not self._writer:
@@ -150,6 +214,18 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
                 ext = await asyncio.wait_for(self._reader.readexactly(8), timeout=timeout)
                 payload_len = int.from_bytes(ext, "big")
 
+            # Control frames must not have payload length > 125 (RFC 6455 Section 5.5)
+            if opcode in (0x8, 0x9, 0xA) and payload_len > 125:
+                self._connected = False
+                raise ConnectionError(f"Control frame opcode 0x{opcode:X} exceeded max payload length of 125 bytes.")
+
+            # Reject oversized payloads before reading into memory
+            if payload_len > MAX_WS_FRAME_SIZE:
+                self._connected = False
+                raise ConnectionError(
+                    f"WebSocket frame payload size {payload_len} exceeds maximum allowed limit of {MAX_WS_FRAME_SIZE} bytes."
+                )
+
             mask = b""
             if is_masked:
                 mask = await asyncio.wait_for(self._reader.readexactly(4), timeout=timeout)
@@ -161,21 +237,35 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
             if opcode == 0x8:  # Close frame
                 self._connected = False
                 raise ConnectionError("WebSocket closed by server.")
-            elif opcode == 0x9:  # Ping frame
-                # Send Pong frame
-                pong = bytearray([0x8A, 0x80])
-                pong_mask = os.urandom(4)
-                pong.extend(pong_mask)
-                self._writer.write(bytes(pong))
-                await self._writer.drain()
+            elif opcode == 0x9:  # Ping frame -> reply with Pong
+                if self._writer and not self._writer.is_closing():
+                    pong = bytearray([0x8A, 0x80 | len(payload)])
+                    pong_mask = os.urandom(4)
+                    pong.extend(pong_mask)
+                    pong_payload = bytes(b ^ pong_mask[i % 4] for i, b in enumerate(payload))
+                    self._writer.write(bytes(pong) + pong_payload)
+                    await self._writer.drain()
                 return await self.receive_json(timeout=timeout)
+            elif opcode == 0xA:  # Pong frame -> ignore and read next
+                return await self.receive_json(timeout=timeout)
+            elif opcode != 0x1:  # Text frame only
+                self._connected = False
+                raise ConnectionError(f"Unsupported WebSocket opcode: 0x{opcode:X}")
 
-            return json.loads(payload.decode("utf-8"))
+            try:
+                decoded = payload.decode("utf-8")
+                return json.loads(decoded)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._connected = False
+                raise ConnectionError(f"Malformed WebSocket JSON payload: {type(exc).__name__}")
         except (asyncio.TimeoutError, TimeoutError):
             raise ConnectionError(f"WebSocket read timed out after {timeout}s.")
+        except ConnectionError:
+            self._connected = False
+            raise
         except Exception as exc:
             self._connected = False
-            raise ConnectionError(f"WebSocket receive error: {str(exc)}")
+            raise ConnectionError(f"WebSocket receive error: {type(exc).__name__}")
 
     async def close(self) -> None:
         self._connected = False
@@ -183,9 +273,9 @@ class AsyncioWebSocketTransport(BaseWebSocketTransport):
             try:
                 # Send close frame
                 self._writer.write(bytes([0x88, 0x80]) + os.urandom(4))
-                await self._writer.drain()
+                await asyncio.wait_for(self._writer.drain(), timeout=2.0)
                 self._writer.close()
-                await self._writer.wait_closed()
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=2.0)
             except Exception:
                 pass
             finally:
@@ -279,12 +369,6 @@ class MockWebSocketTransport(BaseWebSocketTransport):
         elif msg_type == "ping":
             cmd_id = payload.get("id", 1)
             await self._incoming_queue.put({"id": cmd_id, "type": "pong"})
-        elif msg_type == "subscribe_events":
-            cmd_id = payload.get("id", 1)
-            await self._incoming_queue.put({"id": cmd_id, "type": "result", "success": True})
-        elif msg_type == "unsubscribe_events":
-            cmd_id = payload.get("id", 1)
-            await self._incoming_queue.put({"id": cmd_id, "type": "result", "success": True})
         else:
             cmd_id = payload.get("id", 1)
             await self._incoming_queue.put(
@@ -310,7 +394,7 @@ class MockWebSocketTransport(BaseWebSocketTransport):
 
 
 class HomeAssistantWebSocketClient:
-    """Authenticated Home Assistant WebSocket API client with strict read-only enforcement."""
+    """Authenticated Home Assistant WebSocket API client with strict read-only transport guarding."""
 
     def __init__(
         self,
@@ -324,7 +408,7 @@ class HomeAssistantWebSocketClient:
         self._timeout = timeout_seconds
         self._transport = transport or AsyncioWebSocketTransport()
         self._cmd_counter = 0
-        self._active_subscriptions: dict[int, asyncio.Task[None]] = {}
+        self._lock = asyncio.Lock()
 
     def _get_ws_url(self) -> str:
         parsed = urlparse(self._base_url)
@@ -340,58 +424,89 @@ class HomeAssistantWebSocketClient:
         ws_url = self._get_ws_url()
         await self._transport.connect(ws_url, timeout=self._timeout)
 
-        # 1. Expect auth_required
-        msg = await self._transport.receive_json(timeout=self._timeout)
-        if msg.get("type") != "auth_required":
-            await self._transport.close()
-            raise ConnectionError(f"Unexpected initial message from Home Assistant: {msg.get('type')}")
+        try:
+            # 1. Expect auth_required
+            msg = await self._transport.receive_json(timeout=self._timeout)
+            if msg.get("type") != "auth_required":
+                await self._transport.close()
+                raise ConnectionError(f"Unexpected initial message from Home Assistant: {msg.get('type')}")
 
-        # 2. Send auth
-        await self._transport.send_json(
-            {"type": "auth", "access_token": self._access_token}
-        )
+            # 2. Send auth
+            await self._transport.send_json(
+                {"type": "auth", "access_token": self._access_token}
+            )
 
-        # 3. Expect auth_ok or auth_invalid
-        auth_resp = await self._transport.receive_json(timeout=self._timeout)
-        if auth_resp.get("type") == "auth_invalid":
-            await self._transport.close()
-            raise AuthorizationError("Home Assistant rejected WebSocket access token (auth_invalid).")
-        elif auth_resp.get("type") != "auth_ok":
-            await self._transport.close()
-            raise ConnectionError(f"WebSocket authentication failed: {auth_resp.get('message', 'unknown error')}")
+            # 3. Expect auth_ok or auth_invalid
+            auth_resp = await self._transport.receive_json(timeout=self._timeout)
+            if auth_resp.get("type") == "auth_invalid":
+                await self._transport.close()
+                raise AuthorizationError("Home Assistant rejected WebSocket access token (auth_invalid).")
+            elif auth_resp.get("type") != "auth_ok":
+                await self._transport.close()
+                raise ConnectionError(f"WebSocket authentication failed: {auth_resp.get('message', 'unknown error')}")
 
-        return auth_resp
+            return auth_resp
+        except asyncio.CancelledError:
+            await self._transport.close()
+            raise
+        except Exception:
+            await self._transport.close()
+            raise
 
     async def send_readonly_command(self, command_type: str, params: dict[str, Any] | None = None) -> Any:
-        """Send an explicitly authorized read-only command and return the correlated result."""
-        # Non-negotiable invariant: strictly reject any non-whitelisted or mutation command
+        """Send an explicitly authorized read-only command and return the correlated result.
+
+        Invariants:
+        1. Reject unsupported or mutating commands before any network transmission.
+        2. Reject reserved protocol keys and any attempts to supply caller-controlled parameters.
+        3. Effective request ID and command type are strictly generated internally.
+        4. Requests are serialized with asyncio.Lock() to prevent correlation corruption.
+        """
+        # 1. Validate command type against strict read-only allowlist
         if command_type not in ALLOWED_READONLY_WS_COMMANDS:
             raise ValidationError(
                 f"WebSocket command '{command_type}' is prohibited. Only read-only commands {ALLOWED_READONLY_WS_COMMANDS} are authorized."
             )
 
-        if not self._transport.is_connected():
-            await self.connect_and_authenticate()
+        # 2. Parameter validation: reject reserved fields and any parameters for commands that take none
+        if params is not None and len(params) > 0:
+            for k in params:
+                if k in RESERVED_WS_FIELDS:
+                    raise ValidationError(f"Prohibited attempt to supply reserved WebSocket protocol field '{k}'.")
+            raise ValidationError(
+                f"WebSocket command '{command_type}' accepts no parameters, but received: {list(params.keys())}."
+            )
 
-        self._cmd_counter += 1
-        cmd_id = self._cmd_counter
+        async with self._lock:
+            if not self._transport.is_connected():
+                await self.connect_and_authenticate()
 
-        payload: dict[str, Any] = {"id": cmd_id, "type": command_type}
-        if params:
-            payload.update(params)
+            self._cmd_counter += 1
+            cmd_id = self._cmd_counter
 
-        await self._transport.send_json(payload)
+            # Invariant: payload is constructed strictly from validated internal fields.
+            # Never merge untrusted caller dictionaries over reserved protocol fields.
+            payload: dict[str, Any] = {"id": cmd_id, "type": command_type}
 
-        # Correlate response by command id
-        while True:
-            resp = await self._transport.receive_json(timeout=self._timeout)
-            if resp.get("id") == cmd_id:
-                if resp.get("success") is False:
-                    err = resp.get("error", {})
-                    raise ConnectionError(f"Command '{command_type}' failed: {err.get('message', 'Unknown error')}")
-                return resp.get("result")
-            elif resp.get("type") == "pong" and command_type == "ping":
-                return True
+            await self._transport.send_json(payload)
+
+            # Correlate response strictly by command id; ignore unsolicited messages
+            skipped = 0
+            while True:
+                resp = await self._transport.receive_json(timeout=self._timeout)
+                if resp.get("id") == cmd_id:
+                    if command_type == "ping":
+                        return resp.get("type") == "pong"
+                    if resp.get("success") is False:
+                        err = resp.get("error", {})
+                        raise ConnectionError(f"Command '{command_type}' failed: {err.get('message', 'Unknown error')}")
+                    return resp.get("result")
+                elif resp.get("type") == "pong" and command_type == "ping":
+                    return True
+                else:
+                    skipped += 1
+                    if skipped > 50:
+                        raise ConnectionError(f"Timed out waiting for correlated response to command ID {cmd_id}.")
 
     async def get_states_via_websocket(self) -> list[dict[str, Any]]:
         result = await self.send_readonly_command("get_states")
@@ -406,7 +521,4 @@ class HomeAssistantWebSocketClient:
         return {}
 
     async def close(self) -> None:
-        for task in self._active_subscriptions.values():
-            task.cancel()
-        self._active_subscriptions.clear()
         await self._transport.close()

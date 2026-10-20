@@ -519,17 +519,23 @@
 
 ### 2.8 Home Assistant Read-Only Awareness (Stage A)
 
+**Security Exposure Boundary**:
+- **Loopback Access**: Requests originating from local loopback (`127.0.0.1`, `::1`, `localhost`) are permitted locally.
+- **Remote Access (Fail-Closed)**: Non-loopback remote callers MUST supply an `X-Pico-Approval-Token` header matching the server's `APPROVAL_SECRET_TOKEN`. If unconfigured, missing, or mismatched, requests are rejected with `403 Forbidden`.
+- **Read-Only Invariant**: All endpoints and transport channels are strictly read-only. No service execution, device toggling, or mutation capabilities are exposed.
+- **Verification Note**: Current verification uses deterministic mocked transports and RFC 6455 protocol tests. Physical device connectivity is explicitly not claimed (`physical_device_connectivity_claimed=false`).
+
 - **`GET /api/homeassistant/status`**
   - **Description**: Inspect Home Assistant hub integration readiness and connectivity state (`disabled`, `missing_configuration`, `connection_unavailable`, `authentication_rejected`, `connected`, `read_failed`). Never claims physical device connectivity.
   - **Response (200 OK)**: `HomeAssistantStatus`
 
 - **`GET /api/homeassistant/entities`**
-  - **Description**: Discover available smart-home entities and their reported states without mutation. Attributes are strictly sanitized (GPS, tokens, and personal info stripped).
+  - **Description**: Discover available smart-home entities and their reported states without mutation. Attributes are strictly sanitized against an explicit allowlist (unknown attributes, nested payloads, non-finite numbers, credentials, and personal data dropped). Bounded by byte size (2 MB) before parsing and capped at `HOME_ASSISTANT_MAX_ENTITIES_LIMIT`.
   - **Query Parameters**: `domain` (optional string, e.g. `light`, `sensor`, `lock`).
   - **Response (200 OK)**: `EntityListOutput` (`total_count`, `domain_filter`, `entities`, `data_classification`).
 
 - **`GET /api/homeassistant/entities/{entity_id}`**
-  - **Description**: Read reported state and bounded attributes of a specific smart-home entity.
+  - **Description**: Read reported state and bounded attributes of a specific smart-home entity. Bounded by byte size (256 KB) before parsing.
   - **Validation**: `entity_id` must match `<domain>.<object_id>`.
   - **Response (200 OK)**: `EntityState`
   - **Response (404 Not Found)**: If entity does not exist.
@@ -537,6 +543,7 @@
 - **`GET /api/homeassistant/overview`**
   - **Description**: Bounded summary overview of smart-home entities suitable for assistant situational awareness.
   - **Query Parameters**: `domains` (optional list of domains to highlight).
+  - **Classification Invariant**: Effective data classification is computed across all normalized entities contributing to the summary, ensuring sensitive entities (locks, alarms, cameras) elevate the response classification to `SENSITIVE` even when truncated highlights contain only lights.
   - **Response (200 OK)**: `EntityOverviewOutput` (`total_entities`, `domain_counts`, `highlights`, `data_classification`).
 
 ---

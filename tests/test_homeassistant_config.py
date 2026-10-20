@@ -32,12 +32,22 @@ async def test_homeassistant_missing_token_status() -> None:
 
 
 def test_homeassistant_base_url_validation_and_sanitization() -> None:
-    # Valid URLs
-    c1 = HomeAssistantClient(base_url="http://192.168.1.100:8123")
+    # Non-loopback plaintext http rejected by default
+    with pytest.raises(ValidationError) as exc:
+        HomeAssistantClient(base_url="http://192.168.1.100:8123")
+    assert "insecure plaintext transport" in str(exc.value).lower()
+
+    # Non-loopback plaintext http accepted with explicit opt-in
+    c1 = HomeAssistantClient(base_url="http://192.168.1.100:8123", allow_insecure_transport=True)
     assert c1._base_url == "http://192.168.1.100:8123"
 
-    c2 = HomeAssistantClient(base_url="https://homeassistant.local:8123/")
+    # HTTPS accepted for non-loopback
+    c2 = HomeAssistantClient(base_url="https://homeassistant.local:8123")
     assert c2._base_url == "https://homeassistant.local:8123"
+
+    # Loopback plaintext http accepted by default
+    c_local = HomeAssistantClient(base_url="http://127.0.0.1:8123")
+    assert c_local._base_url == "http://127.0.0.1:8123"
 
     # Strips embedded credentials from URL
     c3 = HomeAssistantClient(base_url="http://admin:secret@127.0.0.1:8123")
@@ -51,6 +61,14 @@ def test_homeassistant_base_url_validation_and_sanitization() -> None:
 
     with pytest.raises(ValidationError):
         HomeAssistantClient(base_url="javascript:alert(1)")
+
+    # Rejects query parameters or fragments
+    with pytest.raises(ValidationError):
+        HomeAssistantClient(base_url="http://127.0.0.1:8123?evil=1")
+
+    with pytest.raises(ValidationError):
+        HomeAssistantClient(base_url="http://127.0.0.1:8123#frag")
+
 
 
 @pytest.mark.anyio
