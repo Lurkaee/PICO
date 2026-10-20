@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 import httpx
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from pico.capabilities.base import RiskTier
 from pico.capabilities.homeassistant.ha_actuation import (
@@ -13,7 +13,7 @@ from pico.capabilities.homeassistant.ha_actuation import (
     HomeAssistantTestLightActuationInput,
     HomeAssistantTestLightActuationOutput,
 )
-from pico.capabilities.registry import registry
+from pico.capabilities.registry import CapabilityRegistry, registry
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ValidationError
 from pico.homeassistant.actuation import (
@@ -554,8 +554,8 @@ def test_approval_missing_or_invalid_token_fails_closed(db_session: Session, mon
     assert "fails closed" in str(exc2.value).lower()
 
 
-def test_approval_forged_approver_identity_fails_closed(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Caller passing untrusted approver string is strictly rejected."""
+def test_approval_forged_approver_identity_cannot_forge_principal(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Caller passing arbitrary approver strings cannot forge the server-derived approval principal."""
     monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "real_secret_token_456")
     engine = ToolExecutionEngine(db_session, registry)
     perms = {"homeassistant:actuate"}
@@ -565,9 +565,17 @@ def test_approval_forged_approver_identity_fails_closed(db_session: Session, mon
         input_data={"target_state": "on"},
         caller_permissions=perms,
     )
+    # 1. Without token, even claiming a trusted name fails closed
     with pytest.raises(AuthorizationError) as exc:
-        engine.approve(item.id, approver="untrusted_intruder", approval_token="real_secret_token_456")
-    assert "not authorized" in str(exc.value).lower()
+        engine.approve(item.id, approver="pico_owner", approval_token=None)
+    assert "token" in str(exc.value).lower()
+
+    # 2. With valid token, caller-controlled approver cannot forge the approved_by principal
+    approved = engine.approve(item.id, approver="untrusted_intruder", approval_token="real_secret_token_456")
+    assert approved.status == "queued"
+    assert approved.approved_by == "authenticated_token_holder"
+    assert approved.approved_by != "untrusted_intruder"
+    assert approved.metadata_json["claimed_approver"] == "untrusted_intruder"
 
 
 def test_generic_execution_route_lacks_actuate_permission(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -691,3 +699,252 @@ def test_home_assistant_disabled_refuses_actuation(monkeypatch: pytest.MonkeyPat
     with pytest.raises(AuthorizationError) as exc:
         validate_actuation_preconditions(operation="turn_on")
     assert "integration is disabled" in str(exc.value).lower()
+
+
+# =====================================================================
+# Atomic Dispatch Claim & Concurrency Proof Tests
+# =====================================================================
+
+@pytest.mark.anyio
+async def test_concurrent_execution_attempts_atomic_claim_boundary(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Launch two concurrent execution attempts for the same approved execution item.
+
+    Asserts that the database compare-and-set claim results in a single winner:
+    exactly one succeeds, the other fails closed with AuthorizationError, and exactly
+    one mutation request is dispatched.
+    """
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ACTUATION_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID", TEST_LIGHT_ID)
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "secret_claim_token")
+
+    mutation_calls: list[httpx.Request] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/api/services/light/turn_on" in url:
+            mutation_calls.append(request)
+            return httpx.Response(200, json=[{"entity_id": TEST_LIGHT_ID, "state": "on"}])
+        elif f"/api/states/{TEST_LIGHT_ID}" in url:
+            state = "on" if mutation_calls else "off"
+            return httpx.Response(200, json={"entity_id": TEST_LIGHT_ID, "state": state, "attributes": {}})
+        return httpx.Response(404, json={"message": "Not found"})
+
+    transport = httpx.MockTransport(mock_transport_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HomeAssistantClient(
+            enabled=True,
+            base_url=MOCK_BASE_URL,
+            access_token=MOCK_TOKEN,
+            http_client=http_client,
+        )
+        service = HomeAssistantActuationService(readonly_client=client, http_client=http_client)
+        capability = HomeAssistantTestLightActuationCapability(service=service)
+
+        test_registry = CapabilityRegistry()
+        test_registry.register(capability)
+
+        engine1 = ToolExecutionEngine(db_session, test_registry)
+        engine2 = ToolExecutionEngine(db_session, test_registry)
+        perms = {"homeassistant:actuate"}
+
+        item = engine1.submit(
+            capability_id="homeassistant.test_light_actuate",
+            input_data={"target_state": "on"},
+            caller_permissions=perms,
+        )
+        approved = engine1.approve(item.id, approver="alice_engineer", approval_token="secret_claim_token")
+        assert approved.status == "queued"
+
+        # Concurrently attempt execution across engine1 and engine2 with claim boundary synchronization
+        barrier = asyncio.Barrier(2)
+        res1, res2 = await asyncio.gather(
+            engine1.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+            engine2.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+            return_exceptions=True,
+        )
+
+        results = [res1, res2]
+        succeeded = [r for r in results if isinstance(r, ToolExecution) and r.status == "succeeded"]
+        failed = [r for r in results if isinstance(r, AuthorizationError)]
+
+        # Exact single winner: 1 succeeded, 1 AuthorizationError
+        assert len(succeeded) == 1, f"Expected exactly 1 succeeded, got {len(succeeded)}: {results}"
+        assert len(failed) == 1, f"Expected exactly 1 failed with AuthorizationError, got {len(failed)}: {results}"
+        assert "could not be claimed" in str(failed[0]).lower() or "already" in str(failed[0]).lower()
+
+        # Exactly ONE mutation request dispatched to Home Assistant!
+        assert len(mutation_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_concurrency_with_separate_service_and_capability_instances(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeat concurrency test with completely separate capability and service instances.
+
+    Guarantees that database-backed atomic claim, NOT an in-memory set or instance lock,
+    is providing the single-winner protection across distinct service instances.
+    """
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ACTUATION_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID", TEST_LIGHT_ID)
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "secret_claim_token")
+
+    mutation_calls: list[httpx.Request] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/api/services/light/turn_on" in url:
+            mutation_calls.append(request)
+            return httpx.Response(200, json=[{"entity_id": TEST_LIGHT_ID, "state": "on"}])
+        elif f"/api/states/{TEST_LIGHT_ID}" in url:
+            state = "on" if mutation_calls else "off"
+            return httpx.Response(200, json={"entity_id": TEST_LIGHT_ID, "state": state, "attributes": {}})
+        return httpx.Response(404, json={"message": "Not found"})
+
+    transport = httpx.MockTransport(mock_transport_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HomeAssistantClient(
+            enabled=True,
+            base_url=MOCK_BASE_URL,
+            access_token=MOCK_TOKEN,
+            http_client=http_client,
+        )
+        # Create TWO SEPARATE service and capability instances with disjoint memory
+        service1 = HomeAssistantActuationService(readonly_client=client, http_client=http_client)
+        service2 = HomeAssistantActuationService(readonly_client=client, http_client=http_client)
+        assert service1 is not service2
+        assert service1._dispatched_executions is not service2._dispatched_executions
+
+        cap1 = HomeAssistantTestLightActuationCapability(service=service1)
+        cap2 = HomeAssistantTestLightActuationCapability(service=service2)
+
+        reg1 = CapabilityRegistry()
+        reg1.register(cap1)
+        reg2 = CapabilityRegistry()
+        reg2.register(cap2)
+
+        SessionLocal = sessionmaker(bind=db_session.get_bind(), autocommit=False, autoflush=False)
+        session1 = SessionLocal()
+        session2 = SessionLocal()
+        try:
+            engine1 = ToolExecutionEngine(session1, reg1)
+            engine2 = ToolExecutionEngine(session2, reg2)
+            perms = {"homeassistant:actuate"}
+
+            item = engine1.submit(
+                capability_id="homeassistant.test_light_actuate",
+                input_data={"target_state": "on"},
+                caller_permissions=perms,
+            )
+            approved = engine1.approve(item.id, approver="lead_engineer", approval_token="secret_claim_token")
+            assert approved.status == "queued"
+
+            # Concurrently execute across separate service, engine, and database session instances with claim boundary synchronization
+            barrier = asyncio.Barrier(2)
+            res1, res2 = await asyncio.gather(
+                engine1.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+                engine2.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+                return_exceptions=True,
+            )
+
+            results = [res1, res2]
+            succeeded = [r for r in results if isinstance(r, ToolExecution) and r.status == "succeeded"]
+            failed = [r for r in results if isinstance(r, AuthorizationError)]
+
+            assert len(succeeded) == 1
+            assert len(failed) == 1
+            # Proves database claim across separate sessions prevented second distinct service instance from mutating!
+            assert len(mutation_calls) == 1
+        finally:
+            session1.close()
+            session2.close()
+
+
+@pytest.mark.anyio
+async def test_losing_and_replayed_request_cannot_invoke_capability_or_mutate(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replayed or subsequent execution attempt after completion fails closed with zero additional mutations."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_ACTUATION_ENABLED", True)
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID", TEST_LIGHT_ID)
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "secret_replay_token")
+
+    mutation_calls: list[httpx.Request] = []
+
+    def mock_transport_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/api/services/light/turn_off" in url:
+            mutation_calls.append(request)
+            return httpx.Response(200, json=[{"entity_id": TEST_LIGHT_ID, "state": "off"}])
+        elif f"/api/states/{TEST_LIGHT_ID}" in url:
+            state = "off" if mutation_calls else "on"
+            return httpx.Response(200, json={"entity_id": TEST_LIGHT_ID, "state": state, "attributes": {}})
+        return httpx.Response(404, json={"message": "Not found"})
+
+    transport = httpx.MockTransport(mock_transport_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HomeAssistantClient(
+            enabled=True,
+            base_url=MOCK_BASE_URL,
+            access_token=MOCK_TOKEN,
+            http_client=http_client,
+        )
+        service = HomeAssistantActuationService(readonly_client=client, http_client=http_client)
+        capability = HomeAssistantTestLightActuationCapability(service=service)
+        test_reg = CapabilityRegistry()
+        test_reg.register(capability)
+
+        engine = ToolExecutionEngine(db_session, test_reg)
+        perms = {"homeassistant:actuate"}
+
+        item = engine.submit(
+            capability_id="homeassistant.test_light_actuate",
+            input_data={"target_state": "off"},
+            caller_permissions=perms,
+        )
+        engine.approve(item.id, approver="alice_engineer", approval_token="secret_replay_token")
+
+        # 1. First execution succeeds
+        first_run = await engine.execute(item.id, caller_permissions=perms)
+        assert first_run.status == "succeeded"
+        assert len(mutation_calls) == 1
+
+        # 2. Subsequent execution on the same item fails closed before capability invocation
+        with pytest.raises(Exception) as exc:
+            await engine.execute(item.id, caller_permissions=perms)
+        # Status is succeeded, so cannot execute
+        assert "cannot execute" in str(exc.value).lower() or "already" in str(exc.value).lower()
+        # Mutation calls remain strictly 1
+        assert len(mutation_calls) == 1
+
+
+def test_api_approval_principal_cannot_be_forged_by_request_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Approval principal recorded in DB and ledger is derived from server token, not request-body approver."""
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "valid_secret_token_abc")
+    with TestClient(app) as client:
+        # 1. Propose actuation execution
+        propose_res = client.post(
+            "/api/homeassistant/actuation/propose",
+            json={"target_state": "on"},
+            headers={"X-Pico-Approval-Token": "valid_secret_token_abc"},
+        )
+        assert propose_res.status_code == 201
+        exec_id = propose_res.json()["id"]
+
+        # 2. Approve specifying an arbitrary/forged name in the request body
+        approve_res = client.post(
+            f"/api/tools/executions/{exec_id}/approve",
+            json={"approver": "forged_alice_impersonator", "notes": "Falsified note"},
+            headers={"X-Pico-Approval-Token": "valid_secret_token_abc"},
+        )
+        assert approve_res.status_code == 200
+        approved_data = approve_res.json()
+
+        # The recorded principal MUST be the server-defined principal, NOT the caller-supplied name!
+        assert approved_data["approved_by"] == "authenticated_token_holder"
+        assert approved_data["approved_by"] != "forged_alice_impersonator"

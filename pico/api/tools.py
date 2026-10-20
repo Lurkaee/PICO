@@ -231,8 +231,18 @@ def approve_execution(
     if item.capability_id == "homeassistant.test_light_actuate":
         if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
             raise AuthorizationError("Physical actuation approval fails closed without valid X-Pico-Approval-Token.")
-    elif settings.APPROVAL_SECRET_TOKEN and x_approval_token != settings.APPROVAL_SECRET_TOKEN:
-        raise AuthorizationError("Invalid or missing approval authorization token.")
+        authenticated_principal = "authenticated_token_holder"
+    elif settings.APPROVAL_SECRET_TOKEN:
+        if x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+            raise AuthorizationError("Invalid or missing approval authorization token.")
+        authenticated_principal = "authenticated_token_holder"
+    else:
+        clean_approver = (payload.approver or "").strip()
+        if not clean_approver or clean_approver not in settings.TRUSTED_APPROVER_IDENTITIES:
+            raise AuthorizationError(
+                f"Principal '{clean_approver}' is not authorized to approve executions."
+            )
+        authenticated_principal = "local_operator"
 
     engine = ToolExecutionEngine(db, registry)
     execution = engine.approve(
@@ -240,6 +250,7 @@ def approve_execution(
         approver=payload.approver,
         notes=payload.notes,
         approval_token=x_approval_token,
+        authenticated_principal=authenticated_principal,
     )
     return ToolExecutionResponse.model_validate(execution)
 
