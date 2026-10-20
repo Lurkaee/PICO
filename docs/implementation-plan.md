@@ -93,8 +93,10 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Dedicated REST mutation client isolated from read-only WebSocket commands; independent read-after-write verification polling via read-only state API; strictly zero automatic retries on timeout or failure.
   - Audit trail in immutable event ledger recording intent, approval, dispatch, and verification outcomes without credential leaks.
   - Read-only planning endpoint (`POST /api/homeassistant/actuation/plan`) and execution proposal endpoint (`POST /api/homeassistant/actuation/propose`).
+  - Commissioning & Readiness Gate: Read-only preflight evaluation via CLI (`python -m pico.homeassistant.readiness`), REST API (`GET /api/homeassistant/actuation/readiness`), and tool capability (`homeassistant.actuation_readiness`). Inspects integration configuration, target test light domain constraints, approval credential presence without value revelation, fail-closed authorization availability, transport security, and actuation-disabled-by-default safety invariants. Strictly zero mutation calls, zero unsolicited network calls during offline preflight, and explicit operator opt-in required for live read-only inspection.
 - [ ] **P7.4 Stage C/D Everyday Appliances**: Authorized switches, plugs, and climate controls.
-- **Status**: **STAGE A & STAGE B (P7.1, P7.2, P7.3) COMPLETED & VERIFIED; P7.4 PLANNED**.
+- **Status**: **STAGE A & STAGE B (P7.1, P7.2, P7.3 COMMISSIONING READINESS) COMPLETED & VERIFIED; P7.4 PLANNED**.
+
 
 ### Milestone P8: Computer Control & Engineering Workspace
 - [ ] **P8.1 OS & Application Automation**: Sandboxed application launching and window state inspection.

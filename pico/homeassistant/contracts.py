@@ -88,3 +88,28 @@ class TestLightActuationResult(BaseModel):
     verification_details: dict[str, Any] = Field(default_factory=dict)
     message: str
     physical_device_connectivity_claimed: bool = False
+
+
+class ReadinessCheckStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    NOT_CHECKED = "NOT_CHECKED"
+
+
+class ReadinessCheckItem(BaseModel):
+    name: str
+    status: ReadinessCheckStatus
+    message: str
+    remediation: str | None = None
+
+
+class ActuationReadinessReport(BaseModel):
+    ready_for_commissioning: bool = False
+    target_entity_id: str | None = None
+    live_check_performed: bool = False
+    live_passed: bool | None = None
+    reported_state: str | None = None
+    actuation_enabled: bool = False
+    checks: list[ReadinessCheckItem] = Field(default_factory=list)
+    summary: str
