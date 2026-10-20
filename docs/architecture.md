@@ -284,10 +284,17 @@ sequenceDiagram
 ### 4.7 Home Automation & Physical Actuation (Home Assistant)
 - Home Assistant REST/WebSocket API as the sole integration hub.
 - Phased Progression:
-  - **Stage A (Read-Only Awareness)**: Discover entities, inspect states, report sensor readings without mutating state.
-  - **Stage B (First End-to-End Control)**: Harmless single light toggle through the complete loop (Intent -> Context -> Plan -> Approval -> Act -> State Verification -> Event Ledger).
-  - **Stage C (Everyday Appliances)**: Authorized lights, switches, smart plugs.
-  - **Stage D (Complex Household Control)**: Scenes, thermostats, climate controls with physical consequence modeling.
+  - **Stage A (Read-Only Awareness — Verified in Milestone P7.1 & P7.2)**:
+    - **Hub Connector (`HomeAssistantClient`)**: Authenticated REST transport (`GET /api/`, `GET /api/states`, `GET /api/states/{id}`) and pure-Python asyncio WebSocket transport (`ws://host:port/api/websocket`).
+    - **Protocol Invariants**: Strict read-only command allowlist (`get_states`, `get_config`, `ping`, controlled `subscribe_events`). Rejects any mutation or generic execution command.
+    - **Safe Configuration**: Disabled by default (`HOME_ASSISTANT_ENABLED=false`). Dedicated token configuration. Base URL validation prevents SSRF or arbitrary URL fetching. Zero token leakage across redirects, logs, or error envelopes.
+    - **Trusted Classification**: Household observations are strictly classified as at least `INTERNAL`. Sensitive domains (`lock`, `alarm_control_panel`, `camera`, `person`, `device_tracker`, and entry-point `binary_sensor`) are classified as `SENSITIVE`. Caller has zero authority to downgrade home state to `PUBLIC`. Strictly pinned to local execution under PICO's privacy gate.
+    - **Bounded State Reads**: Transient in-memory state reads; GPS coordinates, tokens, and personal identifiers are scrubbed. No permanent tracking database in Stage A.
+    - **Read-Only Capabilities**: Registered in `CapabilityRegistry` under `RiskTier.READ_ONLY` (`homeassistant.status`, `homeassistant.list_entities`, `homeassistant.get_entity_state`, `homeassistant.overview`). Verifier rejects any false claim of physical device connectivity.
+    - **Absolute Read-Only Boundary**: Zero actuation, service calls (`call_service`), or state mutation paths exist.
+  - **Stage B (First End-to-End Control — Planned for P7.3)**: Harmless single light toggle through the complete loop (Intent -> Context -> Plan -> Approval -> Act -> State Verification -> Event Ledger).
+  - **Stage C (Everyday Appliances — Planned for P7.4)**: Authorized lights, switches, smart plugs.
+  - **Stage D (Complex Household Control — Planned)**: Scenes, thermostats, climate controls with physical consequence modeling.
 - Security-sensitive actuators (door locks, security systems) remain **NOTIFY-ONLY** / blocked under current policy.
 
 ### 4.8 Independent Verifier & Event Ledger

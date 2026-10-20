@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from pico.api.chat import router as chat_router
 from pico.api.conversations import router as conversations_router
 from pico.api.health import router as health_router
+from pico.api.homeassistant import router as homeassistant_router
 from pico.api.memory import router as memory_router
 from pico.api.perception import router as perception_router
 from pico.api.projects import router as projects_router
@@ -166,3 +167,4 @@ app.include_router(chat_router)
 app.include_router(memory_router)
 app.include_router(tools_router)
 app.include_router(perception_router)
+app.include_router(homeassistant_router)

@@ -83,11 +83,11 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - **Status**: **CLOSED & FULLY VERIFIED** (174 total passing tests, 23 dedicated P6 tests, 0 failures).
 
 ### Milestone P7: Home Automation & Physical Actuation
-- [ ] **P7.1 Home Assistant Hub Connector**: REST/WebSocket integration with entity discovery.
-- [ ] **P7.2 Stage A Read-Only Awareness**: Inspect and report states without mutating devices.
+- [x] **P7.1 Home Assistant Hub Connector**: Authenticated REST and pure-Python asyncio WebSocket client with fail-closed URL validation, token protection, request/response correlation, and strict read-only command allowlisting. Zero new external dependencies.
+- [x] **P7.2 Stage A Read-Only Awareness**: Read-only entity discovery (`GET /api/homeassistant/entities`), single entity state inspection (`GET /api/homeassistant/entities/{id}`), bounded overview (`GET /api/homeassistant/overview`), trusted classification (`INTERNAL`/`SENSITIVE`), context compiler integration (`format_homeassistant_context_items`), and tool capabilities (`homeassistant.status`, `homeassistant.list_entities`, `homeassistant.get_entity_state`, `homeassistant.overview`). Absolute read-only boundary enforced: zero actuation or state mutation paths.
 - [ ] **P7.3 Stage B Verified Light Toggle**: Intent -> Plan -> Approval -> Act -> State Verification -> Event Ledger.
 - [ ] **P7.4 Stage C/D Everyday Appliances**: Authorized switches, plugs, and climate controls.
-- **Status**: **PLANNED**.
+- **Status**: **STAGE A VERIFIED (P7.1 & P7.2 COMPLETED; P7.3 & P7.4 PLANNED)**.
 
 ### Milestone P8: Computer Control & Engineering Workspace
 - [ ] **P8.1 OS & Application Automation**: Sandboxed application launching and window state inspection.
