@@ -97,9 +97,22 @@ class ReadinessCheckStatus(str, Enum):
     NOT_CHECKED = "NOT_CHECKED"
 
 
+class ReadinessErrorCategory(str, Enum):
+    INVALID_URL = "INVALID_URL"
+    INSECURE_TRANSPORT = "INSECURE_TRANSPORT"
+    CONNECTION_FAILED = "CONNECTION_FAILED"
+    AUTHENTICATION_REJECTED = "AUTHENTICATION_REJECTED"
+    ENTITY_NOT_FOUND = "ENTITY_NOT_FOUND"
+    MISSING_CONFIGURATION = "MISSING_CONFIGURATION"
+    INVALID_ENTITY = "INVALID_ENTITY"
+    AUTHORIZATION_UNAVAILABLE = "AUTHORIZATION_UNAVAILABLE"
+    ACTUATION_ENABLED = "ACTUATION_ENABLED"
+
+
 class ReadinessCheckItem(BaseModel):
     name: str
     status: ReadinessCheckStatus
+    error_category: ReadinessErrorCategory | None = None
     message: str
     remediation: str | None = None
 

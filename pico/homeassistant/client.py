@@ -72,23 +72,38 @@ class HomeAssistantClient:
 
     @staticmethod
     def _validate_and_sanitize_url(url: str, allow_insecure_transport: bool = False) -> str:
-        parsed = urlparse(url)
-        scheme = parsed.scheme.lower()
+        if not url or not url.strip():
+            raise ValidationError("Invalid Home Assistant base URL: URL cannot be empty.")
+
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            raise ValidationError("Invalid Home Assistant base URL: malformed URL syntax.")
+
+        scheme = (parsed.scheme or "").lower()
         if scheme not in ("http", "https"):
             raise ValidationError(f"Invalid Home Assistant base URL scheme '{scheme}'. Must be http or https.")
-        if not parsed.hostname:
-            raise ValidationError(f"Invalid Home Assistant base URL '{url}'. Missing host.")
 
         # Reject query parameters and fragments that could alter target or confuse URL resolution
         if parsed.query or parsed.fragment:
-            raise ValidationError(f"Invalid Home Assistant base URL '{url}'. Query parameters and fragments are prohibited.")
+            raise ValidationError("Invalid Home Assistant base URL: query parameters and fragments are prohibited.")
 
         # Validate port
-        port = parsed.port
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ValidationError("Invalid Home Assistant base URL: malformed port specification.")
+
         if port is not None and (port < 1 or port > 65535):
             raise ValidationError(f"Invalid Home Assistant port {port}. Must be between 1 and 65535.")
 
-        host = parsed.hostname
+        try:
+            host = parsed.hostname
+        except ValueError:
+            raise ValidationError("Invalid Home Assistant base URL: malformed host specification.")
+
+        if not host:
+            raise ValidationError("Invalid Home Assistant base URL: missing host.")
 
         # Enforce transport security policy
         if scheme == "http" and not is_loopback_host(host):
@@ -103,6 +118,7 @@ class HomeAssistantClient:
         if port:
             clean_netloc = f"{clean_netloc}:{port}"
         return f"{scheme}://{clean_netloc}"
+
 
     def _get_headers(self) -> dict[str, str]:
         if not self._access_token or not self._access_token.strip():
