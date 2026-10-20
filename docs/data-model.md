@@ -265,3 +265,26 @@ The following entities are planned for subsequent phases and do NOT form part of
   - `actor` (VARCHAR(128)): Initiating actor (e.g. `system`, `lead_engineer`, `caller`).
   - `payload_json` (JSON): Sanitized event payload with automatic credential/secret redaction.
   - `created_at` (DATETIME, INDEX): UTC timestamp.
+
+---
+
+## 7. Multimodal Perception Subsystem (Implemented in Milestone P6)
+
+### 7.1 `perception_events` (Normalized Multimodal Perception Log)
+- Bounded, scrubbed persistence for normalized multimodal events across all 4 perception domains: `audio`, `vision`, `motion`, `environmental`.
+- Invariant: Never stores raw audio PCM, raw video, or unapproved full images. `raw_payload_scrubbed` is enforced true.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `pevt_<uuid>`.
+  - `correlation_id` (VARCHAR(64), NULLABLE, INDEX): Trace correlation across multi-modal observation windows.
+  - `session_id` (VARCHAR(64), NULLABLE, INDEX): Optional active audio/vision capture session reference.
+  - `modality` (VARCHAR(32), NOT NULL, INDEX): One of `audio`, `vision`, `motion`, `environmental`.
+  - `event_type` (VARCHAR(64), NOT NULL, INDEX): Domain event classification (e.g., `speech_transcribed`, `image_snapshot`, `pir_motion_detected`, `movement_interpreted`, `environmental_reading`).
+  - `source_device_id` (VARCHAR(128), NOT NULL, INDEX): Originating physical or synthetic sensor/device identifier.
+  - `data_classification` (VARCHAR(32), NOT NULL, DEFAULT `'INTERNAL'`): Security classification tag (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`).
+  - `confidence` (FLOAT, NOT NULL, DEFAULT 1.0): Calibrated confidence score bounded strictly between 0.0 and 1.0.
+  - `raw_payload_scrubbed` (BOOLEAN, NOT NULL, DEFAULT TRUE): Cryptographic assertion that raw transient buffers have been discarded.
+  - `structured_data` (JSON, NOT NULL): Extracted typed telemetry, transcription, or motion characteristics.
+  - `provenance` (VARCHAR(255), NOT NULL): Relational source attribution URI.
+  - `retention_policy` (VARCHAR(32), NOT NULL, DEFAULT `'standard'`): Lifecycle retention tier (`transient`, `standard`, `durable`).
+  - `parent_event_id` (VARCHAR(64), FK `perception_events.id`, ON DELETE SET NULL, NULLABLE, INDEX): Parent event for fused/correlated observations.
+  - `created_at` (DATETIME, NOT NULL, INDEX): Monotonic UTC timestamp.

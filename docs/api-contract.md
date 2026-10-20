@@ -462,6 +462,63 @@
 
 ---
 
+### 2.8 Multimodal Perception API (Milestone P6)
+
+- **`GET /api/perception/status`**
+  - **Description**: Returns operational readiness, active capture states, and local runtime availability across all 4 perception domains (`audio`, `vision`, `motion`, `environmental`).
+  - **Response (200 OK)**: `PerceptionSubsystemStatus`
+
+- **`POST /api/perception/audio/session/start`**
+  - **Description**: Explicit push-to-talk microphone capture session start. Enforces mandatory user consent (`user_consent=True`). Microphone is NEVER activated automatically.
+  - **Request Body**: `AudioSessionStartRequest` (`user_consent`, optional `source_device`, `metadata`).
+  - **Response (201 Created)**: `AudioSessionStartResponse`
+
+- **`POST /api/perception/audio/session/{session_id}/stop`**
+  - **Description**: Terminates active push-to-talk recording, executes local provider-neutral speech-to-text transcription, emits a normalized perception event, and scrubs raw PCM audio buffers.
+  - **Request Body**: `AudioSessionStopRequest` (optional `audio_base64`, `audio_format`, `client_duration_seconds`).
+  - **Response (200 OK)**: `AudioSessionStopResponse`
+
+- **`POST /api/perception/audio/session/{session_id}/cancel`**
+  - **Description**: Cooperatively aborts an active audio recording session, immediately releasing all transient audio buffers.
+  - **Response (200 OK)**: `AudioSessionStartResponse`
+
+- **`POST /api/perception/audio/synthesize`**
+  - **Description**: Local text-to-speech synthesis through provider-neutral TTS adapter.
+  - **Request Body**: `AudioSynthesisRequest` (`text`, optional `voice_id`, `speed`).
+  - **Response (200 OK)**: `AudioSynthesisResponse`
+
+- **`POST /api/perception/vision/capture`**
+  - **Description**: On-demand visual frame ingestion (user upload, explicit screenshot, or consensual camera snapshot). Validates payload size (max 4 MB) and dimensions (max 4096x4096). Discards raw pixel frames after feature/scene extraction.
+  - **Request Body**: `VisionCaptureRequest` (`source_type`, `image_base64`, `image_format`, `user_consent`, optional `source_device`, `metadata`).
+  - **Response (200 OK)**: `VisionCaptureResponse`
+
+- **`POST /api/perception/motion/pir`**
+  - **Description**: Ingest binary PIR sensor trigger (Tier 1 motion detection). Restricts inference to motion presence/clearance; strictly refuses to infer direction or identity without visual corroboration.
+  - **Request Body**: `MotionIngestRequest` (`source_device`, optional `motion_detected`, `confidence`, `data_classification`).
+  - **Response (201 Created)**: `NormalizedPerceptionEvent`
+
+- **`POST /api/perception/motion/interpret`**
+  - **Description**: Tier 2 movement interpretation using deterministic CPU frame-differencing between two short-lived frames. Computes delta pixel ratio, centroid displacement, direction (`stationary`, `approaching`, `retreating`, `left`, `right`, `up`, `down`), and magnitude.
+  - **Request Body**: `MovementInterpretationRequest` (`frame_a_base64`, `frame_b_base64`, optional `source_device`, `sensitivity_threshold`).
+  - **Response (200 OK)**: `MovementInterpretationResponse`
+
+- **`POST /api/perception/motion/correlate`**
+  - **Description**: Tier 3 cross-modal interpretation linking related perception events (e.g., PIR motion + door contact) across a configurable temporal window. Preserves underlying event provenance and uncertainty.
+  - **Request Body**: `CrossModalCorrelationRequest` (`target_event_id`, optional `time_window_seconds`).
+  - **Response (200 OK)**: `CrossModalCorrelationResponse`
+
+- **`POST /api/perception/environmental/ingest`**
+  - **Description**: Read-only environmental telemetry ingestion (temperature, humidity, ambient lux, contact state, AQI, battery). Validates bounds, enforces per-sensor deduplication cooldown, and asserts read-only constraints (no physical actuator triggers).
+  - **Request Body**: `EnvironmentalIngestRequest`.
+  - **Response (200 OK)**: `EnvironmentalIngestResponse`
+
+- **`GET /api/perception/events`**
+  - **Description**: Query recent normalized perception events with bounded limit and optional modality filter.
+  - **Query Parameters**: `limit` (1-100, default 20), `modality` (optional).
+  - **Response (200 OK)**: List of `NormalizedPerceptionEvent`
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:

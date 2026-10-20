@@ -3,6 +3,7 @@ from pico.repositories.conversation_repo import ConversationRepository
 from pico.repositories.episodic_memory_repo import EpisodicMemoryRepository
 from pico.repositories.event_ledger_repo import EventLedgerRepository
 from pico.repositories.message_repo import MessageRepository
+from pico.repositories.perception_event_repo import PerceptionEventRepository
 from pico.repositories.procedural_memory_repo import ProceduralMemoryRepository
 from pico.repositories.project_repo import ProjectRepository
 from pico.repositories.routing_decision_repo import RoutingDecisionRepository
@@ -24,4 +25,5 @@ __all__ = [
     "ProceduralMemoryRepository",
     "ToolExecutionRepository",
     "EventLedgerRepository",
+    "PerceptionEventRepository",
 ]

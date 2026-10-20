@@ -163,45 +163,52 @@ sequenceDiagram
 
 ## 4. Subsystem Specifications
 
-### 4.1 Multimodal Perception Layer (PICO's Senses)
+### 4.1 Multimodal Perception Layer (Implemented in Milestone P6)
 1. **Audio (Hearing & Speaking)**:
-   - Push-to-Talk (PTT) input mode as primary, privacy-preserving interface.
-   - Local Speech-to-Text (STT) and Text-to-Speech (TTS).
-   - Clear visual indicators when microphone input is active.
-   - Text chat remains 100% usable when audio subsystem is inactive or disabled.
+   - Push-to-Talk (PTT) input mode as primary, privacy-preserving interface (`AudioSessionManager`).
+   - Provider-neutral STT and TTS adapters (`BaseSpeechToTextAdapter`, `BaseTextToSpeechAdapter`).
+   - Honest availability reporting: missing local STT/TTS model runtimes (e.g. whisper/piper) report `state="unavailable"`; no silent cloud fallback. Mock adapters provided for deterministic offline unit testing.
+   - Observable capture lifecycle states: `disabled`, `ready`, `capturing`, `processing`, `completed`, `cancelled`, `failed`, `unavailable`.
+   - Text chat remains 100% functional when audio subsystem is disabled or unavailable.
    - Wake-word detection deferred until explicit resource and privacy benchmarking passes.
+   - Immediate disposal of raw audio PCM; zero raw recordings persisted by default.
 2. **Vision (Seeing & Interpreting)**:
-   - On-demand screen capture and user-submitted image analysis.
-   - On-demand webcam snapshots with explicit user consent and visible status.
-   - Scene change detection and optical character recognition (OCR).
-   - Cameras are **OFF by default**; frames discarded immediately after processing unless explicit retention is authorized.
-   - No covert monitoring, persistent biometric facial recognition, or unauthorized capture.
+   - On-demand visual frame ingestion (`VisionAdapter`) for user uploads, explicit screenshots, or consensual camera snapshots.
+   - Mandatory triggering action and consent token (`user_consent=True`); cameras are strictly **OFF by default**.
+   - Input bounds: Max 4 MB payload, max 4096×4096 dimensions; pure-Python binary header parsers for PNG, BMP, PPM, and JPEG.
+   - Ephemeral processing: Transient pixel buffers released immediately after feature/scene extraction; zero persistent image retention by default.
+   - No covert monitoring, continuous background capture, biometric tracking, or facial identification.
 3. **Movement & Physical Motion**:
-   - Ingestion of motion events (PIR sensors, camera frame-differencing).
-   - Three distinct capability tiers: (1) Motion Detection, (2) Movement Interpretation, (3) Cross-Modal Interpretation.
-   - Confidence scoring and source provenance on all motion inferences; low-confidence detections are never converted into facts.
+   - Three distinct capability tiers implemented in `MotionAdapter`:
+     - **Tier 1 (Motion Detection)**: Bounded binary PIR sensor events. Strictly restricted to motion presence/clearance; refuses to invent unsupported direction or identity.
+     - **Tier 2 (Movement Interpretation)**: Deterministic CPU-friendly grayscale frame-differencing between short-lived frames. Computes delta pixel ratio, centroid displacement, direction (`stationary`, `approaching`, `retreating`, `left`, `right`, `up`, `down`), and magnitude (`none`, `subtle`, `moderate`, `significant`).
+     - **Tier 3 (Cross-Modal Interpretation)**: `CrossModalCorrelator` correlating related observations (e.g. PIR motion + contact sensor) within a configurable temporal window (default 5.0s), preserving underlying source references, timestamps, and uncertainty.
 4. **Environmental & Telemetry Sensors**:
-   - Temperature, humidity, ambient light, door/window contacts, air quality, device battery/power telemetry.
-   - Gateway adapters for Home Assistant REST/WebSocket, MQTT, and ESP32 nodes.
-   - Offline test doubles and mock sensor drivers for complete offline testing.
-5. **Sensor Event Normalization & Fusion**:
-   - Shared Event Contract:
+   - Provider-neutral read-only ingestion (`EnvironmentalAdapter`) for MQTT, ESP32, and Home Assistant telemetry: temperature, humidity, ambient lux, contact state, air quality (AQI), battery/power.
+   - Bounded schema validation and per-source deduplication cooldowns (suppresses duplicate readings within configurable window).
+   - Strict read-only mode: Cannot operate physical switches, locks, alarms, or execute actuator services (physical actuation is strictly reserved for Milestone P7).
+5. **Canonical Event Normalization, Persistence & Integration**:
+   - Shared Canonical Event Contract (`NormalizedPerceptionEvent`):
      ```python
      class NormalizedPerceptionEvent(BaseModel):
-         event_id: str
-         correlation_id: str
-         timestamp: datetime
-         modality: str  # audio, vision, motion, environmental
+         event_id: str                  # Stable pevt_<uuid>
+         correlation_id: str | None
+         session_id: str | None
+         timestamp: datetime            # UTC timestamp
+         modality: Modality             # audio, vision, motion, environmental
          event_type: str
          source_device_id: str
-         data_classification: str  # PUBLIC, INTERNAL, SENSITIVE, SECRET
-         confidence: float
-         raw_payload_scrubbed: bool
+         data_classification: str       # Default INTERNAL; non-PUBLIC never sent to cloud
+         confidence: float              # Calibrated 0.0 - 1.0
+         raw_payload_scrubbed: bool     # Enforced True
          structured_data: dict[str, Any]
          provenance: str
-         retention_policy: str
+         retention_policy: RetentionPolicy
+         parent_event_id: str | None
      ```
-   - Deduplication, rate-limiting, and sensor cooldowns. Perception events cannot authorize actions on their own.
+   - Persisted via `PerceptionEventRepository` to dedicated SQLite table `perception_events` (reversible Alembic migration `4e195bc031da`).
+   - Context Compiler integration: Formats recent events into `ContextItem` (role: `system`, priority: 45) pruned under budget pressure before mandatory rules (100) or user turns (90).
+   - Tool Engine integration: Read-only capabilities (`perception.status`, `perception.get_recent_events`, `perception.validate_sensor_payload`, `perception.analyze_motion`) registered with `RiskTier.READ_ONLY`. Invariant: A perception event never authorizes tool execution on its own.
 
 ### 4.2 Semantic Context Layer (Onix Wingspan 2.0 Reference)
 - Inspired by Wingspan's Semantic Twin and shared intelligence fabric.
