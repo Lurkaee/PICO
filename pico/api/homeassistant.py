@@ -1,15 +1,25 @@
-from fastapi import APIRouter, Depends, Header, Query, Request
+from typing import Literal
+from fastapi import APIRouter, Depends, Header, Query, Request, status
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from pico.capabilities.registry import registry
 from pico.core.config import settings
-from pico.core.errors import AuthorizationError
+from pico.core.errors import AuthorizationError, EntityNotFoundError
+from pico.db.session import get_db
+from pico.homeassistant.actuation import HomeAssistantActuationService
 from pico.homeassistant.contracts import (
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
     HomeAssistantStatus,
+    TestLightActuationPlan,
 )
 from pico.homeassistant.service import HomeAssistantService
 from pico.homeassistant.ws_client import is_loopback_host
+from pico.repositories.tool_execution_repo import ToolExecutionRepository
+from pico.schemas.tools import ToolExecutionResponse
+from pico.services.execution_engine import ToolExecutionEngine
 
 
 def verify_household_access(
@@ -76,3 +86,100 @@ async def get_homeassistant_overview(
     """Retrieve a bounded smart-home state overview suitable for situational awareness."""
     service = HomeAssistantService()
     return await service.get_overview(domains=domains)
+
+
+# --- Milestone P7.3 Physical Actuation Operations ---
+
+class TestLightPlanRequest(BaseModel):
+    target_state: Literal["on", "off"] = Field(
+        description="Explicit target state: 'on' or 'off'. Toggle is strictly prohibited."
+    )
+    target_entity_id: str | None = Field(
+        default=None,
+        description="Optional target entity ID. If supplied, must match the configured test light.",
+    )
+
+
+class TestLightProposeRequest(BaseModel):
+    target_state: Literal["on", "off"] = Field(
+        description="Explicit target state: 'on' or 'off'. Toggle is strictly prohibited."
+    )
+    target_entity_id: str | None = Field(
+        default=None,
+        description="Optional target entity ID. If supplied, must match the configured test light.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Optional human-readable reason for the action proposal.",
+    )
+
+
+@router.post(
+    "/actuation/plan",
+    response_model=TestLightActuationPlan,
+    summary="Create a structured test-light action plan (read-only, no mutation)",
+)
+async def plan_test_light_actuation(
+    payload: TestLightPlanRequest,
+) -> TestLightActuationPlan:
+    """Create a structured action plan for the single configured test light.
+
+    This operation performs read-only inspection of the current entity state.
+    It NEVER causes a physical action or service dispatch.
+    """
+    service = HomeAssistantActuationService()
+    return await service.create_plan(
+        target_state=payload.target_state,
+        target_entity_id=payload.target_entity_id,
+    )
+
+
+@router.post(
+    "/actuation/propose",
+    response_model=ToolExecutionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Propose an actuation execution (created in awaiting_approval status)",
+)
+def propose_test_light_actuation(
+    payload: TestLightProposeRequest,
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Propose an actuation of the configured test light.
+
+    Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
+    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    """
+    if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+        raise AuthorizationError(
+            "Physical actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
+        )
+
+    engine = ToolExecutionEngine(db, registry)
+    execution = engine.submit(
+        capability_id="homeassistant.test_light_actuate",
+        input_data={
+            "target_state": payload.target_state,
+            "target_entity_id": payload.target_entity_id,
+            "reason": payload.reason,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+    return ToolExecutionResponse.model_validate(execution)
+
+
+@router.get(
+    "/actuation/{execution_id}",
+    response_model=ToolExecutionResponse,
+    summary="Inspect approval and verification status of an actuation execution",
+)
+def get_actuation_status(
+    execution_id: str,
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Inspect the execution record, human approval ticket, and independent verification outcome."""
+    repo = ToolExecutionRepository(db)
+    execution = repo.get_by_id(execution_id)
+    if not execution or execution.capability_id != "homeassistant.test_light_actuate":
+        raise EntityNotFoundError("ActuationExecution", execution_id)
+    return ToolExecutionResponse.model_validate(execution)

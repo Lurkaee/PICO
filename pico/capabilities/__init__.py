@@ -16,6 +16,9 @@ from pico.capabilities.homeassistant.ha_capabilities import (
     HomeAssistantOverviewCapability,
     HomeAssistantStatusCapability,
 )
+from pico.capabilities.homeassistant.ha_actuation import (
+    HomeAssistantTestLightActuationCapability,
+)
 from pico.capabilities.perception.perception_capabilities import (
     PerceptionAnalyzeMotionCapability,
     PerceptionGetRecentEventsCapability,
@@ -53,6 +56,7 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(HomeAssistantListEntitiesCapability())
     reg.register(HomeAssistantGetEntityStateCapability())
     reg.register(HomeAssistantOverviewCapability())
+    reg.register(HomeAssistantTestLightActuationCapability())
 
 
 # Automatically populate the default registry
@@ -86,4 +90,5 @@ __all__ = [
     "HomeAssistantListEntitiesCapability",
     "HomeAssistantGetEntityStateCapability",
     "HomeAssistantOverviewCapability",
+    "HomeAssistantTestLightActuationCapability",
 ]

@@ -225,17 +225,31 @@ Safely orchestrates hardware benchmarks:
 
 ---
 
-## Home Assistant Integration (Milestone P7 Stage A)
+## Home Assistant Integration (Milestones P7.1, P7.2 & P7.3)
 
-PICO integrates with Home Assistant as a local read-only hub for situational awareness:
-- **Strictly Disabled by Default**: Set `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_BASE_URL`, and `HOME_ASSISTANT_ACCESS_TOKEN` in `.env` to enable.
-- **REST & Pure-Python WebSocket Clients**:
+PICO integrates with Home Assistant as a local smart-home hub for situational awareness and bounded, verified physical actuation:
+- **Strictly Disabled by Default**:
+  - Read-Only: Set `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_BASE_URL`, and `HOME_ASSISTANT_ACCESS_TOKEN` in `.env` to enable read-only discovery.
+  - Physical Actuation: Set `HOME_ASSISTANT_ACTUATION_ENABLED=true` and `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID` (must be a single entity in the `light` domain).
+- **REST & Pure-Python WebSocket Clients (Stage A Read-Only Awareness)**:
   - `GET /api/homeassistant/status` — Inspect integration health and connection state.
   - `GET /api/homeassistant/entities` — Discover entities and reported states with sanitized attributes.
   - `GET /api/homeassistant/entities/{entity_id}` — Inspect a specific entity.
   - `GET /api/homeassistant/overview` — Bounded smart-home summary for assistant awareness.
-- **Absolute Read-Only Boundary**: Stage A only reads state. Zero actuation or service-call (`call_service`) paths exist.
-- **Trusted Privacy Gate**: Household data defaults to `INTERNAL` (or `SENSITIVE` for locks, alarms, cameras, and entry points). Never sent to cloud models.
+  - WebSocket command allowlist strictly enforced: `get_states`, `get_config`, `ping`. Zero mutation over WebSocket.
+- **First Verified Physical Action (Milestone P7.3 Single Test Light)**:
+  - `POST /api/homeassistant/actuation/plan` — Strictly read-only planning endpoint to inspect proposed actuation without side effects.
+  - `POST /api/homeassistant/actuation/propose` — Proposes an actuation execution requiring valid `X-Pico-Approval-Token`.
+  - `GET /api/homeassistant/actuation/{execution_id}` — Inspects actuation execution status and verification proof.
+  - Dedicated capability `homeassistant.test_light_actuate` with risk tier `HIGH` and `consequential=True`.
+- **Fail-Closed Physical Actuation Guardrails**:
+  - **Single Entity & Actions**: Only controls `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID` with `turn_on` or `turn_off`. Any other entity or action (including `toggle` or non-light domains) fails closed.
+  - **Server-Side Token Authentication**: Physical proposal, approval, and execution require `X-Pico-Approval-Token` matching server `APPROVAL_SECRET_TOKEN`. Loopback callers are NOT exempt.
+  - **Dedicated Permission**: Requires `homeassistant:actuate`, which is strictly excluded from generic default tool permissions.
+  - **Triple-Digest Integrity**: Persisted input recomputed SHA-256 == stored execution digest == approval bound digest verified immediately before mutation dispatch.
+  - **Single-Use Replay Protection**: Approvals are single-use; any duplicate or replayed dispatch fails closed with `AuthorizationError`.
+  - **Zero Blind Retries**: Independent read-after-write verification polling via read-only state API; never automatically retries a mutation on timeout or failure.
+  - **Trusted Privacy Gate**: Household data defaults to `INTERNAL` (or `SENSITIVE` for locks, alarms, cameras, and entry points). Never sent to cloud models.
 
 ---
 

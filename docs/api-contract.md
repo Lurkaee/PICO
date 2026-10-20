@@ -548,6 +548,34 @@
 
 ---
 
+### 2.9 Home Assistant Physical Actuation (Milestone P7.3)
+
+**Operational Invariants & Safety Constraints**:
+- **Strictly Single Test Light**: Physical actuation is strictly constrained to the single entity specified by `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID` (domain must be `light`). Arbitrary entities, caller-provided target overrides, and all other domains (locks, alarms, covers, garage doors, cameras, thermostats, scripts, scenes) are strictly prohibited.
+- **Explicit Actuation Opt-In**: Actuation remains unavailable unless `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_ENABLED=true`, access token is configured, and test light entity ID is valid.
+- **Fail-Closed Authorization Boundary**: Physical actuation requests must fail closed when `APPROVAL_SECRET_TOKEN` is unset, missing, invalid, or mismatched. This applies to loopback callers as well as remote requests; local requests are not silently bypassed.
+- **Mandatory Single-Use Approval Bound to Triple-Digest**: Every state mutation requires explicit human approval bound to the SHA-256 canonical digest. Immediately before dispatch, PICO requires agreement across (1) recomputed digest from persisted input, (2) stored input digest, and (3) approved execution digest. Approval tickets are single-use and cannot be replayed or re-executed.
+- **Read-After-Write Independent Verification**: Service calls are acknowledged via authenticated REST POST (`/api/services/light/turn_on` or `turn_off`). Mutation acknowledgment alone is never treated as success. Bounded read-only polling (`client.get_state`) must verify reported state matches target state.
+- **No Automatic Retries**: Timeouts, network errors, or verification failures never trigger repeated mutation attempts automatically. Uncertainty is reported truthfully.
+- **Mock vs. Physical Device Separation**: Current automated tests execute against deterministic synthetic transports. Software verification does not claim physical device connectivity (`physical_device_connectivity_claimed=false`).
+
+- **`POST /api/homeassistant/actuation/plan`**
+  - **Description**: Inspects current reported state of the configured test light and creates a structured action plan without causing any physical action (strictly read-only).
+  - **Request Body**: `TestLightPlanRequest` (`target_state: Literal["on", "off"]`, optional `target_entity_id`).
+  - **Response (200 OK)**: `TestLightActuationPlan` (`plan_id`, `entity_id`, `requested_state`, `current_state`, `service`, `is_mutation_needed`, `preconditions`, `expected_postconditions`, `input_digest`, `expires_at`, `data_classification`).
+
+- **`POST /api/homeassistant/actuation/propose`**
+  - **Description**: Proposes an actuation execution for the configured test light. Creates a `ToolExecution` in `awaiting_approval` status bound to SHA-256 digest. Fails closed without valid `X-Pico-Approval-Token`. Never executes mutation automatically.
+  - **Request Body**: `TestLightProposeRequest` (`target_state: Literal["on", "off"]`, optional `target_entity_id`, optional `reason`).
+  - **Headers**: `X-Pico-Approval-Token` (mandatory).
+  - **Response (201 Created)**: `ToolExecutionResponse` (status: `awaiting_approval`).
+
+- **`GET /api/homeassistant/actuation/{execution_id}`**
+  - **Description**: Inspect approval state, execution status, and independent verification outcome of an actuation execution.
+  - **Response (200 OK)**: `ToolExecutionResponse`.
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:

@@ -403,10 +403,17 @@ Target Environment:
 - *Status*: **PLANNED**.
 
 ### Milestone P7: Home Automation & Physical Actuation
-- Home Assistant REST/WebSocket integration hub.
-- Stage A (Read-only awareness) -> Stage B (Verified light toggle) -> Stage C (Switches/plugs) -> Stage D (Climate).
-- Post-action state verification and Event Ledger recording.
-- *Status*: **PLANNED**.
+- **P7.1 Home Assistant Hub Connector**: Authenticated REST and WebSocket client with token protection, request/response correlation, and strict read-only command allowlist.
+- **P7.2 Stage A Read-Only Awareness**: Safe entity discovery, state inspection, bounded overview, and trusted privacy tagging (`INTERNAL`/`SENSITIVE`).
+- **P7.3 First Verified Physical Action (Single Test Light)**:
+  - Scope: Strictly limited to a single configured entity in the `light` domain (`HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID`) and explicit `turn_on` / `turn_off` intents.
+  - Fail-Closed Authorization: Requires server-side `APPROVAL_SECRET_TOKEN` validation via `X-Pico-Approval-Token` header. No loopback bypass for physical actuation. `homeassistant:actuate` is separate from default tool permissions.
+  - Triple-Digest Integrity: Persisted input recomputed SHA-256 == stored execution digest == approval bound digest verified immediately before dispatch.
+  - Single-Use Replay Protection: Approval ticket is marked consumed upon transition to running; replay/duplicate attempts fail closed.
+  - Bounded Execution & Independent Verification: Narrow REST mutation path followed by independent read-only state polling. Zero automatic mutation retries on error or timeout.
+  - Audit Trail: Immutable event ledger recording of intent, execution, authorization, dispatch, and verification outcomes without credential leaks.
+- **P7.4 Stage C/D Everyday Appliances**: Authorized switches, plugs, and climate controls.
+- *Status*: **STAGE A (P7.1/P7.2) & STAGE B (P7.3) VERIFIED; P7.4 PLANNED**.
 
 ### Milestone P8: Computer Control & Engineering Workspace
 - Sandboxed desktop application and window inspection.

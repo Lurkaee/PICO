@@ -91,10 +91,11 @@ def get_capability(capability_id: str) -> CapabilityResponse:
 async def submit_execution(
     payload: ToolExecutionCreate,
     execute_now: bool = Query(default=True, description="Immediately execute if non-consequential and queued"),
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
-    # Default local dev permissions grant all tool scopes
+    # Default local dev permissions grant standard development scopes (NEVER physical actuation)
     default_perms = {
         "tools:calculate",
         "tools:validate",
@@ -104,6 +105,12 @@ async def submit_execution(
         "test:execute",
         "admin:consequential",
     }
+    effective_perms = set(default_perms)
+    # Physical actuation requires verified server-side APPROVAL_SECRET_TOKEN to grant permission
+    if payload.capability_id == "homeassistant.test_light_actuate":
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("homeassistant:actuate")
+
     execution = engine.submit(
         capability_id=payload.capability_id,
         input_data=payload.input_data,
@@ -111,12 +118,12 @@ async def submit_execution(
         task_id=payload.task_id,
         session_id=payload.session_id,
         idempotency_key=payload.idempotency_key,
-        caller_permissions=default_perms,
+        caller_permissions=effective_perms,
         metadata=payload.metadata,
     )
 
     if execute_now and execution.status == "queued":
-        execution = await engine.execute(execution.id, caller_permissions=default_perms)
+        execution = await engine.execute(execution.id, caller_permissions=effective_perms)
 
     return ToolExecutionResponse.model_validate(execution)
 
@@ -176,9 +183,15 @@ def get_execution(
 )
 async def run_execution(
     execution_id: str,
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
+    repo = ToolExecutionRepository(db)
+    item = repo.get_by_id(execution_id)
+    if not item:
+        raise EntityNotFoundError("ToolExecution", execution_id)
+
     default_perms = {
         "tools:calculate",
         "tools:validate",
@@ -188,7 +201,13 @@ async def run_execution(
         "test:execute",
         "admin:consequential",
     }
-    execution = await engine.execute(execution_id, caller_permissions=default_perms)
+    effective_perms = set(default_perms)
+    # Physical actuation requires verified server-side APPROVAL_SECRET_TOKEN to grant permission
+    if item.capability_id == "homeassistant.test_light_actuate":
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("homeassistant:actuate")
+
+    execution = await engine.execute(execution_id, caller_permissions=effective_perms)
     return ToolExecutionResponse.model_validate(execution)
 
 
@@ -203,7 +222,16 @@ def approve_execution(
     x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
-    if settings.APPROVAL_SECRET_TOKEN and x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+    repo = ToolExecutionRepository(db)
+    item = repo.get_by_id(execution_id)
+    if not item:
+        raise EntityNotFoundError("ToolExecution", execution_id)
+
+    # Physical actuation must fail closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid.
+    if item.capability_id == "homeassistant.test_light_actuate":
+        if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+            raise AuthorizationError("Physical actuation approval fails closed without valid X-Pico-Approval-Token.")
+    elif settings.APPROVAL_SECRET_TOKEN and x_approval_token != settings.APPROVAL_SECRET_TOKEN:
         raise AuthorizationError("Invalid or missing approval authorization token.")
 
     engine = ToolExecutionEngine(db, registry)
@@ -211,6 +239,7 @@ def approve_execution(
         execution_id=execution_id,
         approver=payload.approver,
         notes=payload.notes,
+        approval_token=x_approval_token,
     )
     return ToolExecutionResponse.model_validate(execution)
 
