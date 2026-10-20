@@ -60,4 +60,3 @@ class HomeAssistantActuationReadinessCapability(BaseCapability):
             passed=True,
             reason="Read-only actuation readiness check evaluated successfully with zero mutations.",
         )
-
