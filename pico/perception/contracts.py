@@ -109,7 +109,7 @@ class PerceptionSubsystemStatus(BaseModel):
 
 # --- Audio Requests & Responses ---
 class AudioSessionStartRequest(BaseModel):
-    user_consent: bool = Field(default=True, description="Explicit user consent required for capture")
+    user_consent: bool = Field(description="Explicit user consent required for audio capture (must be explicitly provided)")
     source_device: str = "mic:local"
     metadata: dict[str, Any] | None = None
 
@@ -117,13 +117,13 @@ class AudioSessionStartRequest(BaseModel):
 class AudioSessionStartResponse(BaseModel):
     session_id: str
     state: AudioCaptureState
-    microphone_active: bool
+    microphone_active: bool = False
     started_at: datetime
     message: str
 
 
 class AudioSessionStopRequest(BaseModel):
-    audio_base64: str | None = Field(default=None, description="Optional audio payload in base64 format")
+    audio_base64: str | None = Field(default=None, description="Audio payload in base64 format (mandatory for transcription)")
     audio_format: str = Field(default="wav", description="Audio format (wav, mp3, ogg)")
     client_duration_seconds: float | None = None
 
@@ -155,7 +155,7 @@ class AudioSynthesisResponse(BaseModel):
 
 # --- Vision Requests & Responses ---
 class VisionCaptureRequest(BaseModel):
-    user_consent: bool = Field(default=True, description="Explicit user consent required for vision ingestion")
+    user_consent: bool = Field(description="Explicit user consent required for vision ingestion (must be explicitly provided)")
     image_base64: str = Field(description="Base64 encoded image data (PNG, JPEG, BMP, PPM, WebP)")
     image_format: str = Field(default="png", description="Image format")
     source_device: str = "cam:snapshot"
@@ -184,14 +184,17 @@ class MotionIngestRequest(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     measured_duration_ms: int | None = None
     raw_reading: dict[str, Any] | None = None
-    data_classification: str = "INTERNAL"
+    data_classification: str | None = Field(
+        default=None,
+        description="Optional requested classification (cannot downgrade below INTERNAL)",
+    )
 
 
 class MovementInterpretationRequest(BaseModel):
     source_device: str = "cam:motion_eval"
-    frame_a_base64: str = Field(description="First frame in base64 (PPM, BMP, or PNG)")
-    frame_b_base64: str = Field(description="Second frame in base64 (PPM, BMP, or PNG)")
-    image_format: str = "ppm"
+    frame_a_base64: str = Field(description="First frame in base64 (PPM or uncompressed 24-bit BMP)")
+    frame_b_base64: str = Field(description="Second frame in base64 (PPM or uncompressed 24-bit BMP)")
+    image_format: str = Field(default="ppm", description="Image format for frame differencing (supported: 'ppm', 'bmp')")
     sensitivity_threshold: float = Field(default=0.05, ge=0.01, le=0.5)
 
 
@@ -219,7 +222,10 @@ class EnvironmentalIngestRequest(BaseModel):
     contact_state: str | None = Field(default=None, description="open or closed")
     air_quality_aqi: int | None = Field(default=None, ge=0, le=500)
     battery_level_percent: float | None = Field(default=None, ge=0.0, le=100.0)
-    data_classification: str = "INTERNAL"
+    data_classification: str | None = Field(
+        default=None,
+        description="Optional requested classification (cannot downgrade below INTERNAL)",
+    )
     timestamp: datetime = Field(default_factory=utc_now)
 
 

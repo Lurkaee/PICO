@@ -117,7 +117,8 @@ class PerceptionPipeline:
     # --- Motion Pipeline ---
     def ingest_pir_motion(self, request: MotionIngestRequest) -> NormalizedPerceptionEvent:
         event = self.motion_adapter.ingest_pir_motion(request)
-        if self.repo:
+        is_suppressed = event.structured_data.get("cooldown_suppressed", False)
+        if self.repo and not is_suppressed:
             self.repo.create(event)
         return event
 
@@ -132,7 +133,7 @@ class PerceptionPipeline:
     # --- Environmental Pipeline ---
     def ingest_environmental(self, request: EnvironmentalIngestRequest) -> tuple[NormalizedPerceptionEvent, bool]:
         event, is_duplicate = self.environmental_adapter.ingest_reading(request)
-        if self.repo:
+        if self.repo and not is_duplicate:
             self.repo.create(event)
         return event, is_duplicate
 

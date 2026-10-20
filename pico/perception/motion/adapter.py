@@ -1,9 +1,14 @@
 import base64
+import struct
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pico.core.config import settings
 from pico.core.errors import ValidationError
+from pico.perception.classification import (
+    compute_trusted_perception_classification,
+    validate_trusted_source_device,
+)
 from pico.perception.contracts import (
     Modality,
     MotionIngestRequest,
@@ -21,26 +26,165 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def parse_ppm_grayscale(data: bytes) -> tuple[int, int, list[int]]:
-    """Parse a simple PPM (P6 binary or P3 ascii) or raw bytes into a grayscale pixel list."""
-    if data.startswith(b"P6"):
-        # Header: P6\n<width> <height>\n<maxval>\n<binary rgb>
-        parts = data.split(None, 4)
-        if len(parts) >= 4:
-            width = int(parts[1])
-            height = int(parts[2])
-            pixel_bytes = parts[3] if len(parts) == 4 else parts[4]
-            # Convert RGB to Grayscale: Y = 0.299R + 0.587G + 0.114B
-            pixels = []
-            for i in range(0, min(len(pixel_bytes) - 2, width * height * 3), 3):
-                r, g, b = pixel_bytes[i], pixel_bytes[i + 1], pixel_bytes[i + 2]
+def decode_frame_grayscale(data: bytes, image_format: str) -> tuple[int, int, list[int]]:
+    """Decode supported frame formats (PPM or uncompressed 24-bit BMP) to grayscale pixels.
+
+    Strictly validates headers, bounds, and payload integrity.
+    Rejects malformed, unsupported, or arbitrary compressed payloads (such as PNG/JPEG).
+    """
+    if not data:
+        raise ValidationError("Frame payload cannot be empty.")
+    if len(data) > settings.VISION_MAX_IMAGE_BYTES:
+        raise ValidationError(
+            f"Frame payload ({len(data)} bytes) exceeds maximum allowed size of {settings.VISION_MAX_IMAGE_BYTES} bytes."
+        )
+
+    fmt = (image_format or "").strip().lower()
+
+    # 1. Reject unsupported formats explicitly before processing
+    if fmt in ("png", "jpg", "jpeg", "webp", "gif"):
+        raise ValidationError(
+            f"Unsupported format '{fmt}' for direct frame-differencing. Supported decoded formats are: 'ppm', 'bmp'. "
+            f"PNG/JPEG decoding requires external imaging libraries not available in base runtime."
+        )
+
+    # 2. PPM decoder (P6 binary or P3 ascii)
+    if fmt == "ppm" or data.startswith(b"P6") or data.startswith(b"P3"):
+        tokens: list[bytes] = []
+        pos = 0
+        data_len = len(data)
+        while pos < data_len and len(tokens) < 4:
+            # skip whitespace
+            while pos < data_len and data[pos : pos + 1] in b" \t\r\n":
+                pos += 1
+            if pos >= data_len:
+                break
+            # check for comment
+            if data[pos : pos + 1] == b"#":
+                while pos < data_len and data[pos : pos + 1] not in b"\r\n":
+                    pos += 1
+                continue
+            token_start = pos
+            while pos < data_len and data[pos : pos + 1] not in b" \t\r\n#":
+                pos += 1
+            tokens.append(data[token_start:pos])
+
+        if len(tokens) < 4:
+            raise ValidationError("Malformed PPM frame: incomplete header.")
+
+        magic = tokens[0]
+        if magic not in (b"P6", b"P3"):
+            raise ValidationError(f"Invalid PPM magic '{magic.decode('ascii', errors='replace')}'. Expected P6 or P3.")
+
+        try:
+            width = int(tokens[1])
+            height = int(tokens[2])
+            maxval = int(tokens[3])
+        except ValueError:
+            raise ValidationError("Malformed PPM header: invalid dimensions or maxval.")
+
+        if width <= 0 or height <= 0 or maxval <= 0:
+            raise ValidationError(f"Invalid PPM dimensions: {width}x{height}, maxval={maxval}.")
+
+        if width > settings.VISION_MAX_DIMENSION or height > settings.VISION_MAX_DIMENSION:
+            raise ValidationError(
+                f"PPM dimensions ({width}x{height}) exceed maximum allowed dimension of {settings.VISION_MAX_DIMENSION}px."
+            )
+
+        # Skip single whitespace delimiter after maxval
+        while pos < data_len and data[pos : pos + 1] in b" \t\r\n":
+            pos += 1
+
+        pixel_data = data[pos:]
+        expected_pixels = width * height
+
+        if magic == b"P6":
+            expected_bytes = expected_pixels * 3
+            if len(pixel_data) < expected_bytes:
+                raise ValidationError(
+                    f"Malformed PPM (P6): truncated pixel data. Expected {expected_bytes} bytes, got {len(pixel_data)}."
+                )
+            pixels: list[int] = []
+            for i in range(0, expected_bytes, 3):
+                r, g, b = pixel_data[i], pixel_data[i + 1], pixel_data[i + 2]
                 pixels.append(int(0.299 * r + 0.587 * g + 0.114 * b))
             return width, height, pixels
+        else:
+            # P3 ASCII
+            pixel_tokens = pixel_data.split()
+            if len(pixel_tokens) < expected_pixels * 3:
+                raise ValidationError("Malformed PPM (P3): truncated ASCII pixel tokens.")
+            pixels = []
+            try:
+                for i in range(0, expected_pixels * 3, 3):
+                    r = int(pixel_tokens[i])
+                    g = int(pixel_tokens[i + 1])
+                    b = int(pixel_tokens[i + 2])
+                    pixels.append(int(0.299 * r + 0.587 * g + 0.114 * b))
+            except ValueError:
+                raise ValidationError("Malformed PPM (P3): non-numeric pixel values.")
+            return width, height, pixels
 
-    # Fallback for synthetic raw grayscale buffers: assume square or standard 64x64
-    total = len(data)
-    side = int(total**0.5)
-    return side, side, list(data[: side * side])
+    # 3. BMP decoder (uncompressed 24-bit BMP)
+    if fmt == "bmp" or data.startswith(b"BM"):
+        if not data.startswith(b"BM"):
+            raise ValidationError("Malformed BMP payload: missing BM signature.")
+        if len(data) < 54:
+            raise ValidationError("Malformed BMP payload: truncated header (less than 54 bytes).")
+
+        offset = struct.unpack("<I", data[10:14])[0]
+        dib_header_size = struct.unpack("<I", data[14:18])[0]
+        if dib_header_size < 40:
+            raise ValidationError("Unsupported BMP header format (expected standard BITMAPINFOHEADER >= 40 bytes).")
+
+        width, height = struct.unpack("<ii", data[18:26])
+        planes, bpp = struct.unpack("<HH", data[26:30])
+        compression = struct.unpack("<I", data[30:34])[0]
+
+        if compression != 0:
+            raise ValidationError(
+                f"Compressed BMP format (compression={compression}) is unsupported for frame differencing. "
+                f"Provide uncompressed 24-bit BMP or PPM."
+            )
+        if bpp != 24:
+            raise ValidationError(
+                f"Unsupported BMP bit depth: {bpp}-bit. Frame differencing requires uncompressed 24-bit BMP or PPM."
+            )
+        if width <= 0 or height == 0:
+            raise ValidationError(f"Invalid BMP dimensions: {width}x{height}.")
+
+        abs_height = abs(height)
+        if width > settings.VISION_MAX_DIMENSION or abs_height > settings.VISION_MAX_DIMENSION:
+            raise ValidationError(
+                f"BMP dimensions ({width}x{abs_height}) exceed maximum allowed dimension of {settings.VISION_MAX_DIMENSION}px."
+            )
+
+        row_stride = (width * 3 + 3) & ~3
+        total_needed = offset + row_stride * abs_height
+        if len(data) < total_needed:
+            raise ValidationError(
+                f"Malformed BMP payload: truncated pixel data. Expected {total_needed} bytes, got {len(data)}."
+            )
+
+        pixels = [0] * (width * abs_height)
+        bottom_up = height > 0
+
+        for row_idx in range(abs_height):
+            y = (abs_height - 1 - row_idx) if bottom_up else row_idx
+            row_start = offset + row_idx * row_stride
+            for x in range(width):
+                px_offset = row_start + x * 3
+                b = data[px_offset]
+                g = data[px_offset + 1]
+                r = data[px_offset + 2]
+                pixels[y * width + x] = int(0.299 * r + 0.587 * g + 0.114 * b)
+
+        return width, abs_height, pixels
+
+    # 4. Any other unrecognized format
+    raise ValidationError(
+        f"Unsupported or unrecognized format '{fmt}' for frame-differencing. Supported decoded formats are: 'ppm', 'bmp'."
+    )
 
 
 class MotionAdapter:
@@ -57,9 +201,12 @@ class MotionAdapter:
     def get_status(self) -> dict[str, Any]:
         return {
             "enabled": settings.PERCEPTION_ENABLED,
-            "pir_available": True,
+            "physical_pir_connected": False,  # Physical hardware GPIO PIR sensor not attached
+            "pir_available": False,  # Physical PIR sensor unavailable
             "frame_differencing_available": True,
+            "motion_api_available": True,
             "cooldown_seconds": settings.MOTION_COOLDOWN_SECONDS,
+            "supported_frame_formats": ["ppm", "bmp"],
             "tier1_motion_detection": "active",
             "tier2_movement_interpretation": "active",
             "tier3_cross_modal_correlation": "active",
@@ -71,20 +218,30 @@ class MotionAdapter:
         if not settings.PERCEPTION_ENABLED:
             raise ValidationError("Perception subsystem is disabled.")
 
+        clean_device = validate_trusted_source_device(Modality.MOTION, request.source_device)
+        effective_class = compute_trusted_perception_classification(
+            modality=Modality.MOTION,
+            source_device=clean_device,
+            caller_classification=request.data_classification,
+        )
+
         now = utc_now()
-        # Cooldown check
-        last_t = self._last_event_time.get(request.source_device)
+        last_t = self._last_event_time.get(clean_device)
+        is_cooldown_suppressed = False
+        remaining_seconds = 0.0
+
         if last_t and (now - last_t).total_seconds() < settings.MOTION_COOLDOWN_SECONDS:
-            # Rate-limited / Cooldown active
-            pass
-        self._last_event_time[request.source_device] = now
+            is_cooldown_suppressed = True
+            remaining_seconds = round(settings.MOTION_COOLDOWN_SECONDS - (now - last_t).total_seconds(), 2)
+        else:
+            self._last_event_time[clean_device] = now
 
         # Invariant: PIR trigger detects motion presence but does NOT claim direction or identity
         event = NormalizedPerceptionEvent(
             modality=Modality.MOTION,
             event_type="motion_detected",
-            source_device_id=request.source_device,
-            data_classification=request.data_classification,
+            source_device_id=clean_device,
+            data_classification=effective_class,
             confidence=request.confidence,
             raw_payload_scrubbed=True,
             structured_data={
@@ -92,8 +249,11 @@ class MotionAdapter:
                 "motion_detected": request.motion_detected,
                 "duration_ms": request.measured_duration_ms,
                 "assertion_limits": "PIR detects motion presence only; direction, activity, and identity are unasserted.",
+                "cooldown_suppressed": is_cooldown_suppressed,
+                "cooldown_seconds_remaining": remaining_seconds,
+                "persisted": not is_cooldown_suppressed,
             },
-            provenance=f"sensor:{request.source_device}",
+            provenance=f"sensor:{clean_device}",
             retention_policy=RetentionPolicy.SHORT_TERM_AUDIT,
         )
         return event
@@ -105,14 +265,20 @@ class MotionAdapter:
         if not settings.PERCEPTION_ENABLED:
             raise ValidationError("Perception subsystem is disabled.")
 
+        clean_device = validate_trusted_source_device(Modality.MOTION, request.source_device)
+        effective_class = compute_trusted_perception_classification(
+            modality=Modality.MOTION,
+            source_device=clean_device,
+        )
+
         try:
             bytes_a = base64.b64decode(request.frame_a_base64)
             bytes_b = base64.b64decode(request.frame_b_base64)
         except Exception as exc:
             raise ValidationError(f"Invalid base64 frame payload: {exc}")
 
-        w_a, h_a, pixels_a = parse_ppm_grayscale(bytes_a)
-        w_b, h_b, pixels_b = parse_ppm_grayscale(bytes_b)
+        w_a, h_a, pixels_a = decode_frame_grayscale(bytes_a, request.image_format)
+        w_b, h_b, pixels_b = decode_frame_grayscale(bytes_b, request.image_format)
 
         # Release raw binary payloads
         del bytes_a, bytes_b
@@ -200,8 +366,8 @@ class MotionAdapter:
         event = NormalizedPerceptionEvent(
             modality=Modality.MOTION,
             event_type="movement_interpreted",
-            source_device_id=request.source_device,
-            data_classification="INTERNAL",
+            source_device_id=clean_device,
+            data_classification=effective_class,
             confidence=confidence,
             raw_payload_scrubbed=True,
             structured_data={
@@ -214,7 +380,7 @@ class MotionAdapter:
                 "centroid_b": list(centroid_b),
                 "evidence": evidence,
             },
-            provenance=f"motion:{request.source_device}:differencing",
+            provenance=f"motion:{clean_device}:differencing",
             retention_policy=RetentionPolicy.SHORT_TERM_AUDIT,
         )
 

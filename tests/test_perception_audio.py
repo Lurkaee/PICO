@@ -26,12 +26,13 @@ async def test_audio_session_lifecycle_push_to_talk() -> None:
 
     # 3. Explicit consent starts push-to-talk session
     start_res = manager.start_session(user_consent=True, source_device="mic:headset")
-    assert start_res.microphone_active is True
+    assert start_res.microphone_active is False  # Honest reporting: physical mic driver is not active
     assert start_res.state == AudioCaptureState.CAPTURING
     session_id = start_res.session_id
 
-    # Verify status reflects active microphone
-    assert manager.get_status()["microphone_active"] is True
+    # Verify status reflects active session count and honest physical microphone inactivity
+    assert manager.get_status()["active_sessions_count"] == 1
+    assert manager.get_status()["microphone_active"] is False
 
     # 4. Stop session with mock audio payload
     audio_data = b"TEXT:Hello PICO transcribe test"
@@ -101,7 +102,7 @@ async def test_audio_honest_local_runtime_availability() -> None:
     # Attempting to transcribe on unavailable local adapter must fail closed
     with pytest.raises(ValidationError) as exc:
         await whisper_adapter.transcribe(b"dummy")
-    assert "fails closed" in str(exc.value)
+    assert "unavailable" in str(exc.value).lower()
 
 
 @pytest.mark.anyio

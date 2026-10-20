@@ -25,7 +25,7 @@ def test_api_audio_push_to_talk_and_synthesis(client: TestClient) -> None:
     assert start_res.status_code == 201
     start_data = start_res.json()
     session_id = start_data["session_id"]
-    assert start_data["microphone_active"] is True
+    assert start_data["microphone_active"] is False
 
     # 2. Stop audio session with audio payload
     audio_bytes = b"TEXT:Turn off the kitchen lights later."

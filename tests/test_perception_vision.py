@@ -72,11 +72,15 @@ async def test_vision_snapshot_lifecycle_and_consent() -> None:
     assert response.height == 150
     assert response.format == "png"
     assert response.data_classification == "INTERNAL"
+    assert response.confidence == 0.0
     assert response.raw_buffer_retained is False
 
-    # Event contract checks
+    # Event contract checks - metadata-only validated without false scene analysis claims
     assert event.modality == Modality.VISION
-    assert event.event_type == "visual_snapshot_analyzed"
+    assert event.event_type == "visual_snapshot_ingested"
+    assert event.confidence == 0.0
+    assert event.structured_data["metadata_only"] is True
+    assert event.structured_data["scene_analysis_performed"] is False
     assert event.raw_payload_scrubbed is True
     assert event.source_device_id == "cam:webcam0"
     assert "desk_status" in event.provenance
