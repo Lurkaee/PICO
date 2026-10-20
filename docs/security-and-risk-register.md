@@ -7,7 +7,7 @@ In local development:
 - **Client/Browser Boundary**: Web UI or IPC clients run in an untrusted or semi-trusted context. Server-side secrets, database connection credentials, and provider API keys MUST NEVER be passed to client-side bundles or HTTP responses.
 - **Model Provider Boundary**:
   - Local inference (Ollama running `qwen3.5:2b` or `qwen3.5:4b`) remains entirely inside the machine's loopback network interface (`127.0.0.1`).
-  - Cloud inference (Anthropic, OpenAI, Gemini) crosses the external perimeter and transmits prompts over TLS. Under no circumstance may context classified as `SECRET` cross this boundary. Context classified as `SENSITIVE` requires explicit, per-request or per-session interactive user approval.
+  - Cloud inference (Anthropic, OpenAI, Gemini) crosses the external perimeter and transmits prompts over TLS. Under no circumstance may context classified as `SECRET`, `SENSITIVE`, or `INTERNAL` cross this boundary. Only purely `PUBLIC` effective context is eligible for cloud transmission, and only when cloud access is explicitly enabled (`CLOUD_ENABLED=true`). There is no sensitive-data consent exception in the current policy.
 - **Untrusted Ingestion Boundary**: Any external content (web scrape, email, file dropped into workspace, API output) is treated as potentially malicious and isolated from system prompts.
 
 ---

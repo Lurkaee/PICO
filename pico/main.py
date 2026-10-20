@@ -8,10 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from pico.api.chat import router as chat_router
 from pico.api.conversations import router as conversations_router
 from pico.api.health import router as health_router
+from pico.api.memory import router as memory_router
 from pico.api.projects import router as projects_router
 from pico.api.tasks import router as tasks_router
 from pico.core.config import settings
-from pico.core.errors import ConflictError, EntityNotFoundError, PicoError, ValidationError
+from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
 from pico.db.base import Base
 from pico.db.session import engine
 from pico.providers.errors import (
@@ -55,6 +56,16 @@ async def validation_error_handler(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.message, "details": exc.details},
+    )
+
+
+@app.exception_handler(AuthorizationError)
+async def authorization_error_handler(
+    request: Request, exc: AuthorizationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
         content={"detail": exc.message, "details": exc.details},
     )
 
@@ -145,3 +156,4 @@ app.include_router(conversations_router)
 app.include_router(projects_router)
 app.include_router(tasks_router)
 app.include_router(chat_router)
+app.include_router(memory_router)

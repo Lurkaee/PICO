@@ -138,3 +138,87 @@ The following entities are planned for subsequent phases and do NOT form part of
 ### 4.7 `eval_cases` & `eval_runs` (Phase 1, Slice 3 & Phase 3)
 - Version-controlled benchmark suites and performance scores.
 - Schema: `id`, `suite_name`, `case_name`, `model_profile`, `prompt_tokens`, `latency_ms`, `ram_peak_mb`, `vram_peak_mb`, `score`, `pass_fail` (BOOL), `error_reason`, `run_timestamp`.
+
+---
+
+## 5. Memory v1 Subsystems (Implemented in Milestone P4)
+
+### 5.1 `working_memory_items` (Working Memory)
+- Short-lived, bounded session scratchpad and active task memory.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `wmem_`.
+  - `session_id` (VARCHAR(64), INDEX): Conversation or session scope identifier.
+  - `key` (VARCHAR(128), INDEX): Unique key within session.
+  - `item_type` (VARCHAR(32)): Sub-category (`working_state`, `active_goal`, `scratchpad`).
+  - `content` (TEXT): Bounded text or summary payload.
+  - `task_id` (VARCHAR(64), FK `tasks.id`, ON DELETE SET NULL, NULLABLE, INDEX).
+  - `project_id` (VARCHAR(64), FK `projects.id`, ON DELETE SET NULL, NULLABLE, INDEX).
+  - `data_classification` (VARCHAR(32)): Classification label (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`).
+  - `source_provenance` (VARCHAR(255)): Source lineage tag (e.g. `session:working_memory`).
+  - `is_active` (BOOLEAN): Soft-active flag.
+  - `expires_at` (DATETIME, NULLABLE, INDEX): Timestamp-based TTL eviction.
+  - `created_at` (DATETIME): UTC timestamp.
+  - `updated_at` (DATETIME): UTC timestamp with auto-update.
+  - `metadata_json` (JSON, NULLABLE): Extra structured context.
+
+### 5.2 `episodic_memory_items` (Episodic Memory)
+- Time-indexed record of events, task outcomes, decisions, and workflow errors.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `epm_`.
+  - `event_type` (VARCHAR(64), INDEX): Event category (`task_completed`, `task_failed`, `decision_recorded`, `workflow_error`).
+  - `description` (TEXT): Human-readable event description.
+  - `occurred_at` (DATETIME, INDEX): When the event took place.
+  - `task_id` (VARCHAR(64), FK `tasks.id`, ON DELETE SET NULL, NULLABLE, INDEX).
+  - `project_id` (VARCHAR(64), FK `projects.id`, ON DELETE SET NULL, NULLABLE, INDEX).
+  - `session_id` (VARCHAR(64), NULLABLE, INDEX).
+  - `data_classification` (VARCHAR(32)): Classification label.
+  - `source_provenance` (VARCHAR(255)): Provenance tag (e.g. `task:task_id`, `user:explicit_remember`).
+  - `is_inferred` (BOOLEAN): Distinguishes direct observed facts from model inferences.
+  - `deduplication_key` (VARCHAR(128), NULLABLE, INDEX): Idempotent deduplication key preventing duplicate event logging.
+  - `created_at` (DATETIME): UTC creation timestamp.
+  - `metadata_json` (JSON, NULLABLE).
+
+### 5.3 `semantic_memories` & `semantic_memories_fts` (Semantic Memory)
+- Source-grounded facts, preferences, and verified configurations.
+- Schema (`semantic_memories`):
+  - `id` (VARCHAR(64), PK): Stable typed prefix `sem_`.
+  - `entity_type` (VARCHAR(64), INDEX): Entity type (`user_preference`, `system_fact`, `entity_relation`).
+  - `subject` (VARCHAR(255), INDEX): Fact subject.
+  - `predicate` (VARCHAR(128), INDEX): Fact predicate relationship.
+  - `object` (VARCHAR(255), NULLABLE): Fact object value.
+  - `content` (TEXT): Natural language factual statement.
+  - `confidence` (FLOAT): 0.0 to 1.0 confidence score.
+  - `is_verified` (BOOLEAN): Explicit user verification flag.
+  - `conflict_status` (VARCHAR(32)): `clean`, `conflicted`, or `superseded`.
+  - `data_classification` (VARCHAR(32)): Classification tag.
+  - `source_provenance` (VARCHAR(255)): Source reference (e.g. `user:stated_preference`).
+  - `project_id` (VARCHAR(64), FK `projects.id`, ON DELETE SET NULL, NULLABLE, INDEX).
+  - `task_id` (VARCHAR(64), FK `tasks.id`, ON DELETE SET NULL, NULLABLE, INDEX).
+  - `created_at` (DATETIME): UTC timestamp.
+  - `updated_at` (DATETIME): UTC timestamp.
+  - `metadata_json` (JSON, NULLABLE).
+- Virtual Table (`semantic_memories_fts`):
+  - SQLite FTS5 table indexed over `subject`, `predicate`, `object`, and `content`.
+  - Supports BM25-ranked full-text retrieval without requiring external vector databases.
+
+### 5.4 `procedural_memories` (Procedural Memory)
+- Reusable skills and automated workflows with mandatory human approval.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `prc_`.
+  - `name` (VARCHAR(128), INDEX): Procedure identifier name.
+  - `version` (VARCHAR(32)): Semantic version (e.g. `1.0.0`).
+  - `description` (TEXT): Overview and purpose.
+  - `lifecycle_status` (VARCHAR(32), INDEX): Lifecycle state machine: `draft -> reviewed -> approved -> active -> retired`.
+  - `preconditions_json` (JSON, NULLABLE): List of preconditions.
+  - `required_capabilities_json` (JSON, NULLABLE): Required capability permissions.
+  - `steps_json` (JSON): Ordered operational steps.
+  - `expected_effects_json` (JSON, NULLABLE): Expected environment effects.
+  - `verification_criteria_json` (JSON, NULLABLE): Validation criteria.
+  - `approved_by` (VARCHAR(128), NULLABLE): Human approver identity (mandatory for approval).
+  - `approved_at` (DATETIME, NULLABLE): UTC approval timestamp.
+  - `retired_at` (DATETIME, NULLABLE): UTC retirement timestamp.
+  - `data_classification` (VARCHAR(32)): Classification tag.
+  - `source_provenance` (VARCHAR(255)): Origin provenance.
+  - `created_at` (DATETIME): UTC timestamp.
+  - `updated_at` (DATETIME): UTC timestamp.
+  - `metadata_json` (JSON, NULLABLE).

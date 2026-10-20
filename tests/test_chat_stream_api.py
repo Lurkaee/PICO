@@ -507,3 +507,148 @@ def test_chat_stream_defense_in_depth_non_local_override_guard_raises_validation
 
     finally:
         app.state.provider_override = None
+
+
+def test_chat_stream_cloud_upstream_error_sanitization_canary_secret(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verify that cloud provider upstream errors containing canary secrets do not leak into client SSE events or DB records."""
+    import httpx
+    from pico.providers.cloud import CloudProvider
+
+    conv_res = client.post("/api/conversations", json={"title": "Cloud Error Sanitization Thread"})
+    assert conv_res.status_code == 201
+    conv_id = conv_res.json()["id"]
+
+    canary_secret = "CANARY_UPSTREAM_CLIENT_LEAK_TEST_99999"
+    raw_payload = {
+        "error": {
+            "message": f"Raw upstream header dump with secret key: {canary_secret}",
+            "type": "invalid_request_error",
+            "code": "invalid_api_key",
+        }
+    }
+
+    async def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=401,
+            content=json.dumps(raw_payload).encode("utf-8"),
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    http_client = httpx.AsyncClient(transport=transport)
+
+    cloud_provider = CloudProvider(
+        enabled=True,
+        api_key="sk-test-client-secret-123",
+        http_client=http_client,
+    )
+    app.state.provider_override = cloud_provider
+
+    try:
+        res = client.post(
+            "/api/chat/stream",
+            json={
+                "conversation_id": conv_id,
+                "message": "Analyze public benchmark report.",
+                "data_classification": "PUBLIC",
+                "task_category": "planning",
+            },
+        )
+        assert res.status_code == 200
+        raw_response_text = res.text
+
+        # 1. Ensure the canary secret never appears anywhere in the raw SSE output
+        assert canary_secret not in raw_response_text
+        assert "sk-test-client-secret-123" not in raw_response_text
+
+        events = parse_sse_events(raw_response_text)
+        event_types = [e[0] for e in events]
+        assert "meta" in event_types
+        assert "error" in event_types
+
+        error_event = [e[1] for e in events if e[0] == "error"][0]
+        assert error_event["code"] == "PROVIDER_RESPONSE_ERROR"
+        assert canary_secret not in error_event["message"]
+        assert "401" in error_event["message"]
+        assert "invalid_request_error" in error_event["message"]
+        assert "invalid_api_key" in error_event["message"]
+
+        # 2. Ensure the canary secret never appears in persisted routing decision audit log
+        meta_event = [e[1] for e in events if e[0] == "meta"][0]
+        decision = db_session.query(RoutingDecision).filter(RoutingDecision.id == meta_event["decision_id"]).first()
+        assert decision is not None
+        assert decision.outcome == "failed"
+        assert canary_secret not in (decision.error_message or "")
+    finally:
+        app.state.provider_override = None
+
+
+def test_chat_stream_with_context_compiler_integration(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verify that chat_stream end-to-end compiles context through ContextCompiler."""
+    # 1. Create a Conversation
+    conv_res = client.post("/api/conversations", json={"title": "Context Compiler End-to-End Thread"})
+    assert conv_res.status_code == 201
+    conv_id = conv_res.json()["id"]
+
+    # 2. Add historical messages to DB
+    from pico.repositories.message_repo import MessageRepository
+
+    msg_repo = MessageRepository(db_session)
+    msg_repo.create(
+        message_id="msg_cc_hist_01",
+        conversation_id=conv_id,
+        role="user",
+        content="First question on context compiling.",
+        data_classification="PUBLIC",
+    )
+    msg_repo.create(
+        message_id="msg_cc_hist_02",
+        conversation_id=conv_id,
+        role="assistant",
+        content="First response explaining prompt assembly.",
+        data_classification="PUBLIC",
+    )
+    db_session.commit()
+
+    captured_messages = []
+
+    class InspectingMockProvider(MockModelProvider):
+        async def stream_chat(self, messages, options=None):
+            nonlocal captured_messages
+            captured_messages = list(messages)
+            async for event in super().stream_chat(messages, options):
+                yield event
+
+    mock_prov = InspectingMockProvider(fixed_response="Context compiler verified.")
+    app.state.provider_override = mock_prov
+
+    try:
+        # 3. Stream a new user message
+        res = client.post(
+            "/api/chat/stream",
+            json={
+                "conversation_id": conv_id,
+                "message": "Follow-up question on token budgeting.",
+                "data_classification": "INTERNAL",
+                "task_category": "general_chat",
+            },
+        )
+        assert res.status_code == 200
+        events = parse_sse_events(res.text)
+        assert len(events) >= 3
+
+        meta_event = [e[1] for e in events if e[0] == "meta"][0]
+        assert meta_event["data_classification"] == "INTERNAL"
+
+        # 4. Verify captured messages delivered to provider:
+        # Should contain msg_cc_hist_01, msg_cc_hist_02, and the new message in order
+        assert len(captured_messages) == 3
+        assert captured_messages[0].content == "First question on context compiling."
+        assert captured_messages[1].content == "First response explaining prompt assembly."
+        assert captured_messages[2].content == "Follow-up question on token budgeting."
+        assert captured_messages[2].data_classification == "INTERNAL"
+    finally:
+        app.state.provider_override = None

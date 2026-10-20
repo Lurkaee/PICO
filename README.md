@@ -20,7 +20,7 @@ PICO is a local-first, multi-model personal intelligence system engineered for v
 ## Local Setup & Quickstart (Windows PowerShell)
 
 ### 1. Prerequisites
-- Python 3.12+ (tested on Python 3.14.7)
+- Python 3.12+ (CI matrix: Python 3.12, 3.13, 3.14; locally verified: Python 3.14.7 on Windows 11; remote CI execution unverified as no Git remote is configured)
 - Windows PowerShell
 
 ### 2. Environment Activation & Dependencies
@@ -251,17 +251,17 @@ Run the full automated test suite (offline, no external network calls):
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```
-All 73 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
+All 89 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
 - `tests/test_automation_scripts.py` (5 tests)
 - `tests/test_bench_runner.py` (9 tests)
-- `tests/test_chat_stream_api.py` (10 tests)
-- `tests/test_cloud_provider.py` (6 tests)
+- `tests/test_chat_stream_api.py` (11 tests)
+- `tests/test_cloud_provider.py` (10 tests)
 - `tests/test_conversations.py` (4 tests)
 - `tests/test_foreign_keys.py` (2 tests)
 - `tests/test_health.py` (1 test)
 - `tests/test_messages.py` (5 tests)
 - `tests/test_mock_provider.py` (4 tests)
-- `tests/test_ollama_provider.py` (6 tests)
+- `tests/test_ollama_provider.py` (17 tests)
 - `tests/test_persistence_reopen.py` (1 test)
 - `tests/test_projects.py` (5 tests)
 - `tests/test_routing_persistence.py` (1 test)

@@ -22,7 +22,22 @@ class Settings(BaseSettings):
     CLOUD_BASE_URL: str | None = None
     CLOUD_MODEL: str | None = None
     CLOUD_API_KEY: str | None = None
-    CLOUD_TIMEOUT_SECONDS: float = 60.0
+    # Memory Subsystem Settings
+    WORKING_MEMORY_MAX_ITEMS_PER_SESSION: int = 50
+    WORKING_MEMORY_DEFAULT_TTL_SECONDS: int = 86400
+    SEMANTIC_MEMORY_SEARCH_LIMIT: int = 10
+    CONTEXT_COMPILER_MAX_MEMORY_ITEMS: int = 5
+    # Network & Security Settings
+    HOST: str = "127.0.0.1"
+    PORT: int = 8000
+    APPROVAL_SECRET_TOKEN: str | None = None
+    TRUSTED_APPROVER_IDENTITIES: list[str] = [
+        "human_operator",
+        "lead_engineer",
+        "alice_engineer",
+        "admin",
+        "pico_owner",
+    ]
 
     model_config = SettingsConfigDict(
         env_file=".env",

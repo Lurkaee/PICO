@@ -42,3 +42,19 @@ class DatabaseError(PicoError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class AuthorizationError(PicoError):
+    """Raised when an operation requires human authorization or approval that was not granted."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message, details=details)
+
+
+class NotFoundError(EntityNotFoundError):
+    """General not found error."""
+
+    def __init__(self, message: str) -> None:
+        super(PicoError, self).__init__(message)
+        self.message = message
+        self.details = {}

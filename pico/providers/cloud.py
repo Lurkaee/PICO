@@ -1,5 +1,7 @@
 import asyncio
+import http
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -60,6 +62,48 @@ class CloudProvider(ModelProvider):
     async def check_health(self) -> bool:
         """Check if cloud provider is enabled and configured."""
         return bool(self.enabled and self._api_key)
+
+    def _sanitize_error_detail(
+        self,
+        status_code: int,
+        raw_body: bytes,
+        reason_phrase: str | None = None,
+    ) -> str:
+        """Produce a safe diagnostic description of an upstream HTTP error without
+
+        leaking raw response bodies, prompt contents, or credentials.
+        """
+        phrase = reason_phrase
+        if not phrase:
+            try:
+                phrase = http.HTTPStatus(status_code).phrase
+            except (ValueError, KeyError):
+                phrase = "Error"
+
+        diagnostic_parts = [f"Cloud provider returned HTTP {status_code} ({phrase})"]
+
+        # Attempt to extract safe structured classification identifiers without exposing raw messages or bodies
+        try:
+            parsed = json.loads(raw_body)
+            if isinstance(parsed, dict):
+                error_obj = parsed.get("error")
+                if isinstance(error_obj, dict):
+                    err_type = error_obj.get("type")
+                    err_code = error_obj.get("code")
+                    safe_details = []
+                    if isinstance(err_type, str) and re.match(r"^[a-zA-Z0-9_\-\.]{1,64}$", err_type.strip()):
+                        safe_details.append(f"type: {err_type.strip()}")
+                    if isinstance(err_code, str) and re.match(r"^[a-zA-Z0-9_\-\.]{1,64}$", err_code.strip()):
+                        safe_details.append(f"code: {err_code.strip()}")
+                    if safe_details:
+                        diagnostic_parts.append(f"[{', '.join(safe_details)}]")
+        except Exception:
+            pass
+
+        sanitized = " ".join(diagnostic_parts)
+        if self._api_key:
+            sanitized = sanitized.replace(self._api_key, "[REDACTED]")
+        return re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]+", "Bearer [REDACTED]", sanitized)
 
     async def stream_chat(
         self,
@@ -131,11 +175,12 @@ class CloudProvider(ModelProvider):
             async with client.stream("POST", url, json=payload, headers=headers) as response:
                 if response.status_code != 200:
                     body = await response.aread()
-                    # Sanitize error to avoid leaking tokens if upstream mirrors headers
-                    error_text = body.decode("utf-8", errors="replace")
-                    raise ProviderResponseError(
-                        f"Cloud provider returned HTTP {response.status_code}: {error_text}"
+                    error_detail = self._sanitize_error_detail(
+                        response.status_code,
+                        body,
+                        reason_phrase=response.reason_phrase,
                     )
+                    raise ProviderResponseError(error_detail)
 
                 accumulated_text: list[str] = []
                 finish_reason = "stop"
@@ -154,7 +199,22 @@ class CloudProvider(ModelProvider):
                     try:
                         chunk = json.loads(raw_data)
                     except json.JSONDecodeError as exc:
-                        raise ProviderResponseError(f"Malformed SSE chunk from cloud provider: {raw_data}") from exc
+                        raise ProviderResponseError("Malformed SSE chunk received from cloud provider.") from exc
+
+                    if isinstance(chunk, dict) and "error" in chunk:
+                        err_obj = chunk["error"]
+                        err_parts = ["Cloud provider streamed an error event"]
+                        if isinstance(err_obj, dict):
+                            safe_details = []
+                            err_type = err_obj.get("type")
+                            err_code = err_obj.get("code")
+                            if isinstance(err_type, str) and re.match(r"^[a-zA-Z0-9_\-\.]{1,64}$", err_type.strip()):
+                                safe_details.append(f"type: {err_type.strip()}")
+                            if isinstance(err_code, str) and re.match(r"^[a-zA-Z0-9_\-\.]{1,64}$", err_code.strip()):
+                                safe_details.append(f"code: {err_code.strip()}")
+                            if safe_details:
+                                err_parts.append(f"[{', '.join(safe_details)}]")
+                        raise ProviderResponseError(" ".join(err_parts))
 
                     choices = chunk.get("choices", [])
                     if not choices:
