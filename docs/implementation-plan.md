@@ -75,11 +75,12 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - **Status**: **CLOSED & FULLY VERIFIED** (151 total passing tests, 21 dedicated P5 tests, 0 failures).
 
 ### Milestone P6: Multimodal Perception Layer
-- [ ] **P6.1 Push-to-Talk Voice Adapter**: Local STT/TTS with visual microphone indicator.
-- [ ] **P6.2 On-Demand Vision Adapter**: Screenshots and camera snapshots with instant frame disposal.
-- [ ] **P6.3 Motion Event Adapter**: Frame-differencing and PIR sensor ingestion with confidence scoring.
-- [ ] **P6.4 Sensor Normalization & Fusion**: Shared event contract, deduplication, cooldowns.
-- **Status**: **PLANNED**.
+- [x] **P6.1 Push-to-Talk Voice Adapter**: Push-to-talk lifecycle (`AudioSessionManager`), provider-neutral STT/TTS adapters (`MockSpeechToTextAdapter`, `MockTextToSpeechAdapter`, `LocalWhisperSpeechToTextAdapter`, `LocalTextToSpeechAdapter`), observable capture states, immediate PCM buffer disposal, honest offline capability reporting.
+- [x] **P6.2 On-Demand Vision Adapter**: On-demand visual frame ingestion (`VisionAdapter`), mandatory user consent (`user_consent=True`), input size (4 MB) and dimension (4096x4096) boundaries, transient buffer release, pure-Python dimension parsers.
+- [x] **P6.3 Motion Event Adapter**: 3-tier motion architecture (`MotionAdapter`): Tier 1 PIR motion detection (presence only), Tier 2 deterministic CPU frame-differencing (delta ratio, centroid displacement, direction, magnitude), Tier 3 cross-modal event correlation with temporal windows (`CrossModalCorrelator`).
+- [x] **P6.4 Sensor Normalization & Fusion**: Shared canonical `NormalizedPerceptionEvent` contract across all 4 modalities, bounded validation, per-sensor deduplication cooldown, strict read-only constraints, persistent `perception_events` table via Alembic migration (`4e195bc031da`).
+- [x] **P6.5 Core Integration & Tool Capabilities**: Context Compiler integration (priority 45 sensor items), Tool Engine capabilities (`perception.status`, `perception.get_recent_events`, `perception.validate_sensor_payload`, `perception.analyze_motion`), REST API router (`/api/perception/`).
+- **Status**: **CLOSED & FULLY VERIFIED** (174 total passing tests, 23 dedicated P6 tests, 0 failures).
 
 ### Milestone P7: Home Automation & Physical Actuation
 - [ ] **P7.1 Home Assistant Hub Connector**: REST/WebSocket integration with entity discovery.

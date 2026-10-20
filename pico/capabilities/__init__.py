@@ -10,6 +10,12 @@ from pico.capabilities.core.calculator import CalculatorCapability
 from pico.capabilities.core.validate_json import ValidateJsonCapability
 from pico.capabilities.database.read_project import ReadProjectCapability
 from pico.capabilities.database.read_task import ReadTaskCapability
+from pico.capabilities.perception.perception_capabilities import (
+    PerceptionAnalyzeMotionCapability,
+    PerceptionGetRecentEventsCapability,
+    PerceptionStatusCapability,
+    PerceptionValidateSensorPayloadCapability,
+)
 from pico.capabilities.registry import CapabilityRegistry, registry
 from pico.capabilities.system.diagnostics import DiagnosticsCapability
 from pico.capabilities.testing.test_capabilities import (
@@ -33,6 +39,10 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(SlowTimeoutCapability())
     reg.register(VerifierFailureCapability())
     reg.register(ConsequentialActionCapability())
+    reg.register(PerceptionStatusCapability())
+    reg.register(PerceptionGetRecentEventsCapability())
+    reg.register(PerceptionValidateSensorPayloadCapability())
+    reg.register(PerceptionAnalyzeMotionCapability())
 
 
 # Automatically populate the default registry
@@ -58,4 +68,8 @@ __all__ = [
     "SlowTimeoutCapability",
     "VerifierFailureCapability",
     "ConsequentialActionCapability",
+    "PerceptionStatusCapability",
+    "PerceptionGetRecentEventsCapability",
+    "PerceptionValidateSensorPayloadCapability",
+    "PerceptionAnalyzeMotionCapability",
 ]

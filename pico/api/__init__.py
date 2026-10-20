@@ -2,6 +2,7 @@ from pico.api.chat import router as chat_router
 from pico.api.conversations import router as conversations_router
 from pico.api.health import router as health_router
 from pico.api.memory import router as memory_router
+from pico.api.perception import router as perception_router
 from pico.api.projects import router as projects_router
 from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
@@ -14,4 +15,5 @@ __all__ = [
     "chat_router",
     "memory_router",
     "tools_router",
+    "perception_router",
 ]

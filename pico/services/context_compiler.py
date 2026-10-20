@@ -301,14 +301,15 @@ class ContextCompiler:
         # - Tier 2: Current triggering user turn (Priority 90)
         # - Tier 3: Active task / project context (Priority 80)
         # - Tier 4: Conversation history (Priority 50), ordered newest to oldest
-        # - Tier 5: Memory / auxiliary facts (Priority 40)
+        # - Tier 5: Memory / auxiliary facts / sensor observations (Priority <= 45)
         mandatory_items = [it for it in prepared_items if it.is_mandatory]
         current_turn = [it for it in prepared_items if not it.is_mandatory and it.priority == 90 and it.role == "user"]
         active_context = [it for it in prepared_items if not it.is_mandatory and it.priority == 80]
         history_items = [it for it in prepared_items if not it.is_mandatory and it.priority == 50]
         # Reverse history so newest turns are evaluated first
         history_newest_first = list(reversed(history_items))
-        aux_memory = [it for it in prepared_items if not it.is_mandatory and it.priority <= 40]
+        aux_memory = [it for it in prepared_items if not it.is_mandatory and it.priority <= 45]
+        aux_memory.sort(key=lambda x: x.priority, reverse=True)
 
         # STEP A: Allocate Mandatory Instructions FIRST
         for m_item in mandatory_items:

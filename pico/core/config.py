@@ -39,6 +39,16 @@ class Settings(BaseSettings):
         "pico_owner",
     ]
 
+    # Perception Subsystem Settings
+    PERCEPTION_ENABLED: bool = True
+    AUDIO_CAPTURE_MAX_SECONDS: int = 60
+    AUDIO_MAX_PAYLOAD_BYTES: int = 10 * 1024 * 1024  # 10 MB
+    VISION_MAX_IMAGE_BYTES: int = 5 * 1024 * 1024    # 5 MB
+    VISION_MAX_DIMENSION: int = 4096
+    MOTION_COOLDOWN_SECONDS: float = 2.0
+    ENVIRONMENTAL_COOLDOWN_SECONDS: float = 5.0
+    PERCEPTION_EVENT_RETENTION_HOURS: int = 24
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
