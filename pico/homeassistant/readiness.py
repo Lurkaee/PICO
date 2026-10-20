@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError, ValidationError
@@ -13,6 +14,7 @@ from pico.homeassistant.contracts import (
     HomeAssistantConnectionError,
     ReadinessCheckItem,
     ReadinessCheckStatus,
+    ReadinessErrorCategory,
 )
 from pico.homeassistant.service import HomeAssistantService
 
@@ -29,9 +31,11 @@ class HomeAssistantReadinessChecker:
     2. NEVER operates a device or changes entity state.
     3. NEVER approves, claims, queues, or executes a capability.
     4. NEVER automatically sets HOME_ASSISTANT_ACTUATION_ENABLED=true.
-    5. NEVER leaks secret tokens or credential values.
+    5. NEVER leaks secret tokens, credentials, query parameters, or raw exception strings.
     6. Offline preflight performs strictly ZERO network requests.
     7. Live read-only check requires an explicit operator opt-in (check_live=True).
+    8. Structured error categories (INVALID_URL, INSECURE_TRANSPORT, CONNECTION_FAILED,
+       AUTHENTICATION_REJECTED, ENTITY_NOT_FOUND) provide actionable diagnostics safely.
     """
 
     def __init__(
@@ -66,6 +70,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="integration_configuration",
                     status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                     message="Home Assistant integration is disabled and access token is unset.",
                     remediation="Set HOME_ASSISTANT_ENABLED=true and configure HOME_ASSISTANT_ACCESS_TOKEN in secure environment configuration.",
                 )
@@ -75,6 +80,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="integration_configuration",
                     status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                     message="Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).",
                     remediation="Set HOME_ASSISTANT_ENABLED=true to enable integration awareness.",
                 )
@@ -84,6 +90,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="integration_configuration",
                     status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                     message="Home Assistant access token is missing or empty.",
                     remediation="Configure HOME_ASSISTANT_ACCESS_TOKEN with a valid Home Assistant Long-Lived Access Token.",
                 )
@@ -93,6 +100,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="integration_configuration",
                     status=ReadinessCheckStatus.PASS,
+                    error_category=None,
                     message="Home Assistant integration is enabled with configured access token (token value withheld).",
                     remediation=None,
                 )
@@ -104,6 +112,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="target_test_light",
                     status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                     message="Target test light entity is not configured (HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID is unset).",
                     remediation="Configure HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID with the entity ID of the designated test light (e.g. 'light.test_light').",
                 )
@@ -113,7 +122,8 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="target_test_light",
                     status=ReadinessCheckStatus.FAIL,
-                    message=f"Target entity '{configured_light}' has invalid syntax. Format must be '<domain>.<name>'.",
+                    error_category=ReadinessErrorCategory.INVALID_ENTITY,
+                    message="Target entity ID has invalid syntax. Format must be '<domain>.<name>' using alphanumeric characters and underscores.",
                     remediation="Ensure HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID contains valid alphanumeric characters and underscores.",
                 )
             )
@@ -123,7 +133,8 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="target_test_light",
                     status=ReadinessCheckStatus.FAIL,
-                    message=f"Configured entity '{configured_light}' is in domain '{domain}'. Only the 'light' domain is permitted for physical actuation in Milestone P7.3.",
+                    error_category=ReadinessErrorCategory.INVALID_ENTITY,
+                    message=f"Target entity domain '{domain}' is prohibited. Only the 'light' domain is permitted for physical actuation in Milestone P7.3.",
                     remediation="Change HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID to a light entity (e.g. 'light.test_light').",
                 )
             )
@@ -132,6 +143,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="target_test_light",
                     status=ReadinessCheckStatus.PASS,
+                    error_category=None,
                     message=f"Target test light '{configured_light}' is syntactically valid and strictly restricted to the 'light' domain.",
                     remediation=None,
                 )
@@ -146,6 +158,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="approval_credential",
                     status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                     message="Server-side approval secret is not configured (APPROVAL_SECRET_TOKEN is unset).",
                     remediation="Set APPROVAL_SECRET_TOKEN in server secure configuration. Physical actuation strictly fails closed without this token.",
                 )
@@ -155,6 +168,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="approval_credential",
                     status=ReadinessCheckStatus.PASS,
+                    error_category=None,
                     message="Server-side approval secret token is configured (value withheld).",
                     remediation=None,
                 )
@@ -167,6 +181,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="authorization_path",
                     status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.AUTHORIZATION_UNAVAILABLE,
                     message="Authorization path fails closed: missing APPROVAL_SECRET_TOKEN or empty TRUSTED_APPROVER_IDENTITIES list.",
                     remediation="Configure APPROVAL_SECRET_TOKEN and at least one trusted approver identity in TRUSTED_APPROVER_IDENTITIES.",
                 )
@@ -176,6 +191,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="authorization_path",
                     status=ReadinessCheckStatus.PASS,
+                    error_category=None,
                     message=f"Authorization path is active with {len(trusted_identities)} trusted approver identities, server-authenticated token validation, and fail-closed enforcement.",
                     remediation=None,
                 )
@@ -183,39 +199,73 @@ class HomeAssistantReadinessChecker:
 
         # 5. Transport security and URL validation
         raw_url = (settings.HOME_ASSISTANT_BASE_URL or "").strip()
+        transport_valid = False
+        transport_category: ReadinessErrorCategory | None = None
+
         if not raw_url:
             checks.append(
                 ReadinessCheckItem(
                     name="transport_security",
                     status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                     message="Home Assistant base URL is not configured (HOME_ASSISTANT_BASE_URL is empty).",
                     remediation="Configure HOME_ASSISTANT_BASE_URL in server environment.",
                 )
             )
         else:
             try:
-                sanitized_url = HomeAssistantClient._validate_and_sanitize_url(
+                parsed_u = urlparse(raw_url)
+                if parsed_u.username or parsed_u.password:
+                    raise ValidationError("Embedded credentials and userinfo are prohibited in base URL configuration.")
+                HomeAssistantClient._validate_and_sanitize_url(
                     raw_url,
                     allow_insecure_transport=settings.HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT,
                 )
+                transport_valid = True
                 checks.append(
                     ReadinessCheckItem(
                         name="transport_security",
                         status=ReadinessCheckStatus.PASS,
-                        message=f"Configured transport URL '{sanitized_url}' satisfies scheme, host, and security policies.",
+                        error_category=None,
+                        message="Configured transport URL satisfies scheme, host, and security policies.",
                         remediation=None,
                     )
                 )
             except ValidationError as e:
+                err_text = str(e)
+                if "Insecure plaintext transport" in err_text:
+                    transport_category = ReadinessErrorCategory.INSECURE_TRANSPORT
+                    checks.append(
+                        ReadinessCheckItem(
+                            name="transport_security",
+                            status=ReadinessCheckStatus.FAIL,
+                            error_category=ReadinessErrorCategory.INSECURE_TRANSPORT,
+                            message="[INSECURE_TRANSPORT] Plaintext HTTP transport to non-loopback host is prohibited by security policy.",
+                            remediation="Use 'https://' for remote hosts, or set HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT=true only in isolated testing environments.",
+                        )
+                    )
+                else:
+                    transport_category = ReadinessErrorCategory.INVALID_URL
+                    checks.append(
+                        ReadinessCheckItem(
+                            name="transport_security",
+                            status=ReadinessCheckStatus.FAIL,
+                            error_category=ReadinessErrorCategory.INVALID_URL,
+                            message="[INVALID_URL] Configured transport URL has invalid scheme, missing host, malformed port, or prohibited components (query parameters, fragments, or user credentials).",
+                            remediation="Ensure HOME_ASSISTANT_BASE_URL is a valid http:// or https:// URL without query parameters, fragments, or credentials.",
+                        )
+                    )
+            except (ValueError, Exception):
+                transport_category = ReadinessErrorCategory.INVALID_URL
                 checks.append(
                     ReadinessCheckItem(
                         name="transport_security",
                         status=ReadinessCheckStatus.FAIL,
-                        message=f"Transport URL validation failed: {str(e)}",
-                        remediation="Ensure HOME_ASSISTANT_BASE_URL is a valid http/https URL. For non-loopback hosts, use https or set HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT=true.",
+                        error_category=ReadinessErrorCategory.INVALID_URL,
+                        message="[INVALID_URL] Configured transport URL has malformed syntax, invalid port, or invalid characters.",
+                        remediation="Ensure HOME_ASSISTANT_BASE_URL is a valid http:// or https:// URL format.",
                     )
                 )
-
 
         # 6. Actuation disabled by default
         actuation_enabled = bool(settings.HOME_ASSISTANT_ACTUATION_ENABLED)
@@ -224,6 +274,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="actuation_disabled_by_default",
                     status=ReadinessCheckStatus.PASS,
+                    error_category=None,
                     message="Physical actuation is safely disabled by default (HOME_ASSISTANT_ACTUATION_ENABLED=false).",
                     remediation=None,
                 )
@@ -233,6 +284,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="actuation_disabled_by_default",
                     status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.ACTUATION_ENABLED,
                     message="Physical actuation is currently ENABLED (HOME_ASSISTANT_ACTUATION_ENABLED=true). For commissioning readiness preflight, actuation must remain disabled until the manual commissioning checklist is completed.",
                     remediation="Set HOME_ASSISTANT_ACTUATION_ENABLED=false until operator explicitly authorizes the first physical actuation test.",
                 )
@@ -245,6 +297,7 @@ class HomeAssistantReadinessChecker:
                 ReadinessCheckItem(
                     name="live_test_light_readability",
                     status=ReadinessCheckStatus.NOT_CHECKED,
+                    error_category=None,
                     message="Live read-only connectivity check was not requested. Offline preflight performed zero network requests.",
                     remediation="To perform a live read-only state check, request readiness evaluation with check_live=true.",
                 )
@@ -256,8 +309,19 @@ class HomeAssistantReadinessChecker:
                     ReadinessCheckItem(
                         name="live_test_light_readability",
                         status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
                         message="Cannot perform live read check: Home Assistant integration is disabled or access token is missing.",
                         remediation="Configure integration and access token before requesting live connectivity check.",
+                    )
+                )
+            elif not transport_valid:
+                checks.append(
+                    ReadinessCheckItem(
+                        name="live_test_light_readability",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=transport_category or ReadinessErrorCategory.INVALID_URL,
+                        message="Cannot perform live read check: transport URL configuration is invalid or rejected by security policy.",
+                        remediation="Correct HOME_ASSISTANT_BASE_URL before requesting live connectivity check.",
                     )
                 )
             elif not configured_light or not configured_light.startswith("light.") or not ENTITY_ID_REGEX.match(configured_light):
@@ -265,6 +329,7 @@ class HomeAssistantReadinessChecker:
                     ReadinessCheckItem(
                         name="live_test_light_readability",
                         status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.INVALID_ENTITY,
                         message="Cannot perform live read check: target test light entity ID is invalid or unconfigured.",
                         remediation="Configure HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID before requesting live connectivity check.",
                     )
@@ -278,6 +343,7 @@ class HomeAssistantReadinessChecker:
                         ReadinessCheckItem(
                             name="live_test_light_readability",
                             status=ReadinessCheckStatus.PASS,
+                            error_category=None,
                             message=f"Successfully retrieved reported state for '{configured_light}': current reported state is '{reported_state}'. (Zero mutations performed).",
                             remediation=None,
                         )
@@ -287,7 +353,8 @@ class HomeAssistantReadinessChecker:
                         ReadinessCheckItem(
                             name="live_test_light_readability",
                             status=ReadinessCheckStatus.FAIL,
-                            message=f"Target entity '{configured_light}' not found in Home Assistant (HTTP 404).",
+                            error_category=ReadinessErrorCategory.ENTITY_NOT_FOUND,
+                            message=f"[ENTITY_NOT_FOUND] Target entity '{configured_light}' not found in Home Assistant (HTTP 404).",
                             remediation="Verify that the designated light entity exists and is exposed in Home Assistant.",
                         )
                     )
@@ -296,16 +363,18 @@ class HomeAssistantReadinessChecker:
                         ReadinessCheckItem(
                             name="live_test_light_readability",
                             status=ReadinessCheckStatus.FAIL,
-                            message="Home Assistant rejected authentication during read-only check (HTTP 401/403).",
+                            error_category=ReadinessErrorCategory.AUTHENTICATION_REJECTED,
+                            message="[AUTHENTICATION_REJECTED] Home Assistant rejected authentication during read-only check (HTTP 401/403).",
                             remediation="Verify that HOME_ASSISTANT_ACCESS_TOKEN is a valid Long-Lived Access Token.",
                         )
                     )
-                except (HomeAssistantConnectionError, Exception) as e:
+                except (HomeAssistantConnectionError, Exception):
                     checks.append(
                         ReadinessCheckItem(
                             name="live_test_light_readability",
                             status=ReadinessCheckStatus.FAIL,
-                            message=f"Failed to read entity state from Home Assistant: {str(e)}",
+                            error_category=ReadinessErrorCategory.CONNECTION_FAILED,
+                            message="[CONNECTION_FAILED] Failed to connect to Home Assistant hub. Connection refused, timed out, or network unreachable.",
                             remediation="Verify that the Home Assistant hub is running and reachable at the configured base URL.",
                         )
                     )
@@ -394,7 +463,8 @@ def main(argv: list[str] | None = None) -> int:
         print("-" * 70)
         print("Checks:")
         for check in report.checks:
-            print(f"  [{check.status.value:<14}] {check.name}: {check.message}")
+            cat_str = f" [{check.error_category.value}]" if check.error_category else ""
+            print(f"  [{check.status.value:<14}]{cat_str} {check.name}: {check.message}")
             if check.remediation:
                 print(f"                 Remediation: {check.remediation}")
         print("-" * 70)

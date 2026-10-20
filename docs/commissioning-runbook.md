@@ -125,9 +125,25 @@ Each check item in `report.checks` yields one of four explicit statuses:
 | Status | Meaning | Action Needed |
 | :--- | :--- | :--- |
 | `PASS` | The configuration, policy, or live check succeeded. | None. Check meets requirements. |
-| `FAIL` | Configured value violates policy, failed authentication, or live inspection failed. | Inspect the `remediation` field and resolve the underlying issue. |
+| `FAIL` | Configured value violates policy, failed authentication, or live inspection failed. | Inspect `error_category` and `remediation` field to resolve the underlying issue. |
 | `NOT_CONFIGURED` | An essential configuration variable is unset or empty. | Provide the missing setting in the server environment. |
 | `NOT_CHECKED` | Check was omitted (e.g. live connectivity was not requested during offline run). | Request live check (`--live` or `check_live=true`) when ready. |
+
+### Sanitized Diagnostic Error Categories (`error_category`)
+
+To prevent credential leakage in logs, reports, or CLI outputs, readiness checks never echo raw URLs, query parameters, URL fragments, user credentials, authorization tokens, or arbitrary exception strings. Instead, failed checks are classified into stable, machine-readable diagnostic categories:
+
+| Error Category | Description |
+| :--- | :--- |
+| `INVALID_URL` | Base URL fails syntax validation, specifies an invalid or non-numeric port, or contains prohibited query parameters, URL fragments, or embedded userinfo. |
+| `INSECURE_TRANSPORT` | Non-loopback `http://` transport used without explicit insecure transport override. |
+| `CONNECTION_FAILED` | Network unreachable, host down, or connection refused during live inspection (zero sensitive details echoed). |
+| `AUTHENTICATION_REJECTED` | Home Assistant rejected the access token (HTTP 401 Unauthorized or 403 Forbidden). |
+| `ENTITY_NOT_FOUND` | Configured target test light does not exist in Home Assistant (HTTP 404). |
+| `MISSING_CONFIGURATION` | Essential setting (`HOME_ASSISTANT_BASE_URL` or `HOME_ASSISTANT_ACCESS_TOKEN`) is unset or empty. |
+| `INVALID_ENTITY` | Target entity ID syntax is invalid or domain is not `light`. |
+| `AUTHORIZATION_UNAVAILABLE` | `APPROVAL_SECRET_TOKEN` is unset or empty. |
+| `ACTUATION_ENABLED` | Actuation is enabled prematurely (`HOME_ASSISTANT_ACTUATION_ENABLED=true`) during commissioning readiness. |
 
 ### Overall Readiness Verdict (`ready_for_commissioning`)
 - `ready_for_commissioning: true` **ONLY** when:
@@ -140,17 +156,19 @@ Each check item in `report.checks` yields one of four explicit statuses:
 
 ## 5. Troubleshooting & Remediation Guide
 
-| Failure Scenario | Check Name | Remediation |
-| :--- | :--- | :--- |
-| Missing Base URL or Token | `integration_configuration` | Set `HOME_ASSISTANT_BASE_URL` and `HOME_ASSISTANT_ACCESS_TOKEN` in `.env` or server environment. |
-| Integration Disabled | `integration_configuration` | Set `HOME_ASSISTANT_ENABLED=true`. |
-| Missing Test Light Entity | `target_test_light` | Set `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID="light.<name>"`. |
-| Invalid Domain (e.g. `switch.lamp`) | `target_test_light` | Change entity ID to a `light` domain entity. Physical actuation in P7.3 is restricted strictly to lights. |
-| Insecure Transport (Non-loopback HTTP) | `transport_security` | Use `https://` for remote Home Assistant instances, or set `HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT=true` only on isolated test networks. |
-| Missing Approval Token | `approval_credential` | Set `APPROVAL_SECRET_TOKEN="<random-token>"`. Physical actuation fails closed without it. |
-| Actuation Already Enabled | `actuation_disabled_by_default` | Set `HOME_ASSISTANT_ACTUATION_ENABLED=false`. Commissioning preflight requires actuation to be disabled by default. |
-| 401/403 Authentication Error | `live_test_light_readability` | Check that `HOME_ASSISTANT_ACCESS_TOKEN` has not expired and has admin/read permissions in Home Assistant. |
-| 404 Entity Not Found | `live_test_light_readability` | Ensure the entity exists in Home Assistant (`Developer Tools -> States`) and is visible. |
+| Failure Scenario | Check Name | Error Category | Remediation |
+| :--- | :--- | :--- | :--- |
+| Missing Base URL or Token | `integration_configuration` | `MISSING_CONFIGURATION` | Set `HOME_ASSISTANT_BASE_URL` and `HOME_ASSISTANT_ACCESS_TOKEN` in `.env` or server environment. |
+| Integration Disabled | `integration_configuration` | `MISSING_CONFIGURATION` | Set `HOME_ASSISTANT_ENABLED=true`. |
+| Malformed or Sensitive URL | `transport_security` | `INVALID_URL` | Configure a clean base URL without query parameters, fragments, or userinfo (e.g., `http://127.0.0.1:8123`). |
+| Missing Test Light Entity | `target_test_light` | `MISSING_CONFIGURATION` | Set `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID="light.<name>"`. |
+| Invalid Domain (e.g. `switch.lamp`) | `target_test_light` | `INVALID_ENTITY` | Change entity ID to a `light` domain entity. Physical actuation in P7.3 is restricted strictly to lights. |
+| Insecure Transport (Non-loopback HTTP) | `transport_security` | `INSECURE_TRANSPORT` | Use `https://` for remote Home Assistant instances, or set `HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT=true` only on isolated test networks. |
+| Missing Approval Token | `approval_credential` | `AUTHORIZATION_UNAVAILABLE` | Set `APPROVAL_SECRET_TOKEN="<random-token>"`. Physical actuation fails closed without it. |
+| Actuation Already Enabled | `actuation_disabled_by_default` | `ACTUATION_ENABLED` | Set `HOME_ASSISTANT_ACTUATION_ENABLED=false`. Commissioning preflight requires actuation to be disabled by default. |
+| Connection Refused or Host Unreachable | `live_test_light_readability` | `CONNECTION_FAILED` | Ensure Home Assistant service is running and accessible on the configured network interface. |
+| 401/403 Authentication Error | `live_test_light_readability` | `AUTHENTICATION_REJECTED` | Check that `HOME_ASSISTANT_ACCESS_TOKEN` has not expired and has admin/read permissions in Home Assistant. |
+| 404 Entity Not Found | `live_test_light_readability` | `ENTITY_NOT_FOUND` | Ensure the entity exists in Home Assistant (`Developer Tools -> States`) and is visible. |
 
 ---
 

@@ -33,6 +33,7 @@ from pico.core.config import settings
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
     ReadinessCheckStatus,
+    ReadinessErrorCategory,
 )
 from pico.homeassistant.readiness import (
     HomeAssistantReadinessChecker,
@@ -459,3 +460,247 @@ def test_cli_runner_offline_and_live() -> None:
         rc_live = readiness_cli_main(["--live", "--json"])
     assert rc_live == 0  # Ready for commissioning!
     assert len(calls["mutation_calls"]) == 0
+
+
+# =====================================================================
+# 13. Secret-redaction hardening and structured error category tests
+# =====================================================================
+
+@pytest.mark.anyio
+async def test_readiness_url_query_sentinel_secret_never_leaked(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel_query = "sentinel_query_secret_token_xyz999"
+    sentinel_val = "sentinel_val_12345"
+    tainted_url = f"http://127.0.0.1:8123/?token={sentinel_query}&key={sentinel_val}"
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", tainted_url)
+
+    caplog.set_level(logging.DEBUG)
+
+    report = await evaluate_actuation_readiness(check_live=False)
+
+    assert report.ready_for_commissioning is False
+    checks = {c.name: c for c in report.checks}
+    assert checks["transport_security"].status == ReadinessCheckStatus.FAIL
+    assert checks["transport_security"].error_category == ReadinessErrorCategory.INVALID_URL
+
+    # Test report dump, repr, summary, messages, remediation
+    report_json = json.dumps(report.model_dump())
+    report_repr = repr(report)
+    log_text = caplog.text
+
+    assert sentinel_query not in report_json
+    assert sentinel_val not in report_json
+    assert sentinel_query not in report_repr
+    assert sentinel_val not in report_repr
+    assert sentinel_query not in report.summary
+    assert sentinel_val not in report.summary
+    for check in report.checks:
+        assert sentinel_query not in check.message
+        assert sentinel_val not in check.message
+        if check.remediation:
+            assert sentinel_query not in check.remediation
+            assert sentinel_val not in check.remediation
+    assert sentinel_query not in log_text
+    assert sentinel_val not in log_text
+
+
+def test_readiness_cli_redacts_sentinel_query_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel_query = "sentinel_query_secret_token_xyz999"
+    sentinel_val = "sentinel_val_12345"
+    tainted_url = f"http://127.0.0.1:8123/?token={sentinel_query}&key={sentinel_val}"
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", tainted_url)
+
+    # Verify JSON CLI output redacts secrets
+    out_buf = io.StringIO()
+    with patch("sys.stdout", out_buf):
+        rc = readiness_cli_main(["--json"])
+    assert rc == 1
+    cli_out = out_buf.getvalue()
+    assert sentinel_query not in cli_out
+    assert sentinel_val not in cli_out
+
+    # Also test text CLI output redacts secrets
+    out_text_buf = io.StringIO()
+    with patch("sys.stdout", out_text_buf):
+        rc_text = readiness_cli_main([])
+    assert rc_text == 1
+    text_out = out_text_buf.getvalue()
+    assert sentinel_query not in text_out
+    assert sentinel_val not in text_out
+    assert "[INVALID_URL]" in text_out
+
+
+@pytest.mark.anyio
+async def test_readiness_url_fragment_and_userinfo_never_leaked(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel_frag = "sentinel_fragment_secret_token_777"
+    tainted_frag_url = f"http://127.0.0.1:8123/#{sentinel_frag}"
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", tainted_frag_url)
+
+    caplog.set_level(logging.DEBUG)
+    report = await evaluate_actuation_readiness(check_live=False)
+    assert report.ready_for_commissioning is False
+    checks = {c.name: c for c in report.checks}
+    assert checks["transport_security"].status == ReadinessCheckStatus.FAIL
+    assert checks["transport_security"].error_category == ReadinessErrorCategory.INVALID_URL
+    assert sentinel_frag not in json.dumps(report.model_dump())
+    assert sentinel_frag not in caplog.text
+
+    sentinel_user = "sentinel_admin_user"
+    sentinel_pass = "sentinel_admin_password_888"
+    tainted_userinfo_url = f"http://{sentinel_user}:{sentinel_pass}@127.0.0.1:8123"
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", tainted_userinfo_url)
+
+    report_userinfo = await evaluate_actuation_readiness(check_live=False)
+    assert report_userinfo.ready_for_commissioning is False
+    checks_u = {c.name: c for c in report_userinfo.checks}
+    assert checks_u["transport_security"].status == ReadinessCheckStatus.FAIL
+    assert checks_u["transport_security"].error_category == ReadinessErrorCategory.INVALID_URL
+    report_u_json = json.dumps(report_userinfo.model_dump())
+    assert sentinel_user not in report_u_json
+    assert sentinel_pass not in report_u_json
+    assert sentinel_pass not in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        "http://127.0.0.1:999999999",
+        "http://127.0.0.1:invalid_port",
+        "http://",
+        "http://[::1",
+        "http://127.0.0.1:8123:extra_colon",
+        "http://   ",
+    ],
+)
+async def test_readiness_malformed_urls_and_ports_produce_structured_fail(
+    malformed_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", malformed_url)
+
+    # Must never crash or raise unhandled ValueError
+    report = await evaluate_actuation_readiness(check_live=False)
+
+    assert report.ready_for_commissioning is False
+    checks = {c.name: c for c in report.checks}
+    assert checks["transport_security"].status == ReadinessCheckStatus.FAIL
+    assert checks["transport_security"].error_category == ReadinessErrorCategory.INVALID_URL
+    # Ensure raw malformed input or unhandled exception details do not leak into messages
+    assert "Traceback" not in checks["transport_security"].message
+    assert "ValueError" not in checks["transport_security"].message
+
+
+@pytest.mark.anyio
+async def test_live_preflight_invalid_url_performs_zero_network_and_zero_mutation_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel_leak = "leak_sentinel_xyz"
+    monkeypatch.setattr(
+        settings,
+        "HOME_ASSISTANT_BASE_URL",
+        f"http://127.0.0.1:invalid_port/?leak={sentinel_leak}",
+    )
+
+    transport, calls = make_spy_ha_transport()
+    with patch("pico.homeassistant.client.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
+        report = await evaluate_actuation_readiness(check_live=True)
+
+    # Must perform strictly zero network and mutation requests
+    assert len(calls["read_calls"]) == 0
+    assert len(calls["mutation_calls"]) == 0
+    assert report.live_check_performed is True
+    assert report.live_passed is False
+    assert report.ready_for_commissioning is False
+
+    checks = {c.name: c for c in report.checks}
+    assert checks["transport_security"].status == ReadinessCheckStatus.FAIL
+    assert checks["transport_security"].error_category == ReadinessErrorCategory.INVALID_URL
+    assert checks["live_test_light_readability"].status == ReadinessCheckStatus.FAIL
+    assert checks["live_test_light_readability"].error_category == ReadinessErrorCategory.INVALID_URL
+
+    report_json = json.dumps(report.model_dump())
+    assert sentinel_leak not in report_json
+
+
+@pytest.mark.anyio
+async def test_readiness_valid_loopback_and_secure_remote_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Valid loopback HTTP
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", "http://127.0.0.1:8123")
+    report1 = await evaluate_actuation_readiness(check_live=False)
+    checks1 = {c.name: c for c in report1.checks}
+    assert checks1["transport_security"].status == ReadinessCheckStatus.PASS
+    assert checks1["transport_security"].error_category is None
+
+    # Valid secure remote HTTPS
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", "https://ha.internal.example:8123")
+    report2 = await evaluate_actuation_readiness(check_live=False)
+    checks2 = {c.name: c for c in report2.checks}
+    assert checks2["transport_security"].status == ReadinessCheckStatus.PASS
+    assert checks2["transport_security"].error_category is None
+
+    # Insecure remote HTTP
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_BASE_URL", "http://ha.internal.example:8123")
+    report3 = await evaluate_actuation_readiness(check_live=False)
+    checks3 = {c.name: c for c in report3.checks}
+    assert checks3["transport_security"].status == ReadinessCheckStatus.FAIL
+    assert checks3["transport_security"].error_category == ReadinessErrorCategory.INSECURE_TRANSPORT
+
+
+@pytest.mark.anyio
+async def test_readiness_live_network_error_sanitization() -> None:
+    def error_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused by peer at internal_sensitive_host:8123")
+
+    error_transport = httpx.MockTransport(error_handler)
+    with patch("pico.homeassistant.client.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=error_transport)):
+        report = await evaluate_actuation_readiness(check_live=True)
+
+    assert report.ready_for_commissioning is False
+    checks = {c.name: c for c in report.checks}
+    live_check = checks["live_test_light_readability"]
+    assert live_check.status == ReadinessCheckStatus.FAIL
+    assert live_check.error_category == ReadinessErrorCategory.CONNECTION_FAILED
+    # Sensitive connection exception text must NOT leak
+    assert "internal_sensitive_host" not in json.dumps(report.model_dump())
+    assert "internal_sensitive_host" not in live_check.message
+    assert "internal_sensitive_host" not in live_check.remediation
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_readiness_live_auth_rejected_error_category(status_code: int) -> None:
+    def auth_fail_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"message": "Unauthorized"})
+
+    auth_transport = httpx.MockTransport(auth_fail_handler)
+    with patch("pico.homeassistant.client.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=auth_transport)):
+        report = await evaluate_actuation_readiness(check_live=True)
+
+    assert report.ready_for_commissioning is False
+    checks = {c.name: c for c in report.checks}
+    live_check = checks["live_test_light_readability"]
+    assert live_check.status == ReadinessCheckStatus.FAIL
+    assert live_check.error_category == ReadinessErrorCategory.AUTHENTICATION_REJECTED
+
+
+@pytest.mark.anyio
+async def test_readiness_live_entity_not_found_error_category() -> None:
+    transport, _ = make_spy_ha_transport(light_exists=False)
+    with patch("pico.homeassistant.client.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
+        report = await evaluate_actuation_readiness(check_live=True)
+
+    assert report.ready_for_commissioning is False
+    checks = {c.name: c for c in report.checks}
+    live_check = checks["live_test_light_readability"]
+    assert live_check.status == ReadinessCheckStatus.FAIL
+    assert live_check.error_category == ReadinessErrorCategory.ENTITY_NOT_FOUND
