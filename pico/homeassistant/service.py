@@ -91,11 +91,13 @@ class HomeAssistantService:
         target_domains = {d.strip().lower() for d in domains} if domains else None
 
         highlights: list[EntityState] = []
+        all_classifications: list[str] = []
         for raw in raw_states:
             try:
                 norm = self._normalize_entity(raw)
                 dom = norm.domain
                 domain_counts[dom] = domain_counts.get(dom, 0) + 1
+                all_classifications.append(norm.data_classification)
 
                 if target_domains and dom not in target_domains:
                     continue
@@ -106,7 +108,7 @@ class HomeAssistantService:
             except Exception:
                 continue
 
-        effective_classification = "SENSITIVE" if any(h.data_classification == "SENSITIVE" for h in highlights) else "INTERNAL"
+        effective_classification = "SENSITIVE" if any(c == "SENSITIVE" for c in all_classifications) else "INTERNAL"
 
         return EntityOverviewOutput(
             total_entities=sum(domain_counts.values()),

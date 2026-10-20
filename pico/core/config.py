@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     HOME_ASSISTANT_TIMEOUT_SECONDS: float = 10.0
     HOME_ASSISTANT_MAX_ENTITIES_LIMIT: int = 500
     HOME_ASSISTANT_ALLOW_LIVE_SUBSCRIPTION: bool = False
+    HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

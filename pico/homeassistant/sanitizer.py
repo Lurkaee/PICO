@@ -1,8 +1,9 @@
 import json
+import math
 from typing import Any
 
-# Disallowed sensitive or personal attribute keys
-STRIPPED_KEYS = {
+# Disallowed sensitive, credential, or personal attribute keywords
+STRIPPED_KEYWORDS = (
     "latitude",
     "longitude",
     "altitude",
@@ -18,10 +19,14 @@ STRIPPED_KEYS = {
     "password",
     "secret",
     "entity_picture",
-}
+    "lat",
+    "lon",
+    "credential",
+    "auth",
+)
 
-# Standard safe attribute keys commonly used for household awareness
-RETAINED_KEYS = {
+# Strictly approved attribute keys for supported awareness operations
+APPROVED_ATTRIBUTE_KEYS = {
     "friendly_name",
     "device_class",
     "unit_of_measurement",
@@ -38,7 +43,6 @@ RETAINED_KEYS = {
     "is_volume_muted",
     "volume_level",
     "current_position",
-    "supported_features",
     "preset_mode",
     "mode",
 }
@@ -48,11 +52,14 @@ def sanitize_entity_attributes(raw_attributes: dict[str, Any] | None) -> dict[st
     """Sanitize and bound entity attributes to prevent leaks of personal info, GPS, and unbounded blobs.
 
     Rules:
-    1. Strip all location, user, network, and token keys.
-    2. Retain scalar/small values for approved descriptive keys or harmless scalar keys.
-    3. Cap string lengths to 128 chars.
-    4. Bound the dictionary to at most 12 keys.
-    5. Ensure total JSON size is strictly <= 1024 bytes.
+    1. Default to a strict allowlist of explicitly approved attributes for awareness.
+    2. Drop unknown attributes regardless of whether their values are numeric, boolean, or strings.
+    3. Filter all sensitive location, credential, network, and personal identifiers.
+    4. Reject or safely normalize non-finite numeric values (NaN, Inf).
+    5. Disallow nested dictionaries or complex object graphs.
+    6. Cap string lengths to 128 chars and bounded collections to <= 5 scalar items.
+    7. Bound the dictionary to at most 12 keys.
+    8. Ensure total UTF-8 encoded JSON size is strictly <= 1024 bytes.
     """
     if not raw_attributes or not isinstance(raw_attributes, dict):
         return {}
@@ -64,26 +71,47 @@ def sanitize_entity_attributes(raw_attributes: dict[str, Any] | None) -> dict[st
             continue
         key_lower = k.strip().lower()
 
-        # Reject any stripped/sensitive key
-        if key_lower in STRIPPED_KEYS or any(bad in key_lower for bad in ("token", "password", "secret", "lat", "lon")):
+        # Reject any stripped/sensitive keyword
+        if any(bad in key_lower for bad in STRIPPED_KEYWORDS):
             continue
 
-        # Keep approved keys or harmless scalar attributes
-        if key_lower in RETAINED_KEYS or isinstance(v, (int, float, bool)):
-            if isinstance(v, str):
-                sanitized[k] = v[:128]
-            elif isinstance(v, (int, float, bool)):
-                sanitized[k] = v
-            elif isinstance(v, (list, tuple)) and len(v) <= 5 and all(isinstance(x, (int, float, str)) for x in v):
-                sanitized[k] = [x[:64] if isinstance(x, str) else x for x in v]
+        # Strictly enforce allowlist: drop all unapproved keys
+        if key_lower not in APPROVED_ATTRIBUTE_KEYS:
+            continue
+
+        # Nested dictionaries are prohibited
+        if isinstance(v, dict):
+            continue
+
+        # Handle booleans (bool is a subclass of int, check first)
+        if isinstance(v, bool):
+            sanitized[k] = v
+        elif isinstance(v, int):
+            sanitized[k] = v
+        elif isinstance(v, float):
+            if not math.isfinite(v):
+                continue
+            sanitized[k] = v
+        elif isinstance(v, str):
+            sanitized[k] = v[:128]
+        elif isinstance(v, (list, tuple)):
+            if len(v) <= 5 and all(isinstance(x, (str, int, float, bool)) for x in v):
+                clean_list: list[Any] = []
+                valid = True
+                for x in v:
+                    if isinstance(x, float) and not math.isfinite(x):
+                        valid = False
+                        break
+                    clean_list.append(x[:64] if isinstance(x, str) else x)
+                if valid:
+                    sanitized[k] = clean_list
 
         if len(sanitized) >= 12:
             break
 
-    # Bound total size
+    # Bound total JSON serialized size
     serialized = json.dumps(sanitized)
     if len(serialized.encode("utf-8")) > 1024:
-        # Fallback to minimal friendly_name and device_class only
         minimal: dict[str, Any] = {}
         if "friendly_name" in sanitized:
             minimal["friendly_name"] = str(sanitized["friendly_name"])[:64]
