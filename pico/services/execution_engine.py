@@ -163,35 +163,22 @@ class ToolExecutionEngine:
     def approve(
         self,
         execution_id: str,
-        approver: str,
+        approver: str | None = None,
         notes: str | None = None,
         correlation_id: str | None = None,
         approval_token: str | None = None,
+        authenticated_principal: str | None = None,
     ) -> ToolExecution:
         """
         Record explicit human approval for an awaiting_approval capability.
         Binds approval to the exact input_digest.
+        Derives recorded approver from server-validated credentials.
         """
         execution = self.exec_repo.get_by_id(execution_id)
         if not execution:
             raise EntityNotFoundError("ToolExecution", execution_id)
 
-        clean_approver = (approver or "").strip()
-        if not clean_approver or clean_approver not in settings.TRUSTED_APPROVER_IDENTITIES:
-            self.ledger_repo.append(
-                event_type="approval_denied",
-                execution_id=execution.id,
-                task_id=execution.task_id,
-                correlation_id=correlation_id,
-                capability_id=execution.capability_id,
-                payload_json={"attempted_approver": clean_approver, "reason": "Untrusted approver identity"},
-                data_classification=execution.data_classification,
-            )
-            raise AuthorizationError(
-                f"Principal '{clean_approver}' is not authorized to approve executions. Must be in {settings.TRUSTED_APPROVER_IDENTITIES}."
-            )
-
-        # Physical actuation authorization invariant: fails closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid
+        # Derive honest server-defined approval principal
         if execution.capability_id == "homeassistant.test_light_actuate":
             if not settings.APPROVAL_SECRET_TOKEN or not approval_token or approval_token != settings.APPROVAL_SECRET_TOKEN:
                 self.ledger_repo.append(
@@ -200,23 +187,51 @@ class ToolExecutionEngine:
                     task_id=execution.task_id,
                     correlation_id=correlation_id,
                     capability_id=execution.capability_id,
-                    payload_json={"attempted_approver": clean_approver, "reason": "Missing or invalid server approval secret token"},
+                    payload_json={"reason": "Missing or invalid server approval secret token"},
                     data_classification=execution.data_classification,
                 )
                 raise AuthorizationError(
                     "Physical actuation approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
                 )
+            recorded_principal = "authenticated_token_holder"
+        elif authenticated_principal:
+            recorded_principal = authenticated_principal
+        elif approval_token and settings.APPROVAL_SECRET_TOKEN and approval_token == settings.APPROVAL_SECRET_TOKEN:
+            recorded_principal = "authenticated_token_holder"
+        else:
+            # Fallback for internal direct-engine test invocations
+            clean_approver = (approver or "").strip()
+            if not clean_approver or clean_approver not in settings.TRUSTED_APPROVER_IDENTITIES:
+                self.ledger_repo.append(
+                    event_type="approval_denied",
+                    execution_id=execution.id,
+                    task_id=execution.task_id,
+                    correlation_id=correlation_id,
+                    capability_id=execution.capability_id,
+                    payload_json={"attempted_approver": clean_approver, "reason": "Untrusted approver identity"},
+                    data_classification=execution.data_classification,
+                )
+                raise AuthorizationError(
+                    f"Principal '{clean_approver}' is not authorized to approve executions. Must be in {settings.TRUSTED_APPROVER_IDENTITIES}."
+                )
+            recorded_principal = clean_approver
 
         if execution.status != "awaiting_approval":
             raise ValidationError(
                 f"Execution '{execution_id}' is in status '{execution.status}', expected 'awaiting_approval'."
             )
 
+        # Retain caller-provided approver strictly as descriptive metadata
+        meta = dict(execution.metadata_json or {})
+        if approver:
+            meta["claimed_approver"] = approver.strip()
+
         # Approve and transition to queued
         approved_item = self.exec_repo.record_approval(
             execution_id=execution_id,
-            approver=clean_approver,
+            approver=recorded_principal,
             input_digest=execution.input_digest,
+            metadata_json=meta,
         )
 
         self.ledger_repo.append(
@@ -226,7 +241,8 @@ class ToolExecutionEngine:
             correlation_id=correlation_id,
             capability_id=execution.capability_id,
             payload_json={
-                "approved_by": clean_approver,
+                "approved_by": recorded_principal,
+                "claimed_approver": approver.strip() if approver else None,
                 "input_digest": execution.input_digest,
                 "notes": notes,
             },
@@ -239,6 +255,8 @@ class ToolExecutionEngine:
         execution_id: str,
         caller_permissions: set[str] | None = None,
         correlation_id: str | None = None,
+        *,
+        claim_barrier: Any = None,
     ) -> ToolExecution:
         """
         Executes a queued execution item through handler sandbox and independent verifier.
@@ -273,12 +291,11 @@ class ToolExecutionEngine:
             )
 
         # 2. Consequential action checks: human approval, single-use dispatch, and triple-digest agreement
+        recomputed_digest = compute_input_digest(execution.input_json)
         if capability.metadata.consequential:
             if not execution.approved_by or not execution.approved_at or not execution.approval_input_digest:
                 raise AuthorizationError(f"Consequential capability '{execution.capability_id}' lacks human approval.")
 
-            # Immediately before dispatch: recompute canonical SHA-256 digest from currently persisted input
-            recomputed_digest = compute_input_digest(execution.input_json)
             # Require all 3 to agree:
             # - Recomputed digest from current input
             # - Stored input digest
@@ -321,18 +338,49 @@ class ToolExecutionEngine:
                 raise AuthorizationError(
                     f"Approval for execution '{execution_id}' has already been consumed and cannot be replayed."
                 )
+        else:
+            if execution.input_digest != recomputed_digest:
+                raise AuthorizationError(
+                    "Input integrity failure: Persisted input digest does not match recomputed digest."
+                )
 
-        # 3. Transition to running and consume approval ticket atomically
+        # 3. Transition to running and consume approval ticket atomically via database compare-and-set claim
+        barrier = claim_barrier or getattr(self, "_claim_barrier", None)
+        if barrier is not None:
+            if isinstance(barrier, asyncio.Barrier):
+                await barrier.wait()
+            elif callable(barrier):
+                res = barrier()
+                if asyncio.iscoroutine(res):
+                    await res
+
         exec_metadata = dict(execution.metadata_json or {})
         if capability.metadata.consequential:
             exec_metadata["dispatch_consumed"] = True
             exec_metadata["dispatched_at"] = utc_now().isoformat()
 
-        execution = self.exec_repo.update_status(
-            execution_id,
-            status="running",
+        claimed = self.exec_repo.claim_for_execution(
+            execution_id=execution_id,
+            expected_digest=recomputed_digest,
+            expected_approval_digest=execution.approval_input_digest if capability.metadata.consequential else None,
+            is_consequential=capability.metadata.consequential,
             metadata_json=exec_metadata,
         )
+        if not claimed:
+            self.ledger_repo.append(
+                event_type="authorization_denied",
+                execution_id=execution.id,
+                task_id=execution.task_id,
+                correlation_id=correlation_id,
+                capability_id=execution.capability_id,
+                payload_json={"reason": "Atomic claim failed: concurrent dispatch conflict, stale input, or already consumed ticket"},
+                data_classification=execution.data_classification,
+            )
+            raise AuthorizationError(
+                f"Execution '{execution_id}' could not be claimed: concurrent dispatch conflict, stale input, or already consumed ticket."
+            )
+
+        execution = claimed
         self.ledger_repo.append(
             event_type="execution_started",
             execution_id=execution.id,

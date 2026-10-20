@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from pico.models.tool_execution import ToolExecution
@@ -122,8 +122,65 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
         self.db.refresh(item)
         return item
 
+    def claim_for_execution(
+        self,
+        execution_id: str,
+        expected_digest: str,
+        expected_approval_digest: str | None = None,
+        expected_statuses: tuple[str, ...] = ("queued", "retry_scheduled"),
+        is_consequential: bool = False,
+        metadata_json: dict[str, Any] | None = None,
+    ) -> ToolExecution | None:
+        """
+        Atomically transition an execution from queued/retry_scheduled to running.
+        Uses a database-level compare-and-set WHERE clause to guarantee single-winner
+        execution claiming across concurrent requests, engine instances, and processes.
+        """
+        now = utc_now()
+        stmt = (
+            update(ToolExecution)
+            .where(
+                ToolExecution.id == execution_id,
+                ToolExecution.status.in_(expected_statuses),
+                ToolExecution.input_digest == expected_digest,
+            )
+        )
+        if expected_approval_digest is not None:
+            stmt = stmt.where(ToolExecution.approval_input_digest == expected_approval_digest)
+
+        if is_consequential:
+            stmt = stmt.where(
+                or_(
+                    ToolExecution.metadata_json.is_(None),
+                    ~ToolExecution.metadata_json.contains("dispatch_consumed"),
+                )
+            )
+
+        values_to_update: dict[str, Any] = {
+            "status": "running",
+            "updated_at": now,
+            "started_at": func.coalesce(ToolExecution.started_at, now),
+        }
+        if metadata_json is not None:
+            values_to_update["metadata_json"] = metadata_json
+
+        stmt = stmt.values(**values_to_update)
+        result = self.db.execute(stmt)
+        self.db.commit()
+
+        if result.rowcount != 1:
+            return None
+
+        self.db.expire_all()
+        item = self.get_by_id(execution_id)
+        return item
+
     def record_approval(
-        self, execution_id: str, approver: str, input_digest: str
+        self,
+        execution_id: str,
+        approver: str,
+        input_digest: str,
+        metadata_json: dict[str, Any] | None = None,
     ) -> ToolExecution | None:
         item = self.get_by_id(execution_id)
         if not item:
@@ -135,6 +192,8 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
         item.approval_input_digest = input_digest
         item.status = "queued"
         item.updated_at = now
+        if metadata_json is not None:
+            item.metadata_json = metadata_json
         self.db.commit()
         self.db.refresh(item)
         return item
