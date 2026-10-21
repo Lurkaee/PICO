@@ -99,10 +99,18 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 
 
 ### Milestone P8: Computer Control & Engineering Workspace
-- [ ] **P8.1 OS & Application Automation**: Sandboxed application launching and window state inspection.
+- [x] **P8.1 OS & Application Automation**:
+  - Provider-neutral OS adapter boundary (`pico.os_automation`): `BaseOSAutomationAdapter`, `WindowsAutomationAdapter`, and `FakeOSAutomationAdapter`.
+  - Read-only visible desktop window inspection (`os.inspect_windows`): `RiskTier.READ_ONLY`, `os:inspect` permission, `INTERNAL` classification, hard bounding on window count (max 100) and title length (max 512), standard-library `ctypes` enumeration (`EnumWindows`), honest reporting on non-Windows platforms (`unsupported`).
+  - Server-configured application allowlist (`OS_APPLICATION_ALLOWLIST`): strictly empty by default. Strict validation against path traversal (`..`), relative paths, and env var expansion (`%`, `$`). Prohibits shells and interpreters (`cmd.exe`, `powershell.exe`, `pwsh.exe`, `bash.exe`, `python.exe`, etc.) and scripts (`.bat`, `.cmd`, `.ps1`, `.vbs`, etc.).
+  - Consequential application launch boundary (`os.launch_application`): `RiskTier.HIGH`, `os:launch` permission, `consequential=True`, `idempotent=False`, strictly zero automatic retries (`max_retries=0`).
+  - Direct argument-list process creation with `shell=False`. Minimal sanitized child environment stripping PICO secrets, approval tokens, Home Assistant credentials, and cloud API keys (`build_sanitized_environment()`).
+  - Single-use human operator approval bound to SHA-256 canonical digest; triple-digest agreement and atomic compare-and-set claim.
+  - Honest launch verification: distinct statuses for `request_rejected`, `awaiting_approval`, `launch_dispatched`, `process_creation_confirmed`, `launch_uncertain`, `launch_failed`, and `independent_window_observation_confirmed`. Process creation is never equated with desktop usability.
+  - 23 dedicated adversarial and functional tests in `tests/test_os_automation.py` ensuring zero real desktop side effects during CI.
 - [ ] **P8.2 Staged Filesystem Diffs**: Reversible file writes with approval diffs.
 - [ ] **P8.3 Sandboxed Browser Automation**: Playwright adapter with untrusted web content isolation.
-- **Status**: **PLANNED**.
+- **Status**: **P8.1 COMPLETED & VERIFIED; P8.2, P8.3 PLANNED**.
 
 ### Milestone P9: Multi-Agent Workflow Coordination
 - [ ] **P9.1 Task Delegation**: Subtask execution over persistent Task Engine.

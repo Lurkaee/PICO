@@ -277,9 +277,35 @@ sequenceDiagram
 
 
 ### 4.6 Computer Control & Engineering Workspace
-- Controlled OS automation: application launch, window inspection, file reading/writing via staged diffs.
-- Sandboxed Browser Automation via Playwright: isolated browser profile, treats web content as untrusted untrusted data, requires confirmation before form submission, transaction, or communication.
-- Safe Filesystem Operations: Diff preview, reversible writes, strict directory boundary enforcement.
+1. **OS & Desktop Application Automation (Verified in Milestone P8.1)**:
+   - **Provider-Neutral OS Adapter Boundary (`pico.os_automation`)**:
+     - `BaseOSAutomationAdapter`: Abstract interface defining `inspect_windows()` and `launch_application()`.
+     - `WindowsAutomationAdapter`: Windows 11 implementation utilizing standard-library `ctypes` (`user32.EnumWindows`, `GetWindowTextW`, `GetWindowThreadProcessId`) for read-only window enumeration and `subprocess.Popen` with `shell=False` for process creation.
+     - `FakeOSAutomationAdapter`: Synthetic, deterministic adapter for CI and automated testing ensuring zero real desktop side effects during testing.
+     - Unsupported platforms (non-Windows) are reported honestly with status `unsupported` rather than simulating success.
+   - **Read-Only Window Inspection (`os.inspect_windows`)**:
+     - Dedicated read permission: `os:inspect`, risk tier `RiskTier.READ_ONLY`, non-consequential, idempotent.
+     - Conservative data classification: `INTERNAL` (never automatically routed to cloud models).
+     - Strict bounding: clamps returned window count (`max_windows`, default 50, ceiling 100) and title length (`max_title_length`, default 256, ceiling 512).
+     - Strictly read-only: inspects window metadata (handle, title, process ID, visibility, minimized/iconic, foreground focus); zero window content reading, keystroke/mouse injection, screenshot capture, or desktop mutation.
+   - **Explicit Application Allowlist & Launch Boundary (`os.launch_application`)**:
+     - Dedicated permission: `os:launch`, risk tier `RiskTier.HIGH`, `consequential=True`, `idempotent=False`, strictly zero automatic retries (`max_retries=0`).
+     - Server-side trusted configuration: Application allowlist is configured via server configuration (`OS_APPLICATION_ALLOWLIST`) and is **strictly empty by default**.
+     - Fixed Launch Profiles (`LaunchProfile`): Maps validated alias (`^[a-zA-Z0-9_\-]+$`) to approved executable path, static argument list, and optional working directory.
+     - Strict Security Invariants:
+       - Fails closed on unknown aliases, directory traversal (`..`), relative paths, and environment variable expansion (`%`, `$`).
+       - Interpreters, shells, and script runners (`cmd.exe`, `powershell.exe`, `pwsh.exe`, `bash.exe`, `sh.exe`, `python.exe`, `wscript.exe`, `cscript.exe`) are strictly prohibited from the allowlist.
+       - Disallowed script extensions (`.bat`, `.cmd`, `.ps1`, `.vbs`, `.js`, `.py`, `.sh`) are rejected; only direct binary executables (`.exe`) are permitted.
+       - Model/caller input is schema-restricted via `extra="forbid"` to only `alias`; callers cannot supply or override paths, arguments, environment, or working directory.
+       - Direct process creation with `shell=False`. Constructing shell command strings is strictly prohibited.
+       - Environment Sanitization: Child processes run in a minimal, controlled environment excluding PICO secrets, approval tokens, Home Assistant tokens, database credentials, and cloud API keys (`build_sanitized_environment()`).
+   - **Launch Verification & State Machine**:
+     - Consequential approval requirement: Single-use human operator approval ticket bound to SHA-256 input digest (`APPROVAL_SECRET_TOKEN` validation).
+     - Atomic claim (`claim_execution` compare-and-set) prevents duplicate or concurrent dispatches.
+     - Honest Verification Statuses: Distinct states for `request_rejected`, `awaiting_approval`, `launch_dispatched`, `process_creation_confirmed`, `launch_uncertain`, `launch_failed`, and `independent_window_observation_confirmed`. Process creation is never equated with proof of application usability.
+2. **Planned Workspace Capabilities (Deferred)**:
+   - **Staged Filesystem Diffs (Planned for P8.2)**: Reversible file writes with approval diffs.
+   - **Sandboxed Browser Automation (Planned for P8.3)**: Playwright adapter with untrusted web content isolation.
 
 ### 4.7 Home Automation & Physical Actuation (Home Assistant)
 - Home Assistant REST/WebSocket API as the sole integration hub.

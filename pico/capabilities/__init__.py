@@ -22,6 +22,8 @@ from pico.capabilities.homeassistant.ha_actuation import (
 from pico.capabilities.homeassistant.ha_readiness import (
     HomeAssistantActuationReadinessCapability,
 )
+from pico.capabilities.os.inspect_windows import InspectWindowsCapability
+from pico.capabilities.os.launch_application import LaunchApplicationCapability
 from pico.capabilities.perception.perception_capabilities import (
     PerceptionAnalyzeMotionCapability,
     PerceptionGetRecentEventsCapability,
@@ -61,6 +63,8 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(HomeAssistantOverviewCapability())
     reg.register(HomeAssistantTestLightActuationCapability())
     reg.register(HomeAssistantActuationReadinessCapability())
+    reg.register(InspectWindowsCapability())
+    reg.register(LaunchApplicationCapability())
 
 
 
@@ -97,4 +101,6 @@ __all__ = [
     "HomeAssistantOverviewCapability",
     "HomeAssistantTestLightActuationCapability",
     "HomeAssistantActuationReadinessCapability",
+    "InspectWindowsCapability",
+    "LaunchApplicationCapability",
 ]

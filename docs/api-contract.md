@@ -581,6 +581,89 @@
   - **Response (200 OK)**: `ActuationReadinessReport` (`ready_for_commissioning`, `target_entity_id`, `live_check_performed`, `live_passed`, `reported_state`, `actuation_enabled`, `checks`, `summary`).
 
 
+### 2.10 OS & Desktop Application Automation Capabilities (Milestone P8.1)
+
+OS automation capabilities are integrated into the core Tool Execution Engine (`/api/tools/*`) under dedicated authorization and approval controls:
+
+**Security Exposure & Authorization Invariants**:
+- **Dedicated Permissions**: `os:inspect` (for window enumeration) and `os:launch` (for application launching) are strictly decoupled from standard development permissions.
+- **Fail-Closed Authorization Boundary**: Submissions and approvals fail closed with `403 Forbidden` unless authorized with a valid `X-Pico-Approval-Token` matching `APPROVAL_SECRET_TOKEN`.
+- **Zero Real Desktop Invocations in CI**: Automated test runs use deterministic synthetic adapters (`FakeOSAutomationAdapter`).
+- **Empty Allowlist by Default**: `OS_APPLICATION_ALLOWLIST` defaults to `{}`. Only explicitly configured aliases can be launched.
+- **No Arbitrary Arguments or Shells**: `LaunchApplicationInput` forbids extra properties (`extra="forbid"`). Arbitrary paths, caller-supplied arguments, working directory overrides, and shell scripts are rejected.
+- **Child Environment Sanitization**: Child processes inherit only essential OS variables (`SystemRoot`, `PATH`, `TEMP`); all PICO tokens, secrets, HA credentials, and cloud keys are wiped.
+
+#### Capability: `os.inspect_windows`
+- **Capability ID**: `os.inspect_windows` (version: `1.0.0`)
+- **Risk Tier**: `READ_ONLY`
+- **Required Permission**: `os:inspect`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `false` | **Idempotent**: `true` | **Timeout**: 5.0s
+- **Input Schema**:
+  ```json
+  {
+    "max_windows": 50,
+    "max_title_length": 256
+  }
+  ```
+- **Output Schema**:
+  ```json
+  {
+    "status": "success",
+    "platform": "windows",
+    "windows": [
+      {
+        "handle": 65540,
+        "title": "Document - Text Editor",
+        "process_id": 4120,
+        "is_visible": true,
+        "is_minimized": false,
+        "is_foreground": true
+      }
+    ],
+    "total_windows_found": 1,
+    "truncated": false,
+    "message": null
+  }
+  ```
+
+#### Capability: `os.launch_application`
+- **Capability ID**: `os.launch_application` (version: `1.0.0`)
+- **Risk Tier**: `HIGH`
+- **Required Permission**: `os:launch`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `true` (Requires explicit human approval) | **Idempotent**: `false` | **Max Retries**: 0 | **Timeout**: 10.0s
+- **Input Schema**:
+  ```json
+  {
+    "alias": "text_editor"
+  }
+  ```
+- **Output Schema**:
+  ```json
+  {
+    "alias": "text_editor",
+    "status": "process_creation_confirmed",
+    "executable_path": "C:\\Program Files\\Editor\\editor.exe",
+    "process_id": 9840,
+    "verification_status": "process_creation_confirmed",
+    "verification_details": {
+      "pid": 9840,
+      "window_observed": false,
+      "note": "Process creation confirmed; no top-level window reliably associated within observation window."
+    },
+    "message": null
+  }
+  ```
+- **Distinct Launch Verification Statuses**:
+  - `request_rejected`: Alias not present in allowlist or profile failed validation.
+  - `awaiting_approval`: Initial submission waiting for human approval ticket.
+  - `launch_dispatched`: Process creation initiated.
+  - `process_creation_confirmed`: Process creation confirmed via PID; window association not confirmed.
+  - `independent_window_observation_confirmed`: Process creation and top-level visible window independently observed.
+  - `launch_uncertain`: Process creation or observation encountered an uncertain outcome (zero retries).
+  - `launch_failed`: Process creation failed (e.g. executable missing, permission denied).
+
 ---
 
 ## 3. Planned Endpoints (Future Phases)
