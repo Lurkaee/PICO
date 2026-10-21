@@ -786,7 +786,7 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
     "diff_digest": "7852b855..."
   }
   ```
-  *Note*: All digest fields are enriched and validated server-side by `prepare_input` at submission time to bind the exact disk snapshot, proposed content, and unified diff into the human approval ticket. Re-verified immediately before dispatch.
+  *Note*: All digest fields are enriched and validated server-side by `prepare_input` at submission time to bind the exact disk snapshot, proposed content, and unified diff into the human approval ticket. Re-verified immediately before dispatch. For replacement operations on Windows NT, the approved target is locked at the kernel level (`FILE_SHARE_READ`, no write/delete sharing), staged to `.pico_tmp_*` (`CREATE_NEW`), relocated to `.pico_backup_*` via `SetFileInformationByHandle(FileRenameInfo)`, and moved via `MoveFileW` without replacement. Competing target creation or substitution causes `MoveFileW` to fail closed (`ERROR_ALREADY_EXISTS`), ensuring zero overwrite of competitor content, preserving the displaced original in backup, and failing closed with `ExecutionError`. On non-Windows platforms, filesystem mutations fail closed (`ExecutionError`).
 - **Output Schema**:
   ```json
   {

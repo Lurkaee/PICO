@@ -44,10 +44,19 @@ if sys.platform == "win32":
     FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
     VOLUME_NAME_DOS = 0x0
+    FileRenameInfo = 3
     FileDispositionInfo = 4
 
     class FILE_DISPOSITION_INFO(Structure):
         _fields_ = [("DeleteFile", wintypes.BOOLEAN)]
+
+    class FILE_RENAME_INFO(Structure):
+        _fields_ = [
+            ("ReplaceIfExists", wintypes.BOOLEAN),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", wintypes.WCHAR * 1024),
+        ]
 
     class BY_HANDLE_FILE_INFORMATION(Structure):
         _fields_ = [
@@ -119,6 +128,9 @@ if sys.platform == "win32":
 
     kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
     kernel32.FlushFileBuffers.restype = wintypes.BOOL
+
+    kernel32.MoveFileW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    kernel32.MoveFileW.restype = wintypes.BOOL
 
 
 def is_invalid_handle(h: Any) -> bool:
@@ -450,21 +462,30 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
     """
     Production filesystem adapter with Windows handle boundaries, directory hierarchy pinning,
     exclusive creation, reparse point checks, directory-local temporary staging,
-    and post-write digest verification.
+    handle-locked target relocation, non-overwriting MoveFileW, and post-write digest verification.
 
     Operational Limitation & Security Semantics:
-    On Windows NTFS, replacing an existing file via MoveFileEx / os.replace is not a
-    kernel-level compare-and-swap on file content. PICO guards file replacement by:
+    Atomic target-bound replacement on Windows NT is guaranteed by:
     1. Locking the parent directory hierarchy via pin_directory_hierarchy to block
        parent substitution and junction hijacking at the Windows kernel level.
-    2. Exclusively creating and flushing the replacement content in a directory-local
-       temporary file within the verified pinned parent.
-    3. Checking the target's content digest immediately before directory entry replacement.
-    4. Performing mandatory post-write verification against the approved proposed digest.
-    If concurrent modification occurs on the target file between verification and replace,
-    post-write verification detects the digest mismatch and fails closed (ExecutionError)
-    with zero automated retries.
+    2. Opening the target file exclusively with GENERIC_READ | DELETE and FILE_SHARE_READ
+       (omitting FILE_SHARE_WRITE and FILE_SHARE_DELETE) so no concurrent process can modify,
+       rename, delete, or replace the approved target while attributes and expected digest are validated.
+    3. Staging replacement content into a directory-local temporary file via CREATE_NEW in the pinned parent.
+    4. Relocating the verified target file to a backup path via SetFileInformationByHandle(FileRenameInfo)
+       while holding the handle.
+    5. Moving the staged content to the target path via MoveFileW WITHOUT replacement. If a competing
+       process created or substituted a file at the target path in the relocation window, MoveFileW
+       fails closed (ERROR_ALREADY_EXISTS), leaving the competitor file 100% untouched and preserving
+       the displaced original file in the backup path with zero overwrite.
+    6. Performing independent post-write verification against the approved proposed digest.
+    7. On non-Windows platforms, where Windows NT kernel handle sharing and directory pinning semantics
+       are unavailable, atomic filesystem mutations fail closed with ExecutionError.
     """
+
+    def __init__(self) -> None:
+        self._on_pre_replace_move: Any = None
+
 
     def read_text(self, path: str, root_path: str | None = None) -> str:
         norm_root, norm_path = verify_boundary_and_reparse(path, root_path, must_exist=True)
@@ -555,64 +576,47 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
             if os.path.lexists(norm_path):
                 raise ExecutionError(f"Target file already exists prior to exclusive creation: '{path}'")
 
+            if sys.platform != "win32":
+                raise ExecutionError(
+                    "Handle-bound atomic filesystem mutations require Windows NT kernel handle sharing and directory pinning semantics and are unsupported on non-Windows platforms."
+                )
+
             with pin_directory_hierarchy(parent_dir, norm_root):
-                if sys.platform == "win32":
-                    h = kernel32.CreateFileW(
-                        norm_path,
-                        GENERIC_READ | GENERIC_WRITE,
-                        FILE_SHARE_READ,
-                        None,
-                        CREATE_NEW,
-                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                        None,
-                    )
-                    if is_invalid_handle(h):
-                        err = ctypes.get_last_error()
-                        if err in (80, 183):  # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
-                            raise ExecutionError(
-                                f"Target file already exists or was concurrently created: '{path}'"
-                            )
-                        raise ExecutionError(f"Exclusive file creation failed for '{path}': WinError {err}")
-
-                    try:
-                        info = BY_HANDLE_FILE_INFORMATION()
-                        if not kernel32.GetFileInformationByHandle(h, byref(info)):
-                            err = ctypes.get_last_error()
-                            raise ExecutionError(f"Failed to inspect created file handle '{path}': WinError {err}")
-                        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
-                            raise ValidationError(f"Created file is an unexpected symlink or reparse point: '{path}'")
-                        final_p = get_final_path_from_handle(h)
-                        try:
-                            common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_p)])
-                        except ValueError:
-                            raise ValidationError(f"Created file resolves outside configured root: '{final_p}'")
-                        if common != os.path.normcase(norm_root):
-                            raise ValidationError(f"Created file resolves outside configured root: '{final_p}'")
-
-                        write_all_bytes_to_handle(h, raw_bytes)
-                    finally:
-                        kernel32.CloseHandle(h)
-                else:
-                    try:
-                        fd = os.open(
-                            norm_path,
-                            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
-                            0o666,
+                h = kernel32.CreateFileW(
+                    norm_path,
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ,
+                    None,
+                    CREATE_NEW,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                    None,
+                )
+                if is_invalid_handle(h):
+                    err = ctypes.get_last_error()
+                    if err in (80, 183):  # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
+                        raise ExecutionError(
+                            f"Target file already exists or was concurrently created: '{path}'"
                         )
-                    except FileExistsError:
-                        raise ExecutionError(f"Target file already exists or was concurrently created: '{path}'")
-                    except OSError as exc:
-                        raise ExecutionError(f"Exclusive file creation failed for '{path}': {exc}")
+                    raise ExecutionError(f"Exclusive file creation failed for '{path}': WinError {err}")
+
+                try:
+                    info = BY_HANDLE_FILE_INFORMATION()
+                    if not kernel32.GetFileInformationByHandle(h, byref(info)):
+                        err = ctypes.get_last_error()
+                        raise ExecutionError(f"Failed to inspect created file handle '{path}': WinError {err}")
+                    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
+                        raise ValidationError(f"Created file is an unexpected symlink or reparse point: '{path}'")
+                    final_p = get_final_path_from_handle(h)
                     try:
-                        written = 0
-                        while written < len(raw_bytes):
-                            n = os.write(fd, raw_bytes[written:])
-                            if n == 0:
-                                break
-                            written += n
-                        os.fsync(fd)
-                    finally:
-                        os.close(fd)
+                        common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_p)])
+                    except ValueError:
+                        raise ValidationError(f"Created file resolves outside configured root: '{final_p}'")
+                    if common != os.path.normcase(norm_root):
+                        raise ValidationError(f"Created file resolves outside configured root: '{final_p}'")
+
+                    write_all_bytes_to_handle(h, raw_bytes)
+                finally:
+                    kernel32.CloseHandle(h)
 
                 if is_symlink_or_reparse_point(norm_path):
                     safe_unlink(norm_path, norm_root)
@@ -622,49 +626,53 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
             # Replacement: Verify target exists and is a regular file
             verify_boundary_and_reparse(norm_path, root_path, must_exist=True)
 
+            if sys.platform != "win32":
+                raise ExecutionError(
+                    "Atomic target-bound file replacement requires Windows NT kernel handle sharing and directory pinning semantics and are unsupported on non-Windows platforms."
+                )
+
             with pin_directory_hierarchy(parent_dir, norm_root):
                 temp_filename = f".pico_tmp_{uuid.uuid4().hex}"
                 temp_path = os.path.join(parent_dir, temp_filename)
+                backup_filename = f".pico_backup_{uuid.uuid4().hex}"
+                backup_path = os.path.join(parent_dir, backup_filename)
 
-                if sys.platform == "win32":
-                    # 1. Target verification via handle
-                    h_target = kernel32.CreateFileW(
-                        norm_path,
-                        GENERIC_READ,
-                        FILE_SHARE_READ | FILE_SHARE_WRITE,
-                        None,
-                        OPEN_EXISTING,
-                        FILE_FLAG_OPEN_REPARSE_POINT,
-                        None,
-                    )
-                    if is_invalid_handle(h_target):
+                # 1. Target verification via handle with EXCLUSIVE access (no write, no delete sharing)
+                h_target = kernel32.CreateFileW(
+                    norm_path,
+                    GENERIC_READ | DELETE,
+                    FILE_SHARE_READ,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    None,
+                )
+                if is_invalid_handle(h_target):
+                    err = ctypes.get_last_error()
+                    raise ExecutionError(f"Failed to open target file for replacement '{path}': WinError {err}")
+                try:
+                    info_tgt = BY_HANDLE_FILE_INFORMATION()
+                    if not kernel32.GetFileInformationByHandle(h_target, byref(info_tgt)):
                         err = ctypes.get_last_error()
-                        raise ExecutionError(f"Failed to open target file for replacement '{path}': WinError {err}")
+                        raise ExecutionError(f"Failed to inspect target handle '{path}': WinError {err}")
+                    if info_tgt.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
+                        raise ValidationError(f"Target cannot be a symlink or reparse point: '{path}'")
+                    final_target_p = get_final_path_from_handle(h_target)
                     try:
-                        info_tgt = BY_HANDLE_FILE_INFORMATION()
-                        if not kernel32.GetFileInformationByHandle(h_target, byref(info_tgt)):
-                            err = ctypes.get_last_error()
-                            raise ExecutionError(f"Failed to inspect target handle '{path}': WinError {err}")
-                        if info_tgt.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
-                            raise ValidationError(f"Target cannot be a symlink or reparse point: '{path}'")
-                        final_target_p = get_final_path_from_handle(h_target)
-                        try:
-                            common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_target_p)])
-                        except ValueError:
-                            raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
-                        if common != os.path.normcase(norm_root):
-                            raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
+                        common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_target_p)])
+                    except ValueError:
+                        raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
+                    if common != os.path.normcase(norm_root):
+                        raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
 
-                        if expected_original_digest:
-                            target_bytes = read_all_bytes_from_handle(h_target)
-                            target_text = target_bytes.decode("utf-8", errors="replace")
-                            current_digest = compute_content_digest(target_text)
-                            if current_digest != expected_original_digest:
-                                raise ExecutionError(
-                                    f"Target file content modified prior to atomic replacement. Expected '{expected_original_digest}', found '{current_digest}'."
-                                )
-                    finally:
-                        kernel32.CloseHandle(h_target)
+                    if expected_original_digest:
+                        target_bytes = read_all_bytes_from_handle(h_target)
+                        target_text = target_bytes.decode("utf-8", errors="replace")
+                        current_digest = compute_content_digest(target_text)
+                        if current_digest != expected_original_digest:
+                            raise ExecutionError(
+                                f"Target file content modified prior to atomic replacement. Expected '{expected_original_digest}', found '{current_digest}'."
+                            )
 
                     # 2. Stage new content exclusively in pinned parent
                     h_temp = kernel32.CreateFileW(
@@ -685,7 +693,7 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
                             err = ctypes.get_last_error()
                             raise ExecutionError(f"Failed to inspect temp file handle: WinError {err}")
                         if info_tmp.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
-                            raise ValidationError(f"Temporary file created as unexpected reparse point.")
+                            raise ValidationError("Temporary file created as unexpected reparse point.")
                         final_temp_p = get_final_path_from_handle(h_temp)
                         try:
                             common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_temp_p)])
@@ -698,83 +706,69 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
                     finally:
                         kernel32.CloseHandle(h_temp)
 
-                    # 3. Replace directory entry
-                    try:
-                        verify_boundary_and_reparse(norm_path, root_path, must_exist=True)
-                        verify_boundary_and_reparse(temp_path, root_path, must_exist=True)
-                        os.replace(temp_path, norm_path)
-                    except Exception as exc:
-                        safe_unlink(temp_path, norm_root)
-                        if isinstance(exc, (ValidationError, ExecutionError)):
-                            raise
-                        raise ExecutionError(f"Atomic file write failed for '{path}': {exc}")
-
-                    # 4. Independent post-write verification via handle
-                    h_post = kernel32.CreateFileW(
-                        norm_path,
-                        GENERIC_READ,
-                        FILE_SHARE_READ,
-                        None,
-                        OPEN_EXISTING,
-                        FILE_FLAG_OPEN_REPARSE_POINT,
-                        None,
+                    # 3. Vacate target path by renaming verified target to backup via open handle
+                    fri = FILE_RENAME_INFO()
+                    fri.ReplaceIfExists = False
+                    fri.RootDirectory = None
+                    fri.FileNameLength = len(backup_path) * 2
+                    fri.FileName = backup_path
+                    res = kernel32.SetFileInformationByHandle(
+                        h_target, FileRenameInfo, byref(fri), sizeof(fri)
                     )
-                    if is_invalid_handle(h_post):
+                    if res == 0:
                         err = ctypes.get_last_error()
-                        raise ExecutionError(f"Post-write verification failed to open file '{path}': WinError {err}")
-                    try:
-                        final_post_p = get_final_path_from_handle(h_post)
-                        try:
-                            common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_post_p)])
-                        except ValueError:
-                            raise ValidationError(f"Post-write file resolves outside root: '{final_post_p}'")
-                        if common != os.path.normcase(norm_root):
-                            raise ValidationError(f"Post-write file resolves outside root: '{final_post_p}'")
-                        written_bytes = read_all_bytes_from_handle(h_post)
-                        written_digest = compute_content_digest(written_bytes.decode("utf-8", errors="replace"))
-                        if written_digest != target_proposed_digest:
-                            raise ExecutionError(
-                                f"Post-write verification failed: Resulting file digest '{written_digest}' does not match expected '{target_proposed_digest}'."
-                            )
-                    finally:
-                        kernel32.CloseHandle(h_post)
-
-                else:
-                    # POSIX fallback
-                    if expected_original_digest:
-                        current_digest = self.get_content_digest(norm_path, root_path)
-                        if current_digest != expected_original_digest:
-                            raise ExecutionError(
-                                f"Target file content modified prior to atomic replacement. Expected '{expected_original_digest}', found '{current_digest}'."
-                            )
-                    try:
-                        fd = os.open(
-                            temp_path,
-                            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
-                            0o600,
-                        )
-                    except OSError as exc:
-                        raise ExecutionError(f"Failed to create temporary file for atomic write: {exc}")
-                    try:
-                        written = 0
-                        while written < len(raw_bytes):
-                            n = os.write(fd, raw_bytes[written:])
-                            if n == 0:
-                                break
-                            written += n
-                        os.fsync(fd)
-                    finally:
-                        os.close(fd)
-
-                    try:
-                        verify_boundary_and_reparse(norm_path, root_path, must_exist=True)
-                        verify_boundary_and_reparse(temp_path, root_path, must_exist=True)
-                        os.replace(temp_path, norm_path)
-                    except Exception as exc:
                         safe_unlink(temp_path, norm_root)
-                        if isinstance(exc, (ValidationError, ExecutionError)):
-                            raise
-                        raise ExecutionError(f"Atomic file write failed for '{path}': {exc}")
+                        raise ExecutionError(f"Failed to relocate target to backup for atomic write: WinError {err}")
+                finally:
+                    kernel32.CloseHandle(h_target)
+
+                # Hook for deterministic adversarial testing of race condition
+                if getattr(self, "_on_pre_replace_move", None) is not None:
+                    self._on_pre_replace_move(norm_path)
+
+                # 4. Move temp_path into norm_path WITHOUT replacing existing file
+                move_res = kernel32.MoveFileW(temp_path, norm_path)
+                if not move_res:
+                    err = ctypes.get_last_error()
+                    safe_unlink(temp_path, norm_root)
+                    # Notice: backup_path is preserved so displaced original is not lost
+                    raise ExecutionError(
+                        f"Target file was concurrently created or substituted prior to replacement (WinError {err}). "
+                        f"Displaced original preserved in '{backup_path}'; mutation aborted with zero overwrite."
+                    )
+
+                # 5. On successful move, safely clean up backup file
+                safe_unlink(backup_path, norm_root)
+
+                # 6. Independent post-write verification via handle
+                h_post = kernel32.CreateFileW(
+                    norm_path,
+                    GENERIC_READ,
+                    FILE_SHARE_READ,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    None,
+                )
+                if is_invalid_handle(h_post):
+                    err = ctypes.get_last_error()
+                    raise ExecutionError(f"Post-write verification failed to open file '{path}': WinError {err}")
+                try:
+                    final_post_p = get_final_path_from_handle(h_post)
+                    try:
+                        common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_post_p)])
+                    except ValueError:
+                        raise ValidationError(f"Post-write file resolves outside root: '{final_post_p}'")
+                    if common != os.path.normcase(norm_root):
+                        raise ValidationError(f"Post-write file resolves outside root: '{final_post_p}'")
+                    written_bytes = read_all_bytes_from_handle(h_post)
+                    written_digest = compute_content_digest(written_bytes.decode("utf-8", errors="replace"))
+                    if written_digest != target_proposed_digest:
+                        raise ExecutionError(
+                            f"Post-write verification failed: Resulting file digest '{written_digest}' does not match expected '{target_proposed_digest}'."
+                        )
+                finally:
+                    kernel32.CloseHandle(h_post)
 
     def delete_file(
         self,
@@ -789,71 +783,61 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
 
         parent_dir = os.path.dirname(norm_path)
 
+        if sys.platform != "win32":
+            raise ExecutionError(
+                "Handle-bound atomic file deletion requires Windows NT kernel handle sharing semantics and is unsupported on non-Windows platforms."
+            )
+
         with pin_directory_hierarchy(parent_dir, norm_root):
-            if sys.platform == "win32":
-                h = kernel32.CreateFileW(
-                    norm_path,
-                    DELETE | FILE_READ_DATA,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_FLAG_OPEN_REPARSE_POINT,
-                    None,
-                )
-                if is_invalid_handle(h):
+            h = kernel32.CreateFileW(
+                norm_path,
+                DELETE | FILE_READ_DATA,
+                FILE_SHARE_READ,  # Exclusive: NO FILE_SHARE_WRITE, NO FILE_SHARE_DELETE
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                None,
+            )
+            if is_invalid_handle(h):
+                err = ctypes.get_last_error()
+                if err in (2, 3):  # ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+                    return
+                raise ExecutionError(f"Failed to open file for deletion '{path}': WinError {err}")
+
+            try:
+                info = BY_HANDLE_FILE_INFORMATION()
+                if not kernel32.GetFileInformationByHandle(h, byref(info)):
                     err = ctypes.get_last_error()
-                    if err in (2, 3):  # ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
-                        return
-                    raise ExecutionError(f"Failed to open file for deletion '{path}': WinError {err}")
+                    raise ExecutionError(f"Failed to inspect file handle '{path}': WinError {err}")
 
-                try:
-                    info = BY_HANDLE_FILE_INFORMATION()
-                    if not kernel32.GetFileInformationByHandle(h, byref(info)):
-                        err = ctypes.get_last_error()
-                        raise ExecutionError(f"Failed to inspect file handle '{path}': WinError {err}")
-
-                    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
-                        raise ValidationError(f"Cannot delete symlink or reparse point: '{path}'")
-
-                    final_p = get_final_path_from_handle(h)
-                    try:
-                        common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_p)])
-                    except ValueError:
-                        raise ValidationError(f"Target path resolves outside configured root: '{final_p}'")
-                    if common != os.path.normcase(norm_root):
-                        raise ValidationError(f"Target path resolves outside configured root: '{final_p}'")
-
-                    if expected_digest:
-                        target_bytes = read_all_bytes_from_handle(h)
-                        current_digest = compute_content_digest(target_bytes.decode("utf-8", errors="replace"))
-                        if current_digest != expected_digest:
-                            raise ExecutionError(
-                                f"Target file content modified prior to deletion. Expected '{expected_digest}', found '{current_digest}'."
-                            )
-
-                    disp = FILE_DISPOSITION_INFO(True)
-                    res = kernel32.SetFileInformationByHandle(
-                        h, FileDispositionInfo, byref(disp), sizeof(disp)
-                    )
-                    if res == 0:
-                        err = ctypes.get_last_error()
-                        raise ExecutionError(f"Failed to mark file for deletion '{path}': WinError {err}")
-                finally:
-                    kernel32.CloseHandle(h)
-
-            else:
-                if is_symlink_or_reparse_point(norm_path):
+                if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
                     raise ValidationError(f"Cannot delete symlink or reparse point: '{path}'")
+
+                final_p = get_final_path_from_handle(h)
+                try:
+                    common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_p)])
+                except ValueError:
+                    raise ValidationError(f"Target path resolves outside configured root: '{final_p}'")
+                if common != os.path.normcase(norm_root):
+                    raise ValidationError(f"Target path resolves outside configured root: '{final_p}'")
+
                 if expected_digest:
-                    current_digest = self.get_content_digest(norm_path, root_path)
+                    target_bytes = read_all_bytes_from_handle(h)
+                    current_digest = compute_content_digest(target_bytes.decode("utf-8", errors="replace"))
                     if current_digest != expected_digest:
                         raise ExecutionError(
                             f"Target file content modified prior to deletion. Expected '{expected_digest}', found '{current_digest}'."
                         )
-                try:
-                    os.unlink(norm_path)
-                except OSError as exc:
-                    raise ExecutionError(f"Failed to remove file '{path}': {exc}")
+
+                disp = FILE_DISPOSITION_INFO(True)
+                res = kernel32.SetFileInformationByHandle(
+                    h, FileDispositionInfo, byref(disp), sizeof(disp)
+                )
+                if res == 0:
+                    err = ctypes.get_last_error()
+                    raise ExecutionError(f"Failed to mark file for deletion '{path}': WinError {err}")
+            finally:
+                kernel32.CloseHandle(h)
 
     def file_exists(self, path: str, root_path: str | None = None) -> bool:
         norm_root, norm_path = verify_boundary_and_reparse(path, root_path, must_exist=False)

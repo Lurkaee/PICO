@@ -1581,3 +1581,203 @@ def test_adversarial_pinned_directory_blocks_external_rename_or_deletion(tmp_pat
         with pytest.raises(OSError) as exc_info2:
             os.rename(str(sub1), str(ws / "level1_renamed"))
         assert exc_info2.value.winerror == 32 or "used by another process" in str(exc_info2.value)
+
+
+def test_adversarial_competing_target_substitution_before_replacement_prevents_overwrite(tmp_path, db_session: Session):
+    """
+    Adversarial test reproducing target substitution race:
+    Injects a competing target change after expected-original-digest validation and handle relocation,
+    immediately prior to MoveFileW.
+    Asserts:
+    1. Zero overwrite: PICO rejects replacing the substituted competitor file.
+    2. Competitor file content is 100% preserved.
+    3. Displaced original file is preserved in .pico_backup_* with its original content.
+    4. Execution fails closed with ExecutionError.
+    5. Proposal remains in 'staged' status (not 'applied').
+    6. Audit ledger truthfully records execution_failed with accurate details.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific NT kernel handle relocation and MoveFileW test")
+
+    from pathlib import Path
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target_file = ws / "critical_config.ini"
+    target_file.write_text("setting=original_approved_value\n", encoding="utf-8")
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="critical_config.ini",
+        operation="replace",
+        proposed_content="setting=pico_replacement_value\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    adapter = get_filesystem_adapter()
+    assert isinstance(adapter, WindowsFilesystemAdapter)
+
+    # Injected attack hook: immediately after target handle is relocated to backup,
+    # an adversarial competing process substitutes different content at the original target path.
+    competitor_injected_content = "COMPETITOR_SUBSTITUTED_CONTENT\n"
+    def attack_hook(norm_path: str):
+        Path(norm_path).write_text(competitor_injected_content, encoding="utf-8")
+
+    adapter._on_pre_replace_move = attack_hook
+
+    result_exec = asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # Assert execution failed closed
+    assert result_exec.status == "failed"
+    assert "Target file was concurrently created or substituted prior to replacement" in (result_exec.error_message or "")
+    assert "Displaced original preserved in" in (result_exec.error_message or "")
+
+    # Assert competitor substituted file was NOT overwritten
+    assert target_file.read_text(encoding="utf-8") == competitor_injected_content
+
+    # Assert displaced original file is preserved and accounted for
+    backup_files = list(ws.glob(".pico_backup_*"))
+    assert len(backup_files) == 1
+    assert backup_files[0].read_text(encoding="utf-8") == "setting=original_approved_value\n"
+
+    # Assert proposal was NOT marked applied
+    staged_repo = StagedDiffRepository(db_session)
+    refreshed_proposal = staged_repo.get_by_id(proposal.id)
+    assert refreshed_proposal is not None
+    assert refreshed_proposal.status == "staged"
+
+    # Assert audit ledger truthfully records execution failure
+    ledger_repo = EventLedgerRepository(db_session)
+    events = ledger_repo.list_events(execution_id=execution.id)
+    fail_events = [e for e in events if e.event_type == "execution_failed"]
+    assert len(fail_events) == 1
+    assert "Target file was concurrently created or substituted prior to replacement" in fail_events[0].payload_json.get("error", "")
+
+
+def test_adversarial_replacement_rollback_competing_substitution_fails_closed(tmp_path, db_session: Session):
+    """
+    Adversarial test for rollback of replacement:
+    If a competing target change occurs after expected-applied-digest validation during rollback,
+    MoveFileW fails closed, competitor content is preserved, displaced applied file is preserved in backup,
+    and proposal status remains 'applied'.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific NT kernel handle relocation and MoveFileW test")
+
+    from pathlib import Path
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target_file = ws / "restore_target.txt"
+    target_file.write_text("original_alpha\n", encoding="utf-8")
+
+    # 1. Stage and cleanly apply initial replacement
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="restore_target.txt",
+        operation="replace",
+        proposed_content="applied_beta\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    apply_exec = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(apply_exec.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+    apply_res = asyncio.run(engine.execute(apply_exec.id, caller_permissions={"filesystem:write"}))
+    assert apply_res.status == "succeeded"
+    assert target_file.read_text(encoding="utf-8") == "applied_beta\n"
+
+    # 2. Stage and approve rollback
+    rollback_exec = engine.submit(
+        capability_id="filesystem.rollback_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(rollback_exec.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    adapter = get_filesystem_adapter()
+    assert isinstance(adapter, WindowsFilesystemAdapter)
+
+    # Injected attack hook during rollback replacement
+    competitor_rollback_content = "COMPETITOR_INJECTED_DURING_ROLLBACK\n"
+    def rollback_attack(norm_path: str):
+        Path(norm_path).write_text(competitor_rollback_content, encoding="utf-8")
+
+    adapter._on_pre_replace_move = rollback_attack
+
+    rollback_res = asyncio.run(engine.execute(rollback_exec.id, caller_permissions={"filesystem:write"}))
+
+    assert rollback_res.status == "failed"
+    assert "Target file was concurrently created or substituted prior to replacement" in (rollback_res.error_message or "")
+
+    # Zero overwrite of competitor content
+    assert target_file.read_text(encoding="utf-8") == competitor_rollback_content
+
+    # Displaced applied file is preserved in backup
+    backup_files = list(ws.glob(".pico_backup_*"))
+    assert len(backup_files) == 1
+    assert backup_files[0].read_text(encoding="utf-8") == "applied_beta\n"
+
+    # Proposal remains 'applied' (not 'rolled_back')
+    staged_repo = StagedDiffRepository(db_session)
+    refreshed_p = staged_repo.get_by_id(proposal.id)
+    assert refreshed_p is not None
+    assert refreshed_p.status == "applied"
+
+
+def test_adversarial_non_windows_mutations_fail_closed(tmp_path, monkeypatch):
+    """
+    On non-Windows platforms, directory hierarchy pinning and handle sharing semantics
+    cannot be established by the kernel. WindowsFilesystemAdapter explicitly fails closed
+    for exclusive creation, replacement, and deletion mutations rather than silently degrading.
+    """
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    target = ws / "test.txt"
+    target.write_text("initial\n", encoding="utf-8")
+
+    adapter = WindowsFilesystemAdapter()
+
+    # 1. Replacement fails closed
+    with pytest.raises(ExecutionError, match="Atomic target-bound file replacement requires Windows NT kernel"):
+        adapter.write_text_atomic(
+            str(target),
+            "new_content\n",
+            root_path=str(ws),
+            exclusive=False,
+            expected_original_digest=compute_content_digest("initial\n"),
+        )
+
+    # 2. Exclusive creation fails closed
+    with pytest.raises(ExecutionError, match="Handle-bound atomic filesystem mutations require Windows NT kernel"):
+        adapter.write_text_atomic(
+            str(ws / "new_file.txt"),
+            "created\n",
+            root_path=str(ws),
+            exclusive=True,
+        )
+
+    # 3. Deletion fails closed
+    with pytest.raises(ExecutionError, match="Handle-bound atomic file deletion requires Windows NT kernel"):
+        adapter.delete_file(str(target), root_path=str(ws))
