@@ -636,9 +636,11 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
 - **Input Schema**:
   ```json
   {
-    "alias": "text_editor"
+    "alias": "text_editor",
+    "launch_fingerprint": null
   }
   ```
+  *Note*: `launch_fingerprint` is an optional server-computed SHA-256 fingerprint. The server automatically calculates and binds the fingerprint of the allowlisted profile (`alias`, `executable_path`, ordered `args`, `working_dir`) during submission. Callers cannot supply an arbitrary or mismatched fingerprint. If the server-side allowlist changes after approval, execution fails closed before dispatch.
 - **Output Schema**:
   ```json
   {

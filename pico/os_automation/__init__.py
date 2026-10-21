@@ -3,6 +3,7 @@
 from pico.os_automation.adapter import BaseOSAutomationAdapter
 from pico.os_automation.allowlist import (
     ApplicationAllowlistManager,
+    compute_launch_profile_fingerprint,
     validate_launch_profile,
 )
 from pico.os_automation.contracts import (
@@ -28,6 +29,7 @@ __all__ = [
     "WindowsAutomationAdapter",
     "FakeOSAutomationAdapter",
     "ApplicationAllowlistManager",
+    "compute_launch_profile_fingerprint",
     "validate_launch_profile",
     "build_sanitized_environment",
     "get_os_adapter",

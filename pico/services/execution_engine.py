@@ -81,9 +81,23 @@ class ToolExecutionEngine:
 
         capability = self.registry.get(capability_id, version=capability_version)
 
+        # 2.5 Input Preparation / Canonical Enrichment
+        try:
+            prepared_input = capability.prepare_input(dict(input_data))
+        except Exception as exc:
+            self.ledger_repo.append(
+                event_type="validation_failed",
+                task_id=task_id,
+                correlation_id=correlation_id,
+                capability_id=capability_id,
+                payload_json={"error": str(exc)},
+                data_classification=context_classification,
+            )
+            raise ValidationError(f"Invalid input for capability '{capability_id}': {str(exc)}")
+
         # 3. Input Validation against declared Pydantic schema
         try:
-            capability.input_model.model_validate(input_data)
+            capability.input_model.model_validate(prepared_input)
         except Exception as exc:
             self.ledger_repo.append(
                 event_type="validation_failed",
@@ -96,7 +110,7 @@ class ToolExecutionEngine:
             raise ValidationError(f"Invalid input for capability '{capability_id}': {str(exc)}")
 
         # 4. Input Digest Calculation
-        input_digest = compute_input_digest(input_data)
+        input_digest = compute_input_digest(prepared_input)
 
         # 5. Permission & Authorization Check
         required_perm = capability.metadata.required_permission
@@ -121,7 +135,7 @@ class ToolExecutionEngine:
         # 7. Create Execution Record
         execution = self.exec_repo.create(
             capability_id=capability_id,
-            input_json=input_data,
+            input_json=prepared_input,
             input_digest=input_digest,
             capability_version=capability.metadata.version,
             task_id=task_id,
@@ -324,6 +338,53 @@ class ToolExecutionEngine:
                 raise AuthorizationError(
                     "Approval invalidated: Persisted input digest does not match recomputed or approved digest."
                 )
+
+            # OS application launch profile verification at execution boundary
+            if execution.capability_id == "os.launch_application":
+                from pico.os_automation.allowlist import (
+                    compute_launch_profile_fingerprint,
+                    validate_launch_profile,
+                )
+                from pico.os_automation.manager import get_allowlist_manager
+
+                alias = validated_input_snapshot.get("alias")
+                bound_fp = validated_input_snapshot.get("launch_fingerprint")
+                mgr = get_allowlist_manager()
+                current_prof = mgr.get_profile(alias) if alias else None
+                if not bound_fp or not current_prof:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Launch profile missing or not allowlisted at dispatch",
+                            "alias": alias,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Application alias '{alias}' is missing or not allowlisted at dispatch."
+                    )
+                validated_curr_prof = validate_launch_profile(current_prof)
+                current_fp = compute_launch_profile_fingerprint(validated_curr_prof)
+                if current_fp != bound_fp:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Launch profile modified after approval",
+                            "alias": alias,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Launch profile for alias '{alias}' was modified after approval was granted."
+                    )
 
             # Single-use approval and replay protection
             exec_metadata = dict(execution.metadata_json or {})

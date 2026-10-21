@@ -299,6 +299,10 @@ sequenceDiagram
        - Model/caller input is schema-restricted via `extra="forbid"` to only `alias`; callers cannot supply or override paths, arguments, environment, or working directory.
        - Direct process creation with `shell=False`. Constructing shell command strings is strictly prohibited.
        - Environment Sanitization: Child processes run in a minimal, controlled environment excluding PICO secrets, approval tokens, Home Assistant tokens, database credentials, and cloud API keys (`build_sanitized_environment()`).
+        - **Launch Profile Fingerprint Binding (P8.1 Hardening)**:
+          - Trusted Canonical Fingerprint: `compute_launch_profile_fingerprint()` computes a deterministic SHA-256 hash over canonical JSON encoding `alias`, normalized `executable_path`, ordered `args`, and normalized `working_dir`.
+          - Server-Side Submission Binding: `prepare_input` hook calculates and injects `launch_fingerprint` into execution input prior to validation and `input_digest` calculation, cryptographically binding the profile into the single-use human approval ticket. Caller-supplied, missing, or mismatched fingerprints fail closed.
+          - Execution Boundary Re-Verification: At actual dispatch, `ToolExecutionEngine.execute` and `LaunchApplicationCapability.execute` re-resolve the current allowlist profile, recompute its fingerprint, and assert exact match with the approval-bound fingerprint. Any post-approval mutation to executable path, arguments, working directory, or allowlist configuration fails closed with zero process creations.
    - **Launch Verification & State Machine**:
      - Consequential approval requirement: Single-use human operator approval ticket bound to SHA-256 input digest (`APPROVAL_SECRET_TOKEN` validation).
      - Atomic claim (`claim_execution` compare-and-set) prevents duplicate or concurrent dispatches.
