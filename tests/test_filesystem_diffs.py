@@ -929,3 +929,361 @@ def test_event_ledger_records_file_diff_lifecycle_without_leaking_content(tmp_pa
         payload_str = str(ev.payload_json or {})
         assert secret_sentinel not in payload_str
         assert ev.data_classification == "INTERNAL"
+
+
+# ==============================================================================
+# 6. P8.2 Security Follow-up: Fail-Closed Permissions & Path Redirection Protection
+# ==============================================================================
+
+
+def test_adversarial_unset_secret_fails_closed_zero_writes(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """When APPROVAL_SECRET_TOKEN is unset or empty, apply and rollback endpoints fail closed with zero mutations."""
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", None)
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    res_stage = client.post(
+        "/api/filesystem/proposals",
+        json={
+            "root_id": "ws",
+            "relative_path": "unauthed.txt",
+            "operation": "create",
+            "proposed_content": "danger data\n",
+        },
+    )
+    assert res_stage.status_code == 201
+    proposal_id = res_stage.json()["id"]
+
+    # 1. Apply without secret configured fails closed (403 Forbidden)
+    res_apply = client.post(
+        f"/api/filesystem/proposals/{proposal_id}/apply",
+        headers={"X-Pico-Approval-Token": "some_token"},
+    )
+    assert res_apply.status_code == 403
+    assert "filesystem:write" in res_apply.json().get("detail", "")
+    assert not (ws / "unauthed.txt").exists()
+
+    # 2. Even with empty header
+    res_apply_no_header = client.post(f"/api/filesystem/proposals/{proposal_id}/apply")
+    assert res_apply_no_header.status_code == 403
+    assert not (ws / "unauthed.txt").exists()
+
+
+def test_adversarial_missing_invalid_mismatched_approval_tokens(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """Missing, invalid, or mismatched approval tokens produce zero writes and zero deletes."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    res_stage = client.post(
+        "/api/filesystem/proposals",
+        json={
+            "root_id": "ws",
+            "relative_path": "token_check.txt",
+            "operation": "create",
+            "proposed_content": "token check content\n",
+        },
+    )
+    assert res_stage.status_code == 201
+    proposal_id = res_stage.json()["id"]
+
+    # Missing token header
+    res_no_tok = client.post(f"/api/filesystem/proposals/{proposal_id}/apply")
+    assert res_no_tok.status_code == 403
+    assert not (ws / "token_check.txt").exists()
+
+    # Empty token header
+    res_empty_tok = client.post(
+        f"/api/filesystem/proposals/{proposal_id}/apply",
+        headers={"X-Pico-Approval-Token": ""},
+    )
+    assert res_empty_tok.status_code == 403
+    assert not (ws / "token_check.txt").exists()
+
+    # Mismatched token header
+    res_wrong_tok = client.post(
+        f"/api/filesystem/proposals/{proposal_id}/apply",
+        headers={"X-Pico-Approval-Token": "invalid_wrong_token_999"},
+    )
+    assert res_wrong_tok.status_code == 403
+    assert not (ws / "token_check.txt").exists()
+
+
+def test_adversarial_target_swapped_with_symlink_after_validation(tmp_path, db_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """If target path is swapped with a symlink after proposal/validation, mutation fails closed and outside file is untouched."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_secret = outside / "secret.txt"
+    outside_secret.write_text("pristine external content\n", encoding="utf-8")
+
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target = ws / "target.txt"
+    target.write_text("initial content\n", encoding="utf-8")
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="target.txt",
+        operation="replace",
+        proposed_content="overwritten content\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Now replace target.txt with a symlink pointing to outside_secret
+    target.unlink()
+    try:
+        os.symlink(str(outside_secret), str(target))
+        symlink_created = True
+    except (OSError, NotImplementedError):
+        symlink_created = False
+
+    if not symlink_created:
+        # On Windows without symlink privileges, test via controlled adapter mock of is_symlink_or_reparse_point
+        from pico.filesystem import adapter as adapter_mod
+        from pico.filesystem import roots as roots_mod
+        orig_check = adapter_mod.is_symlink_or_reparse_point
+        target.write_text("initial content\n", encoding="utf-8")
+        monkeypatch.setattr(
+            adapter_mod,
+            "is_symlink_or_reparse_point",
+            lambda p: True if os.path.normpath(p) == os.path.normpath(str(target)) else orig_check(p),
+        )
+        monkeypatch.setattr(
+            roots_mod,
+            "is_symlink_or_reparse_point",
+            lambda p: True if os.path.normpath(p) == os.path.normpath(str(target)) else orig_check(p),
+        )
+
+    with pytest.raises((ValidationError, ExecutionError, AuthorizationError)):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # Crucial assertion: outside file MUST remain unchanged
+    assert outside_secret.read_text(encoding="utf-8") == "pristine external content\n"
+
+
+def test_adversarial_parent_directory_swapped_with_junction_fails_closed(tmp_path, db_session: Session):
+    """Parent directory swapped with a junction/reparse point after validation fails closed with zero mutations."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    real_sub = ws / "subdir"
+    real_sub.mkdir()
+    target = real_sub / "target.txt"
+    target.write_text("initial text\n", encoding="utf-8")
+
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "target.txt"
+    outside_file.write_text("outside protected\n", encoding="utf-8")
+
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="subdir/target.txt",
+        operation="replace",
+        proposed_content="malicious overwrite\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Swap real_sub with a directory junction pointing to outside_dir
+    import shutil
+    import sys
+    shutil.rmtree(real_sub)
+
+    junction_created = False
+    if sys.platform == "win32":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(outside_dir), str(real_sub))
+            junction_created = True
+        except Exception:
+            junction_created = False
+
+    if junction_created:
+        with pytest.raises((ValidationError, ExecutionError, AuthorizationError)):
+            asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+        # Outside directory must not have been modified
+        assert outside_file.read_text(encoding="utf-8") == "outside protected\n"
+
+
+def test_adversarial_concurrent_target_creation_blocks_exclusive_apply(tmp_path, db_session: Session):
+    """Target created concurrently immediately before or during mutation is blocked by exclusive creation."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="concurrent.txt",
+        operation="create",
+        proposed_content="pico proposal\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Concurrently create the target file before dispatch
+    concurrent_file = ws / "concurrent.txt"
+    concurrent_file.write_text("competitor content\n", encoding="utf-8")
+
+    with pytest.raises((AuthorizationError, ExecutionError)):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # Ensure concurrent content was NOT overwritten
+    assert concurrent_file.read_text(encoding="utf-8") == "competitor content\n"
+
+
+def test_adversarial_creation_rollback_fails_closed_when_content_or_path_modified(tmp_path, db_session: Session):
+    """Rollback of create operation fails closed if file was modified or redirected, refusing to delete."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="rollback_guard.txt",
+        operation="create",
+        proposed_content="applied content\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+    asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    target = ws / "rollback_guard.txt"
+    assert target.exists()
+
+    # Modify content externally
+    target.write_text("user added important work here\n", encoding="utf-8")
+
+    # Attempt rollback
+    rb_exec = engine.submit(
+        capability_id="filesystem.rollback_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(rb_exec.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    with pytest.raises((AuthorizationError, ExecutionError)):
+        asyncio.run(engine.execute(rb_exec.id, caller_permissions={"filesystem:write"}))
+
+    # File must NOT have been deleted
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "user added important work here\n"
+
+
+def test_adversarial_denied_or_uncertain_operation_never_retried(tmp_path, db_session: Session):
+    """A failed or denied filesystem execution leaves retry_count at 0 and never schedules automated retries."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="no_retry.txt",
+        operation="create",
+        proposed_content="content\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    # Execute directly without approval -> fails
+    with pytest.raises((AuthorizationError, ValidationError)):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    repo = ToolExecutionRepository(db_session)
+    reloaded = repo.get_by_id(execution.id)
+    assert reloaded.retry_count == 0
+    assert reloaded.status in ("failed", "awaiting_approval")
+
+
+def test_adversarial_repeated_and_concurrent_execution_claims_atomic(tmp_path, db_session: Session):
+    """Repeated or concurrent execution requests on the same execution respect atomic single-use claims."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="concurrent_claim.txt",
+        operation="create",
+        proposed_content="concurrent content\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # First execution succeeds
+    asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # Immediate second execution claim fails because status is 'succeeded', not 'queued'
+    with pytest.raises(ValidationError, match="is in status 'succeeded', cannot execute"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+
+def test_adversarial_no_changes_outside_authorized_root(client: TestClient, tmp_path):
+    """Verify that any attempt to stage or apply outside the root is rejected with zero mutations outside."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outside_protected"
+    outside.mkdir()
+    outside_file = outside / "safe.txt"
+    outside_file.write_text("protected content\n", encoding="utf-8")
+
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    # Attempt to stage outside relative path
+    res = client.post(
+        "/api/filesystem/proposals",
+        json={
+            "root_id": "ws",
+            "relative_path": "../outside_protected/safe.txt",
+            "operation": "replace",
+            "proposed_content": "hacked\n",
+        },
+    )
+    assert res.status_code in (400, 422)
+    assert outside_file.read_text(encoding="utf-8") == "protected content\n"

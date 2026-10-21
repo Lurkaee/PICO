@@ -109,9 +109,14 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Single-use human operator approval bound to SHA-256 canonical digest; triple-digest agreement and atomic compare-and-set claim.
   - Honest launch verification: distinct statuses for `request_rejected`, `awaiting_approval`, `launch_dispatched`, `process_creation_confirmed`, `launch_uncertain`, `launch_failed`, and `independent_window_observation_confirmed`. Process creation is never equated with desktop usability.
   - 23 dedicated adversarial and functional tests in `tests/test_os_automation.py` ensuring zero real desktop side effects during CI.
-- [x] **P8.2 Staged Filesystem Diffs**:
+- [x] **P8.2 Staged Filesystem Diffs & Security Follow-up (Fail-Closed Permissions & Race Protection)**:
   - Provider-neutral filesystem boundary (`pico.filesystem`): `BaseFilesystemAdapter`, `WindowsFilesystemAdapter`, and `FakeFilesystemAdapter`.
   - Server-configured filesystem root allowlist (`PICO_FILESYSTEM_ALLOWED_ROOTS`): strictly empty by default. Target paths must resolve strictly within an authorized canonical root.
+  - Fail-Closed Permissions: Removed missing-secret fallback in `submit_apply` and `submit_rollback`. `filesystem:write` permission is strictly granted only when a non-empty `APPROVAL_SECRET_TOKEN` is configured and matched via constant-time `secrets.compare_digest`. Unset secret, missing token, or mismatched token fails closed with zero mutations.
+  - Path Redirection & Race Protection: Eliminated unvalidated `os.path.realpath()` redirection; enforced component-by-component reparse and symlink validation (`verify_boundary_and_reparse`) at the mutation boundary across all operations.
+  - Exclusive file creation (`os.O_CREAT | os.O_EXCL`): Kernel-level atomic creation for new files, guaranteeing concurrently created targets cannot be overwritten.
+  - Conditional replacement: Pre-mutation state and expected original digest check immediately before temp file creation and atomic replacement (`os.replace`).
+  - Guarded conflict-safe rollback: Pre-removal reparse point check and expected applied digest verification; refusing to delete modified files or symlinks.
   - Hard path safety: rejects path traversal (`..`), alternate separators (`/` or mixed), Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`), UNC/device namespaces, and env vars (`%`, `$`).
   - Reparse point & symlink defense: checks target and all parent directories against `FILE_ATTRIBUTE_REPARSE_POINT` (0x400) and `os.path.islink`.
   - Bounded UTF-8 text contract: max 256 KB file size, max 4096 char line length, max 256 KB diff size, rejects NUL bytes and binary content, LF newline normalization.
@@ -121,13 +126,13 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Consequential execution boundary: `filesystem.apply_staged_diff` and `filesystem.rollback_staged_diff` (`RiskTier.HIGH`, `filesystem:write`, `consequential=True`, `idempotent=False`, `max_retries=0`).
   - Triple-digest approval binding: Server `prepare_input` hook injects trusted original digest, proposed content digest, and diff digest into execution input before `input_digest` computation. Human approval ticket cryptographically binds exact operation, path, disk snapshot, proposed content, and diff.
   - Pre-dispatch gate: `ToolExecutionEngine.execute` re-verifies root allowlist membership, checks target file on disk against `expected_original_digest`, and checks stored proposed content and diff digests before execution. Post-approval tampering fails closed with zero writes.
-  - Atomic write semantics: safe temporary file (`.pico_tmp_*`), data flush and sync (`os.fsync`), and atomic move (`os.replace`).
-  - Independent post-write verification: re-opens target file, computes SHA-256 digest, and asserts exact match against approved proposed digest before declaring success.
+  - Atomic write semantics: safe directory-local temporary file (`.pico_tmp_*`), data flush and sync (`os.fsync`), and atomic move (`os.replace`).
+  - Independent post-write verification: re-opens target file, computes SHA-256 digest, and asserts exact match against approved proposed digest before declaring success. Zero automatic retries.
   - Guarded conflict-safe rollback: verifies file on disk matches post-apply digest, refusing rollback if external edits occurred. Restores original content atomically or removes created file.
   - REST endpoints at `/api/filesystem/proposals` (`POST`, `GET`, `GET /{id}`, `POST /{id}/discard`, `POST /{id}/apply`, `POST /{id}/rollback`).
-  - 27 dedicated adversarial and functional tests in `tests/test_filesystem_diffs.py` executing inside pytest temporary workspaces (`tmp_path`) with zero modifications to real files during CI.
+  - 36 dedicated adversarial and functional tests in `tests/test_filesystem_diffs.py` executing inside pytest temporary workspaces (`tmp_path`) with zero modifications to real files during CI.
 - [ ] **P8.3 Sandboxed Browser Automation**: Playwright adapter with untrusted web content isolation.
-- **Status**: **P8.1 & P8.2 COMPLETED & VERIFIED; P8.3 PLANNED**.
+- **Status**: **P8.1 & P8.2 (INCLUDING FAIL-CLOSED WRITE BOUNDARY & RACE PROTECTION) COMPLETED & VERIFIED; P8.3 PLANNED**.
 
 ### Milestone P9: Multi-Agent Workflow Coordination
 - [ ] **P9.1 Task Delegation**: Subtask execution over persistent Task Engine.

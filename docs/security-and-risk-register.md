@@ -63,15 +63,16 @@ Before PICO is authorized to execute real external actions (file writing outside
    - Launch Profile Fingerprint Binding: Approval cryptographically binds canonical launch profile fingerprint (alias, executable, args, working directory); re-verified at execution boundary so any post-approval allowlist mutation fails closed with zero process creation.
    - Distinct honest verification statuses; zero automatic retries on launch failure or uncertainty.
    - Automated tests execute exclusively against synthetic fake adapters without launching real desktop processes in CI.
-7. **Filesystem Modification Safety Gate (Milestone P8.2)**:
+7. **Filesystem Modification Safety Gate (Milestone P8.2 & Follow-up Hardening)**:
    - Server-configured filesystem root allowlist (`PICO_FILESYSTEM_ALLOWED_ROOTS`), strictly empty by default.
    - Operations strictly bounded to `create` (new text file, parent directory exists, target absent) and `replace` (existing text file).
-   - Hard path validation: canonical absolute resolution within root, rejection of `..`, alternate separators, Windows device paths (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`), UNC/device namespaces, and environment variables.
-   - Reparse point and symlink rejection across target and all ancestors (`FILE_ATTRIBUTE_REPARSE_POINT`).
+   - Fail-Closed Permissions: Write operations (`filesystem:write`) for both apply and rollback strictly require a non-empty server-side `APPROVAL_SECRET_TOKEN` and constant-time match (`secrets.compare_digest`). Unset secret, missing token, or mismatched token fails closed with zero mutations.
+   - Hard path validation & anti-redirection boundary: Eliminates unvalidated `os.path.realpath()` redirection outside configured roots. Immediate pre-mutation validation (`verify_boundary_and_reparse`) asserts strict commonpath containment and checks target and all ancestor components for symlinks or reparse points (`FILE_ATTRIBUTE_REPARSE_POINT`, 0x400).
+   - Exclusive creation (`os.O_CREAT | os.O_EXCL`): Kernel-enforced atomic creation for new files, guaranteeing a concurrently created target cannot be overwritten.
+   - Conditional replacement: Pre-mutation state and expected original digest check immediately before staging in directory-local temporary file (`.pico_tmp_*`), flush, and atomic replacement (`os.replace`).
+   - Guarded conflict-safe rollback: Safe deletion verifies expected applied digest immediately before unlink and refuses to unlink symlinks/reparse points; replacement rollback restores original bytes with expected-applied digest verification.
    - Bounded UTF-8 text contract: max 256 KB file size, max 4096 char line length, max 256 KB diff size, rejection of NUL bytes and binary content, LF newline normalization.
    - Proposal & diff staging: inspectable unified diff, original SHA-256 (`ABSENT` or content hash), proposed SHA-256, diff SHA-256 stored in durable local entity (`StagedDiff`).
    - Human operator approval bound to cryptographic `input_digest` via `prepare_input` hook. Any tampering after approval fails closed at dispatch.
-   - Safe apply: pre-dispatch re-verification of root allowlist, target file state on disk, and proposal digests. Atomic write via safe local temporary file, flush, and `os.replace`.
    - Independent verification: target is re-opened, read back, and hash-verified against approved proposed content before declaring success. Zero automatic retries.
-   - Guarded conflict-safe rollback: refuses rollback if destination file hash does not match post-apply hash (external edits detected). Rollback requires explicit authorization and records full audit trail.
-   - Automated tests execute exclusively inside pytest temporary workspaces (`tmp_path`) with zero modifications to the host or repository filesystem in CI.
+   - Platform limitations & CI testing: On Windows, non-elevated CI environments cannot create file symlinks (WinError 1314), so symlink swap tests utilize controlled adapter/OS API mocks; directory junctions (`_winapi.CreateJunction`) are fully supported and verified live on disk. Automated tests execute exclusively inside pytest temporary workspaces (`tmp_path`) with zero modifications to the host or repository filesystem.

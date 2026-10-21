@@ -721,11 +721,12 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
 
 ##### `POST /api/filesystem/proposals/{proposal_id}/apply`
 - **Description**: Apply an approved staged diff proposal. Submits or executes `filesystem.apply_staged_diff` via the ToolExecutionEngine. Requires human approval ticket when consequential execution is enforced.
-- **Headers**: Optional `X-Pico-Approval-Token` matching `APPROVAL_SECRET_TOKEN` when approving.
+- **Headers**: `X-Pico-Approval-Token` matching a non-empty server-side `APPROVAL_SECRET_TOKEN` (verified via constant-time `secrets.compare_digest`). Unset secret, missing token, or mismatched token fails closed with `403 Forbidden` (`filesystem:write` permission denied).
 - **Response (200 OK / 202 Accepted)**: ToolExecutionEngine result envelope with execution and verification details.
 
 ##### `POST /api/filesystem/proposals/{proposal_id}/rollback`
-- **Description**: Roll back an applied staged diff proposal. Submits or executes `filesystem.rollback_staged_diff` via the ToolExecutionEngine. Requires human approval ticket. Fails closed if the destination file has been modified since application.
+- **Description**: Roll back an applied staged diff proposal. Submits or executes `filesystem.rollback_staged_diff` via the ToolExecutionEngine. Requires human approval ticket. Fails closed if the destination file has been modified since application or replaced with a symlink/reparse point.
+- **Headers**: `X-Pico-Approval-Token` matching a non-empty server-side `APPROVAL_SECRET_TOKEN` (verified via constant-time `secrets.compare_digest`). Unset secret, missing token, or mismatched token fails closed with `403 Forbidden` (`filesystem:write` permission denied).
 - **Response (200 OK / 202 Accepted)**: ToolExecutionEngine result envelope with execution and verification details.
 
 ---

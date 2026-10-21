@@ -47,7 +47,7 @@ def stage_diff_proposal(
     )
 
     if op == OperationType.CREATE.value:
-        if adapter.file_exists(target_path):
+        if adapter.file_exists(target_path, root_path=canonical_root):
             raise ValidationError(
                 f"Cannot stage create proposal: Target file already exists at '{relative_path}'."
             )
@@ -55,11 +55,11 @@ def stage_diff_proposal(
         original_state = "ABSENT"
     else:
         # op == replace
-        if not adapter.file_exists(target_path):
+        if not adapter.file_exists(target_path, root_path=canonical_root):
             raise ValidationError(
                 f"Cannot stage replace proposal: Target file does not exist at '{relative_path}'."
             )
-        original_text = adapter.read_text(target_path)
+        original_text = adapter.read_text(target_path, root_path=canonical_root)
         original_state = compute_content_digest(original_text)
 
     proposed_digest = compute_content_digest(validated_proposed)

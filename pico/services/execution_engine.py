@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import secrets
 from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy.orm import Session
@@ -199,7 +200,8 @@ class ToolExecutionEngine:
             "filesystem.apply_staged_diff",
             "filesystem.rollback_staged_diff",
         ):
-            if not settings.APPROVAL_SECRET_TOKEN or not approval_token or approval_token != settings.APPROVAL_SECRET_TOKEN:
+            configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+            if not configured_secret or not approval_token or not secrets.compare_digest(approval_token, configured_secret):
                 self.ledger_repo.append(
                     event_type="approval_denied",
                     execution_id=execution.id,
@@ -222,7 +224,7 @@ class ToolExecutionEngine:
             recorded_principal = "authenticated_token_holder"
         elif authenticated_principal:
             recorded_principal = authenticated_principal
-        elif approval_token and settings.APPROVAL_SECRET_TOKEN and approval_token == settings.APPROVAL_SECRET_TOKEN:
+        elif approval_token and settings.APPROVAL_SECRET_TOKEN and secrets.compare_digest(approval_token, settings.APPROVAL_SECRET_TOKEN):
             recorded_principal = "authenticated_token_holder"
         else:
             # Fallback for internal direct-engine test invocations
@@ -454,7 +456,7 @@ class ToolExecutionEngine:
                 adapter = get_filesystem_adapter()
                 expected_orig = validated_input_snapshot.get("expected_original_state")
                 if proposal.operation == OperationType.CREATE.value:
-                    if adapter.file_exists(target_path):
+                    if adapter.file_exists(target_path, root_path=canonical_root):
                         self.ledger_repo.append(
                             event_type="authorization_denied",
                             execution_id=execution.id,
@@ -471,7 +473,7 @@ class ToolExecutionEngine:
                             f"Approval invalidated: Target file already exists at '{proposal.relative_path}' prior to creation."
                         )
                 else:
-                    if not adapter.file_exists(target_path):
+                    if not adapter.file_exists(target_path, root_path=canonical_root):
                         self.ledger_repo.append(
                             event_type="authorization_denied",
                             execution_id=execution.id,
@@ -487,7 +489,7 @@ class ToolExecutionEngine:
                         raise AuthorizationError(
                             f"Approval invalidated: Target file does not exist at '{proposal.relative_path}'."
                         )
-                    curr_digest = adapter.get_content_digest(target_path)
+                    curr_digest = adapter.get_content_digest(target_path, root_path=canonical_root)
                     if curr_digest != expected_orig:
                         self.ledger_repo.append(
                             event_type="authorization_denied",
@@ -594,7 +596,7 @@ class ToolExecutionEngine:
 
                 adapter = get_filesystem_adapter()
                 expected_applied = validated_input_snapshot.get("expected_applied_digest")
-                if not adapter.file_exists(target_path):
+                if not adapter.file_exists(target_path, root_path=canonical_root):
                     self.ledger_repo.append(
                         event_type="authorization_denied",
                         execution_id=execution.id,
@@ -610,7 +612,7 @@ class ToolExecutionEngine:
                     raise AuthorizationError(
                         f"Approval invalidated: Target file does not exist at '{proposal.relative_path}'."
                     )
-                curr_digest = adapter.get_content_digest(target_path)
+                curr_digest = adapter.get_content_digest(target_path, root_path=canonical_root)
                 if curr_digest != expected_applied:
                     self.ledger_repo.append(
                         event_type="authorization_denied",

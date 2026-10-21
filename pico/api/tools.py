@@ -1,3 +1,4 @@
+import secrets
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
@@ -116,6 +117,10 @@ async def submit_execution(
     elif payload.capability_id == "os.launch_application":
         if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
             effective_perms.add("os:launch")
+    elif payload.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
+        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+            effective_perms.add("filesystem:write")
 
     execution = engine.submit(
         capability_id=payload.capability_id,
@@ -219,9 +224,8 @@ async def run_execution(
         if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
             effective_perms.add("os:launch")
     elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
-            effective_perms.add("filesystem:write")
-        elif not settings.APPROVAL_SECRET_TOKEN and item.status == "approved":
+        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
             effective_perms.add("filesystem:write")
 
     execution = await engine.execute(execution_id, caller_permissions=effective_perms)
@@ -254,7 +258,8 @@ def approve_execution(
             raise AuthorizationError("Application launch approval fails closed without valid X-Pico-Approval-Token.")
         authenticated_principal = "authenticated_token_holder"
     elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-        if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+        if not configured_secret or not x_approval_token or not secrets.compare_digest(x_approval_token, configured_secret):
             raise AuthorizationError("Filesystem modification approval fails closed without valid X-Pico-Approval-Token.")
         authenticated_principal = "authenticated_token_holder"
     elif settings.APPROVAL_SECRET_TOKEN:

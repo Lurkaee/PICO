@@ -1,5 +1,7 @@
 """REST API router for Staged Filesystem Diffs (Milestone P8.2)."""
 
+import secrets
+
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
@@ -118,9 +120,8 @@ def submit_apply(
         )
 
     effective_perms = {"filesystem:read"}
-    if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
-        effective_perms.add("filesystem:write")
-    elif not settings.APPROVAL_SECRET_TOKEN:
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
         effective_perms.add("filesystem:write")
 
     engine = ToolExecutionEngine(db, registry)
@@ -160,9 +161,8 @@ def submit_rollback(
         )
 
     effective_perms = {"filesystem:read"}
-    if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
-        effective_perms.add("filesystem:write")
-    elif not settings.APPROVAL_SECRET_TOKEN:
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
         effective_perms.add("filesystem:write")
 
     engine = ToolExecutionEngine(db, registry)

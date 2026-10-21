@@ -159,12 +159,12 @@ class RollbackStagedDiffCapability(BaseCapability):
             adapter = get_filesystem_adapter()
 
             # Target must exist and match applied digest exactly (guard against external edits)
-            if not adapter.file_exists(target_path):
+            if not adapter.file_exists(target_path, root_path=canonical_root):
                 raise ExecutionError(
                     f"Rollback rejected: Target file does not exist at '{proposal.relative_path}'."
                 )
 
-            current_digest = adapter.get_content_digest(target_path)
+            current_digest = adapter.get_content_digest(target_path, root_path=canonical_root)
             if current_digest != validated.expected_applied_digest:
                 raise ExecutionError(
                     f"Rollback rejected: File content has been modified externally since application. Current digest: '{current_digest}', expected: '{validated.expected_applied_digest}'."
@@ -172,8 +172,12 @@ class RollbackStagedDiffCapability(BaseCapability):
 
             if proposal.operation == OperationType.CREATE.value:
                 # Safely delete the created file
-                adapter.delete_file(target_path)
-                if adapter.file_exists(target_path):
+                adapter.delete_file(
+                    target_path,
+                    root_path=canonical_root,
+                    expected_digest=validated.expected_applied_digest,
+                )
+                if adapter.file_exists(target_path, root_path=canonical_root):
                     raise ExecutionError(
                         f"Rollback verification failed: File still exists at '{proposal.relative_path}' after deletion."
                     )
@@ -182,10 +186,16 @@ class RollbackStagedDiffCapability(BaseCapability):
                 # replace operation: restore original content
                 if proposal.original_content is None:
                     raise ExecutionError("Rollback failed: Original content snapshot is missing.")
-                adapter.write_text_atomic(target_path, proposal.original_content)
+                adapter.write_text_atomic(
+                    target_path,
+                    proposal.original_content,
+                    root_path=canonical_root,
+                    exclusive=False,
+                    expected_original_digest=validated.expected_applied_digest,
+                )
 
                 # Independent verification: re-read file and verify original digest
-                restored_text = adapter.read_text(target_path)
+                restored_text = adapter.read_text(target_path, root_path=canonical_root)
                 restored_digest = compute_content_digest(restored_text)
                 if restored_digest != proposal.original_state:
                     raise ExecutionError(
