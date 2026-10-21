@@ -668,6 +668,172 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
 
 ---
 
+### 2.11 Filesystem Operations & Staged Diffs (Milestone P8.2)
+
+#### REST Endpoints: `/api/filesystem/proposals`
+
+##### `POST /api/filesystem/proposals`
+- **Description**: Stage a new text file diff proposal (`create` or `replace`). Reads the existing file (if any), computes original digest, normalizes new content, bounds text/diff sizes, generates unified diff, and records a staged proposal with `staged` status.
+- **Request Body**:
+  ```json
+  {
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "operation": "create",
+    "proposed_content": "Initial notes content\n"
+  }
+  ```
+- **Validation**:
+  - `root_id`: Must match an active configured server root in `PICO_FILESYSTEM_ALLOWED_ROOTS`.
+  - `relative_path`: Must be a safe relative path within the root. Rejects traversal (`..`), device paths (`CON`, `NUL`), alternate separators, and reparse points.
+  - `operation`: Must be `"create"` or `"replace"`.
+  - `proposed_content`: UTF-8 text only; rejects NUL bytes (`\x00`); max size bounded by `PICO_FILESYSTEM_MAX_FILE_BYTES`.
+- **Response (201 Created)**:
+  ```json
+  {
+    "proposal_id": "prop_01abc123",
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "operation": "create",
+    "expected_original_digest": "ABSENT",
+    "proposed_content_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "unified_diff": "--- /dev/null\n+++ docs/notes.txt\n@@ -0,0 +1 @@\n+Initial notes content\n",
+    "diff_digest": "7852b855e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b",
+    "status": "staged",
+    "created_at": "2026-10-21T21:00:00Z",
+    "applied_at": null,
+    "rolled_back_at": null,
+    "verification_details": null
+  }
+  ```
+
+##### `GET /api/filesystem/proposals`
+- **Description**: List staged diff proposals with optional query parameters (`root_id`, `status`).
+- **Response (200 OK)**: JSON array of `StagedDiffResponse` objects.
+
+##### `GET /api/filesystem/proposals/{proposal_id}`
+- **Description**: Retrieve a specific staged proposal and its inspectable unified diff by ID.
+- **Response (200 OK)**: Single `StagedDiffResponse` object.
+
+##### `POST /api/filesystem/proposals/{proposal_id}/discard`
+- **Description**: Discard an unapplied staged diff proposal. Transitions status to `discarded`.
+- **Response (200 OK)**: Single `StagedDiffResponse` object with `status: "discarded"`.
+
+##### `POST /api/filesystem/proposals/{proposal_id}/apply`
+- **Description**: Apply an approved staged diff proposal. Submits or executes `filesystem.apply_staged_diff` via the ToolExecutionEngine. Requires human approval ticket when consequential execution is enforced.
+- **Headers**: Optional `X-Pico-Approval-Token` matching `APPROVAL_SECRET_TOKEN` when approving.
+- **Response (200 OK / 202 Accepted)**: ToolExecutionEngine result envelope with execution and verification details.
+
+##### `POST /api/filesystem/proposals/{proposal_id}/rollback`
+- **Description**: Roll back an applied staged diff proposal. Submits or executes `filesystem.rollback_staged_diff` via the ToolExecutionEngine. Requires human approval ticket. Fails closed if the destination file has been modified since application.
+- **Response (200 OK / 202 Accepted)**: ToolExecutionEngine result envelope with execution and verification details.
+
+---
+
+#### Capability: `filesystem.stage_diff`
+- **Capability ID**: `filesystem.stage_diff` (version: `1.0.0`)
+- **Risk Tier**: `READ_ONLY`
+- **Required Permission**: `filesystem:read`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `false` | **Idempotent**: `true` | **Timeout**: 10.0s
+- **Input Schema**:
+  ```json
+  {
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "operation": "create",
+    "proposed_content": "Initial notes content\n"
+  }
+  ```
+
+#### Capability: `filesystem.inspect_diff`
+- **Capability ID**: `filesystem.inspect_diff` (version: `1.0.0`)
+- **Risk Tier**: `READ_ONLY`
+- **Required Permission**: `filesystem:read`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `false` | **Idempotent**: `true` | **Timeout**: 5.0s
+- **Input Schema**:
+  ```json
+  {
+    "proposal_id": "prop_01abc123"
+  }
+  ```
+
+#### Capability: `filesystem.apply_staged_diff`
+- **Capability ID**: `filesystem.apply_staged_diff` (version: `1.0.0`)
+- **Risk Tier**: `HIGH`
+- **Required Permission**: `filesystem:write`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `true` (Requires explicit human approval) | **Idempotent**: `false` | **Max Retries**: 0 | **Timeout**: 15.0s
+- **Input Schema**:
+  ```json
+  {
+    "proposal_id": "prop_01abc123",
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "operation": "create",
+    "expected_original_digest": "ABSENT",
+    "proposed_content_digest": "e3b0c442...",
+    "diff_digest": "7852b855..."
+  }
+  ```
+  *Note*: All digest fields are enriched and validated server-side by `prepare_input` at submission time to bind the exact disk snapshot, proposed content, and unified diff into the human approval ticket. Re-verified immediately before dispatch.
+- **Output Schema**:
+  ```json
+  {
+    "proposal_id": "prop_01abc123",
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "operation": "create",
+    "status": "applied",
+    "verification_status": "verified",
+    "verified_digest": "e3b0c442...",
+    "verification_details": {
+      "verified": true,
+      "written_bytes": 22,
+      "verified_digest": "e3b0c442..."
+    },
+    "message": null
+  }
+  ```
+
+#### Capability: `filesystem.rollback_staged_diff`
+- **Capability ID**: `filesystem.rollback_staged_diff` (version: `1.0.0`)
+- **Risk Tier**: `HIGH`
+- **Required Permission**: `filesystem:write`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `true` (Requires explicit human approval) | **Idempotent**: `false` | **Max Retries**: 0 | **Timeout**: 15.0s
+- **Input Schema**:
+  ```json
+  {
+    "proposal_id": "prop_01abc123",
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "operation": "create",
+    "post_apply_digest": "e3b0c442...",
+    "expected_restored_digest": "ABSENT"
+  }
+  ```
+  *Note*: All digest fields are enriched and validated server-side by `prepare_input` at submission time. Fails closed with `AuthorizationError` if the destination file has been modified by an external editor since application.
+- **Output Schema**:
+  ```json
+  {
+    "proposal_id": "prop_01abc123",
+    "root_id": "workspace",
+    "relative_path": "docs/notes.txt",
+    "status": "rolled_back",
+    "verification_status": "verified",
+    "restored_digest": "ABSENT",
+    "verification_details": {
+      "verified": true,
+      "restored_digest": "ABSENT"
+    },
+    "message": null
+  }
+  ```
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:

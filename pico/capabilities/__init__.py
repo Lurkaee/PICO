@@ -16,6 +16,12 @@ from pico.capabilities.homeassistant.ha_capabilities import (
     HomeAssistantOverviewCapability,
     HomeAssistantStatusCapability,
 )
+from pico.capabilities.filesystem import (
+    ApplyStagedDiffCapability,
+    InspectDiffCapability,
+    RollbackStagedDiffCapability,
+    StageDiffCapability,
+)
 from pico.capabilities.homeassistant.ha_actuation import (
     HomeAssistantTestLightActuationCapability,
 )
@@ -65,6 +71,10 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(HomeAssistantActuationReadinessCapability())
     reg.register(InspectWindowsCapability())
     reg.register(LaunchApplicationCapability())
+    reg.register(StageDiffCapability())
+    reg.register(InspectDiffCapability())
+    reg.register(ApplyStagedDiffCapability())
+    reg.register(RollbackStagedDiffCapability())
 
 
 
@@ -103,4 +113,8 @@ __all__ = [
     "HomeAssistantActuationReadinessCapability",
     "InspectWindowsCapability",
     "LaunchApplicationCapability",
+    "StageDiffCapability",
+    "InspectDiffCapability",
+    "ApplyStagedDiffCapability",
+    "RollbackStagedDiffCapability",
 ]

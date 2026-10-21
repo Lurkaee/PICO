@@ -62,7 +62,7 @@ class BaseCapability(ABC):
     input_model: type[BaseModel]
     output_model: type[BaseModel]
 
-    def prepare_input(self, input_data: dict[str, Any]) -> dict[str, Any]:
+    def prepare_input(self, input_data: dict[str, Any], db: Any = None) -> dict[str, Any]:
         """
         Optionally prepare, enrich, or canonicalize input before validation and digest calculation.
         Default implementation returns input_data unchanged.

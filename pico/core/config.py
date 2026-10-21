@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     OS_AUTOMATION_ENABLED: bool = True
     OS_APPLICATION_ALLOWLIST: str = "{}"
 
+    # Staged Filesystem Diffs Settings (Milestone P8.2)
+    PICO_FILESYSTEM_ALLOWED_ROOTS: str = "{}"
+    PICO_FILESYSTEM_MAX_FILE_BYTES: int = 256 * 1024       # 256 KB max file size
+    PICO_FILESYSTEM_MAX_LINE_LENGTH: int = 4096            # 4 KB max line length
+    PICO_FILESYSTEM_MAX_DIFF_BYTES: int = 256 * 1024       # 256 KB max diff size
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

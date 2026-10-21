@@ -83,7 +83,7 @@ class ToolExecutionEngine:
 
         # 2.5 Input Preparation / Canonical Enrichment
         try:
-            prepared_input = capability.prepare_input(dict(input_data))
+            prepared_input = capability.prepare_input(dict(input_data), db=self.db)
         except Exception as exc:
             self.ledger_repo.append(
                 event_type="validation_failed",
@@ -193,7 +193,12 @@ class ToolExecutionEngine:
             raise EntityNotFoundError("ToolExecution", execution_id)
 
         # Derive honest server-defined approval principal
-        if execution.capability_id in ("homeassistant.test_light_actuate", "os.launch_application"):
+        if execution.capability_id in (
+            "homeassistant.test_light_actuate",
+            "os.launch_application",
+            "filesystem.apply_staged_diff",
+            "filesystem.rollback_staged_diff",
+        ):
             if not settings.APPROVAL_SECRET_TOKEN or not approval_token or approval_token != settings.APPROVAL_SECRET_TOKEN:
                 self.ledger_repo.append(
                     event_type="approval_denied",
@@ -204,7 +209,13 @@ class ToolExecutionEngine:
                     payload_json={"reason": "Missing or invalid server approval secret token"},
                     data_classification=execution.data_classification,
                 )
-                action_desc = "Physical actuation" if execution.capability_id == "homeassistant.test_light_actuate" else "Application launch"
+                action_desc = (
+                    "Physical actuation"
+                    if execution.capability_id == "homeassistant.test_light_actuate"
+                    else "Application launch"
+                    if execution.capability_id == "os.launch_application"
+                    else "Filesystem modification"
+                )
                 raise AuthorizationError(
                     f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
                 )
@@ -384,6 +395,237 @@ class ToolExecutionEngine:
                     )
                     raise AuthorizationError(
                         f"Approval invalidated: Launch profile for alias '{alias}' was modified after approval was granted."
+                    )
+
+            # Filesystem staged diff verification at execution boundary
+            elif execution.capability_id == "filesystem.apply_staged_diff":
+                from pico.filesystem.adapter import get_filesystem_adapter
+                from pico.filesystem.contracts import OperationType
+                from pico.filesystem.roots import get_roots_manager
+                from pico.repositories.staged_diff_repo import StagedDiffRepository
+
+                pid = validated_input_snapshot.get("proposal_id")
+                staged_repo = StagedDiffRepository(self.db)
+                proposal = staged_repo.get_by_id(pid) if pid else None
+
+                if not proposal or proposal.status != "staged":
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Staged proposal missing or not in staged status",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Staged proposal '{pid}' is missing or not in 'staged' status at dispatch."
+                    )
+
+                # Re-verify root allowlist
+                roots_mgr = get_roots_manager()
+                try:
+                    canonical_root, target_path = roots_mgr.resolve_safe_path(
+                        root_id=proposal.root_id,
+                        relative_path=proposal.relative_path,
+                        must_exist=(proposal.operation == OperationType.REPLACE.value),
+                        parent_must_exist=True,
+                    )
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Approval invalidated: Root allowlist or path check failed: {exc}",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Filesystem root or path check failed at dispatch: {exc}"
+                    )
+
+                adapter = get_filesystem_adapter()
+                expected_orig = validated_input_snapshot.get("expected_original_state")
+                if proposal.operation == OperationType.CREATE.value:
+                    if adapter.file_exists(target_path):
+                        self.ledger_repo.append(
+                            event_type="authorization_denied",
+                            execution_id=execution.id,
+                            task_id=execution.task_id,
+                            correlation_id=correlation_id,
+                            capability_id=execution.capability_id,
+                            payload_json={
+                                "reason": "Approval invalidated: Target file already exists on disk prior to creation",
+                                "proposal_id": pid,
+                            },
+                            data_classification=execution.data_classification,
+                        )
+                        raise AuthorizationError(
+                            f"Approval invalidated: Target file already exists at '{proposal.relative_path}' prior to creation."
+                        )
+                else:
+                    if not adapter.file_exists(target_path):
+                        self.ledger_repo.append(
+                            event_type="authorization_denied",
+                            execution_id=execution.id,
+                            task_id=execution.task_id,
+                            correlation_id=correlation_id,
+                            capability_id=execution.capability_id,
+                            payload_json={
+                                "reason": "Approval invalidated: Target file missing on disk prior to replacement",
+                                "proposal_id": pid,
+                            },
+                            data_classification=execution.data_classification,
+                        )
+                        raise AuthorizationError(
+                            f"Approval invalidated: Target file does not exist at '{proposal.relative_path}'."
+                        )
+                    curr_digest = adapter.get_content_digest(target_path)
+                    if curr_digest != expected_orig:
+                        self.ledger_repo.append(
+                            event_type="authorization_denied",
+                            execution_id=execution.id,
+                            task_id=execution.task_id,
+                            correlation_id=correlation_id,
+                            capability_id=execution.capability_id,
+                            payload_json={
+                                "reason": "Approval invalidated: Target file modified after approval",
+                                "proposal_id": pid,
+                            },
+                            data_classification=execution.data_classification,
+                        )
+                        raise AuthorizationError(
+                            f"Approval invalidated: Target file content at '{proposal.relative_path}' was modified after approval was granted."
+                        )
+
+                # Verify staged content and diff digests have not been tampered with
+                from pico.filesystem.contracts import compute_content_digest, compute_diff_digest
+                if compute_content_digest(proposal.proposed_content) != validated_input_snapshot.get("expected_proposed_digest"):
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Staged proposal content was modified after approval",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Staged proposal '{pid}' content was modified after approval was granted."
+                    )
+
+                if compute_diff_digest(proposal.unified_diff) != validated_input_snapshot.get("expected_diff_digest"):
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Staged proposal unified diff was modified after approval",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Staged proposal '{pid}' unified diff was modified after approval was granted."
+                    )
+
+            elif execution.capability_id == "filesystem.rollback_staged_diff":
+                from pico.filesystem.adapter import get_filesystem_adapter
+                from pico.filesystem.roots import get_roots_manager
+                from pico.repositories.staged_diff_repo import StagedDiffRepository
+
+                pid = validated_input_snapshot.get("proposal_id")
+                staged_repo = StagedDiffRepository(self.db)
+                proposal = staged_repo.get_by_id(pid) if pid else None
+
+                if not proposal or proposal.status != "applied":
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Proposal missing or not in applied status",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Proposal '{pid}' is missing or not in 'applied' status at dispatch."
+                    )
+
+                roots_mgr = get_roots_manager()
+                try:
+                    canonical_root, target_path = roots_mgr.resolve_safe_path(
+                        root_id=proposal.root_id,
+                        relative_path=proposal.relative_path,
+                        must_exist=True,
+                        parent_must_exist=True,
+                    )
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Approval invalidated: Root allowlist or path check failed: {exc}",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Filesystem root or path check failed at dispatch: {exc}"
+                    )
+
+                adapter = get_filesystem_adapter()
+                expected_applied = validated_input_snapshot.get("expected_applied_digest")
+                if not adapter.file_exists(target_path):
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Target file missing for rollback",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Target file does not exist at '{proposal.relative_path}'."
+                    )
+                curr_digest = adapter.get_content_digest(target_path)
+                if curr_digest != expected_applied:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: File modified externally since application",
+                            "proposal_id": pid,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: File content at '{proposal.relative_path}' was modified externally since application."
                     )
 
             # Single-use approval and replay protection
