@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     HOME_ASSISTANT_VERIFICATION_TIMEOUT_SECONDS: float = 5.0
     HOME_ASSISTANT_VERIFICATION_POLL_INTERVAL_SECONDS: float = 0.5
 
+    # OS & Desktop Application Automation Settings (Milestone P8.1)
+    OS_AUTOMATION_ENABLED: bool = True
+    OS_APPLICATION_ALLOWLIST: str = "{}"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

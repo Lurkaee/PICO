@@ -106,10 +106,16 @@ async def submit_execution(
         "admin:consequential",
     }
     effective_perms = set(default_perms)
-    # Physical actuation requires verified server-side APPROVAL_SECRET_TOKEN to grant permission
+    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN to grant permission
     if payload.capability_id == "homeassistant.test_light_actuate":
         if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
             effective_perms.add("homeassistant:actuate")
+    elif payload.capability_id == "os.inspect_windows":
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("os:inspect")
+    elif payload.capability_id == "os.launch_application":
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("os:launch")
 
     execution = engine.submit(
         capability_id=payload.capability_id,
@@ -202,10 +208,16 @@ async def run_execution(
         "admin:consequential",
     }
     effective_perms = set(default_perms)
-    # Physical actuation requires verified server-side APPROVAL_SECRET_TOKEN to grant permission
+    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN to grant permission
     if item.capability_id == "homeassistant.test_light_actuate":
         if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
             effective_perms.add("homeassistant:actuate")
+    elif item.capability_id == "os.inspect_windows":
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("os:inspect")
+    elif item.capability_id == "os.launch_application":
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("os:launch")
 
     execution = await engine.execute(execution_id, caller_permissions=effective_perms)
     return ToolExecutionResponse.model_validate(execution)
@@ -227,10 +239,14 @@ def approve_execution(
     if not item:
         raise EntityNotFoundError("ToolExecution", execution_id)
 
-    # Physical actuation must fail closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid.
+    # Physical actuation and application launch must fail closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid.
     if item.capability_id == "homeassistant.test_light_actuate":
         if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
             raise AuthorizationError("Physical actuation approval fails closed without valid X-Pico-Approval-Token.")
+        authenticated_principal = "authenticated_token_holder"
+    elif item.capability_id == "os.launch_application":
+        if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+            raise AuthorizationError("Application launch approval fails closed without valid X-Pico-Approval-Token.")
         authenticated_principal = "authenticated_token_holder"
     elif settings.APPROVAL_SECRET_TOKEN:
         if x_approval_token != settings.APPROVAL_SECRET_TOKEN:

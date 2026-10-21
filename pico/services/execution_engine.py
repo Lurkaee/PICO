@@ -179,7 +179,7 @@ class ToolExecutionEngine:
             raise EntityNotFoundError("ToolExecution", execution_id)
 
         # Derive honest server-defined approval principal
-        if execution.capability_id == "homeassistant.test_light_actuate":
+        if execution.capability_id in ("homeassistant.test_light_actuate", "os.launch_application"):
             if not settings.APPROVAL_SECRET_TOKEN or not approval_token or approval_token != settings.APPROVAL_SECRET_TOKEN:
                 self.ledger_repo.append(
                     event_type="approval_denied",
@@ -190,8 +190,9 @@ class ToolExecutionEngine:
                     payload_json={"reason": "Missing or invalid server approval secret token"},
                     data_classification=execution.data_classification,
                 )
+                action_desc = "Physical actuation" if execution.capability_id == "homeassistant.test_light_actuate" else "Application launch"
                 raise AuthorizationError(
-                    "Physical actuation approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
+                    f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
                 )
             recorded_principal = "authenticated_token_holder"
         elif authenticated_principal:
