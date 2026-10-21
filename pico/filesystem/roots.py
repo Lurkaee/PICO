@@ -91,6 +91,17 @@ class FilesystemRootsManager:
         clean_rel = validate_relative_path(relative_path)
         canonical_root = self.get_root_path(root_id)
 
+        # Inspect all existing path components between root and candidate for symlinks/reparse points
+        rel_parts = clean_rel.split("/")
+        current = canonical_root
+        for part in rel_parts:
+            current = os.path.join(current, part)
+            if os.path.lexists(current):
+                if is_symlink_or_reparse_point(current):
+                    raise ValidationError(
+                        f"Symlink or reparse point detected in path component: '{part}'"
+                    )
+
         # Construct candidate target path
         candidate = os.path.normpath(os.path.join(canonical_root, clean_rel))
 
@@ -105,17 +116,6 @@ class FilesystemRootsManager:
 
         if common != norm_root or norm_candidate == norm_root:
             raise ValidationError(f"Path escapes or equals root '{root_id}': '{relative_path}'")
-
-        # Inspect all existing path components between root and candidate for symlinks/reparse points
-        rel_parts = clean_rel.split("/")
-        current = canonical_root
-        for part in rel_parts:
-            current = os.path.join(current, part)
-            if os.path.lexists(current):
-                if is_symlink_or_reparse_point(current):
-                    raise ValidationError(
-                        f"Symlink or reparse point detected in path component: '{part}'"
-                    )
 
         # Check parent directory constraints
         parent_dir = os.path.dirname(candidate)

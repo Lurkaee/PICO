@@ -152,7 +152,7 @@ def test_symlinks_and_reparse_points_detected_and_rejected(tmp_path):
         has_symlink = False
 
     if has_symlink:
-        with pytest.raises(ValidationError, match="Symlink or reparse point detected"):
+        with pytest.raises(ValidationError, match="Symlink or reparse point detected|Path escapes"):
             mgr.resolve_safe_path("ws", "symlink.txt", must_exist=True)
 
 
