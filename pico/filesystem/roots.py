@@ -105,7 +105,16 @@ class FilesystemRootsManager:
         # Construct candidate target path
         candidate = os.path.normpath(os.path.join(canonical_root, clean_rel))
 
-        # Check path containment
+        # Check path containment: both lexical containment and resolved realpath containment
+        lex_root = os.path.normcase(os.path.abspath(canonical_root))
+        lex_candidate = os.path.normcase(os.path.abspath(candidate))
+        try:
+            lex_common = os.path.commonpath([lex_root, lex_candidate])
+        except ValueError:
+            raise ValidationError(f"Path escapes root '{root_id}': '{relative_path}'")
+        if lex_common != lex_root or lex_candidate == lex_root:
+            raise ValidationError(f"Path escapes or equals root '{root_id}': '{relative_path}'")
+
         norm_root = os.path.normcase(os.path.realpath(canonical_root))
         norm_candidate = os.path.normcase(os.path.realpath(candidate))
 
