@@ -3,6 +3,7 @@
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
+from pico.core.errors import ValidationError
 from pico.capabilities.base import (
     BaseCapability,
     CapabilityMetadata,
@@ -11,7 +12,10 @@ from pico.capabilities.base import (
     RiskTier,
     VerificationResult,
 )
-from pico.os_automation.allowlist import validate_launch_profile
+from pico.os_automation.allowlist import (
+    compute_launch_profile_fingerprint,
+    validate_launch_profile,
+)
 from pico.os_automation.contracts import (
     LaunchVerificationStatus,
 )
@@ -24,6 +28,10 @@ class LaunchApplicationInput(BaseModel):
         max_length=64,
         pattern=r"^[a-zA-Z0-9_\-]+$",
         description="Configured server-side application alias",
+    )
+    launch_fingerprint: str | None = Field(
+        default=None,
+        description="Trusted server-computed launch profile fingerprint (SHA-256)",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -68,12 +76,47 @@ class LaunchApplicationCapability(BaseCapability):
     input_model = LaunchApplicationInput
     output_model = LaunchApplicationOutput
 
+    def prepare_input(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Enriches and binds the trusted server-computed launch profile fingerprint.
+        Fails closed if caller attempts to forge, substitute, or tamper with fingerprint.
+        """
+        data = dict(input_data)
+        alias = data.get("alias")
+        if not alias or not isinstance(alias, str):
+            return data
+
+        manager = get_allowlist_manager()
+        profile = manager.get_profile(alias)
+
+        if profile is not None:
+            validated_profile = validate_launch_profile(profile)
+            server_fingerprint = compute_launch_profile_fingerprint(validated_profile)
+
+            caller_fingerprint = data.get("launch_fingerprint")
+            if caller_fingerprint is not None:
+                if not isinstance(caller_fingerprint, str) or caller_fingerprint.strip() != server_fingerprint:
+                    raise ValidationError(
+                        "Caller-supplied launch_fingerprint does not match trusted server-computed profile fingerprint."
+                    )
+
+            data["launch_fingerprint"] = server_fingerprint
+        else:
+            if data.get("launch_fingerprint") is not None:
+                raise ValidationError(
+                    f"Cannot supply launch_fingerprint for unallowlisted application alias '{alias}'."
+                )
+            data["launch_fingerprint"] = None
+
+        return data
+
     async def execute(
         self, input_data: dict[str, Any], context: ExecutionContext
     ) -> ExecutionResult:
         try:
             validated_input = LaunchApplicationInput.model_validate(input_data)
             alias = validated_input.alias
+            bound_fingerprint = validated_input.launch_fingerprint
 
             # 1. Resolve from server-side allowlist
             manager = get_allowlist_manager()
@@ -98,8 +141,54 @@ class LaunchApplicationCapability(BaseCapability):
 
             # 2. Re-validate profile at the actual execution boundary
             validated_profile = validate_launch_profile(profile)
+            current_fingerprint = compute_launch_profile_fingerprint(validated_profile)
 
-            # 3. Dispatch launch through adapter
+            # 3. Verify approval-bound fingerprint
+            if not bound_fingerprint:
+                out = LaunchApplicationOutput(
+                    alias=alias,
+                    status=LaunchVerificationStatus.REQUEST_REJECTED.value,
+                    executable_path=validated_profile.executable_path,
+                    process_id=None,
+                    verification_status="rejected",
+                    verification_details={"reason": "missing_approval_fingerprint"},
+                    message="Application launch rejected: missing approval-bound launch profile fingerprint.",
+                )
+                return ExecutionResult(
+                    success=False,
+                    output_data=out.model_dump(),
+                    error_message="Missing approval-bound launch profile fingerprint.",
+                    evidence={"rejected": True, "reason": "missing_approval_fingerprint"},
+                )
+
+            if current_fingerprint != bound_fingerprint:
+                out = LaunchApplicationOutput(
+                    alias=alias,
+                    status=LaunchVerificationStatus.REQUEST_REJECTED.value,
+                    executable_path=validated_profile.executable_path,
+                    process_id=None,
+                    verification_status="rejected",
+                    verification_details={
+                        "reason": "profile_fingerprint_mismatch",
+                        "approved_fingerprint": bound_fingerprint,
+                        "current_fingerprint": current_fingerprint,
+                    },
+                    message=(
+                        f"Application launch rejected: server-configured launch profile for '{alias}' "
+                        f"changed after approval was granted."
+                    ),
+                )
+                return ExecutionResult(
+                    success=False,
+                    output_data=out.model_dump(),
+                    error_message=(
+                        f"Launch profile for alias '{alias}' was modified after approval. "
+                        f"Approved fingerprint {bound_fingerprint[:8]}... does not match current profile."
+                    ),
+                    evidence={"rejected": True, "reason": "profile_fingerprint_mismatch"},
+                )
+
+            # 4. Dispatch launch through adapter
             adapter = get_os_adapter()
             result = await adapter.launch_application(validated_profile)
 

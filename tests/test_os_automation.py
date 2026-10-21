@@ -24,6 +24,7 @@ from pico.models.event_ledger import LedgerEvent
 from pico.models.tool_execution import ToolExecution
 from pico.os_automation.allowlist import (
     ApplicationAllowlistManager,
+    compute_launch_profile_fingerprint,
     validate_launch_profile,
 )
 from pico.os_automation.contracts import (
@@ -694,7 +695,8 @@ async def test_launch_capability_handles_failed_and_uncertain_statuses() -> None
     )
     set_os_adapter(fake_fail)
 
-    res_fail = await cap.execute({"alias": "failing_app"}, None)  # type: ignore
+    prepared_input = cap.prepare_input({"alias": "failing_app"})
+    res_fail = await cap.execute(prepared_input, None)  # type: ignore
     assert res_fail.success is False
     assert res_fail.output_data["status"] == LaunchVerificationStatus.LAUNCH_FAILED.value
     assert "Simulated process creation error" in res_fail.error_message
@@ -706,7 +708,7 @@ async def test_launch_capability_handles_failed_and_uncertain_statuses() -> None
     )
     set_os_adapter(fake_uncertain)
 
-    res_uncertain = await cap.execute({"alias": "failing_app"}, None)  # type: ignore
+    res_uncertain = await cap.execute(prepared_input, None)  # type: ignore
     assert res_uncertain.success is False
     assert res_uncertain.output_data["status"] == LaunchVerificationStatus.LAUNCH_UNCERTAIN.value
 
@@ -759,3 +761,392 @@ async def test_windows_adapter_executable_not_found_fails_closed() -> None:
     res = await win_adapter.launch_application(profile)
     assert res.status == LaunchVerificationStatus.LAUNCH_FAILED
     assert "not found" in res.message.lower()
+
+
+# =====================================================================
+# 5. Launch Profile Approval Binding & Fingerprint Hardening (P8.1 Follow-up)
+# =====================================================================
+
+
+def test_approved_profile_launches_when_fingerprint_matches(db_session: Session) -> None:
+    """P8.1 Follow-up Req 1: A valid approved profile launches through fake adapter when fingerprint matches."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "trusted_notepad",
+        "executable_path": "C:\\Windows\\notepad.exe",
+        "args": ["--mode", "safe"],
+        "working_dir": "C:\\Tools",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter(
+        launch_outcome=LaunchVerificationStatus.PROCESS_CREATION_CONFIRMED,
+        simulated_pid=1234,
+    )
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "trusted_notepad"},
+        caller_permissions={"os:launch"},
+    )
+
+    # Server enriched input with launch_fingerprint
+    assert execution.input_json.get("launch_fingerprint") is not None
+    expected_fp = compute_launch_profile_fingerprint(mgr.get_profile("trusted_notepad"))
+    assert execution.input_json.get("launch_fingerprint") == expected_fp
+
+    # Approve
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # Execute
+    completed = asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+    assert completed.status == "succeeded"
+    assert completed.output_json["status"] == LaunchVerificationStatus.PROCESS_CREATION_CONFIRMED.value
+    assert completed.output_json["process_id"] == 1234
+
+    # Process creation occurred exactly once
+    assert len(fake_adapter.launch_history) == 1
+    assert fake_adapter.launch_history[0]["alias"] == "trusted_notepad"
+    assert fake_adapter.launch_history[0]["executable_path"] == "C:\\Windows\\notepad.exe"
+
+
+def test_changing_executable_path_after_approval_invalidates_execution(db_session: Session) -> None:
+    """P8.1 Follow-up Req 2: Changing the executable path after approval invalidates the execution."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "mutating_app",
+        "executable_path": "C:\\Tools\\v1\\app.exe",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "mutating_app"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # Mutate executable path in server allowlist after approval
+    mgr.register_profile({
+        "alias": "mutating_app",
+        "executable_path": "C:\\Tools\\v2_altered\\app.exe",
+    })
+
+    # Execution must fail closed with AuthorizationError
+    with pytest.raises(AuthorizationError, match="Approval invalidated.*modified after approval"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    # Zero calls to process creation
+    assert len(fake_adapter.launch_history) == 0
+
+
+def test_changing_fixed_arguments_after_approval_invalidates_execution(db_session: Session) -> None:
+    """P8.1 Follow-up Req 3: Changing fixed arguments or argument order after approval invalidates execution."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "arg_app",
+        "executable_path": "C:\\Tools\\app.exe",
+        "args": ["--mode", "restricted", "--sandbox"],
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "arg_app"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # 1. Mutate args: inject a new argument
+    mgr.register_profile({
+        "alias": "arg_app",
+        "executable_path": "C:\\Tools\\app.exe",
+        "args": ["--mode", "restricted", "--sandbox", "--injected-flag"],
+    })
+
+    with pytest.raises(AuthorizationError, match="Approval invalidated.*modified after approval"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    # Assert zero process creations
+    assert len(fake_adapter.launch_history) == 0
+
+    # 2. Mutate args order: same args but swapped order
+    mgr.register_profile({
+        "alias": "order_app",
+        "executable_path": "C:\\Tools\\app.exe",
+        "args": ["--first", "--second"],
+    })
+    execution_order = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "order_app"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution_order.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # Swap order in allowlist
+    mgr.register_profile({
+        "alias": "order_app",
+        "executable_path": "C:\\Tools\\app.exe",
+        "args": ["--second", "--first"],
+    })
+
+    with pytest.raises(AuthorizationError, match="Approval invalidated.*modified after approval"):
+        asyncio.run(engine.execute(execution_order.id, caller_permissions={"os:launch"}))
+
+    assert len(fake_adapter.launch_history) == 0
+
+
+def test_changing_working_directory_after_approval_invalidates_execution(db_session: Session) -> None:
+    """P8.1 Follow-up Req 4: Changing the working directory after approval invalidates execution."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "cwd_app",
+        "executable_path": "C:\\Tools\\app.exe",
+        "working_dir": "C:\\SafeWorkingDirectory",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "cwd_app"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # Change working directory after approval
+    mgr.register_profile({
+        "alias": "cwd_app",
+        "executable_path": "C:\\Tools\\app.exe",
+        "working_dir": "C:\\AlteredWorkingDirectory",
+    })
+
+    with pytest.raises(AuthorizationError, match="Approval invalidated.*modified after approval"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    assert len(fake_adapter.launch_history) == 0
+
+
+def test_replacing_allowlist_manager_after_approval_cannot_change_target(db_session: Session) -> None:
+    """P8.1 Follow-up Req 5: Replacing allowlist manager or config reload cannot change authorized target."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "reload_app",
+        "executable_path": "C:\\Tools\\app.exe",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "reload_app"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # Case A: Simulate configuration reload wiping or omitting the alias
+    empty_mgr = ApplicationAllowlistManager("{}")
+    set_allowlist_manager(empty_mgr)
+
+    with pytest.raises(AuthorizationError, match="Approval invalidated.*missing or not allowlisted"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    assert len(fake_adapter.launch_history) == 0
+
+    # Case B: Simulate reload replacing alias with completely different executable
+    replaced_mgr = ApplicationAllowlistManager("{}")
+    replaced_mgr.register_profile({
+        "alias": "reload_app",
+        "executable_path": "C:\\Different\\other.exe",
+    })
+    set_allowlist_manager(replaced_mgr)
+
+    with pytest.raises(AuthorizationError, match="Approval invalidated.*modified after approval"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    assert len(fake_adapter.launch_history) == 0
+
+
+def test_caller_supplied_missing_or_tampered_fingerprint_rejected(db_session: Session) -> None:
+    """P8.1 Follow-up Req 6: Caller-supplied, missing or tampered fingerprint values cannot authorize arbitrary profile."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "auth_target",
+        "executable_path": "C:\\Tools\\target.exe",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+
+    # 1. Caller supplies forged fingerprint at submission -> fails validation immediately
+    with pytest.raises(ValidationError, match="does not match trusted server-computed profile fingerprint"):
+        engine.submit(
+            capability_id="os.launch_application",
+            input_data={
+                "alias": "auth_target",
+                "launch_fingerprint": "0123456789abcdef" * 4,
+            },
+            caller_permissions={"os:launch"},
+        )
+
+    # 2. Caller supplies fingerprint for unallowlisted alias -> rejected
+    with pytest.raises(ValidationError, match="Cannot supply launch_fingerprint for unallowlisted"):
+        engine.submit(
+            capability_id="os.launch_application",
+            input_data={
+                "alias": "unallowlisted_ghost",
+                "launch_fingerprint": "0123456789abcdef" * 4,
+            },
+            caller_permissions={"os:launch"},
+        )
+
+    # 3. Direct DB tampering of bound launch_fingerprint after approval -> triple digest detects and fails closed
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "auth_target"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    exec_repo = ToolExecutionRepository(db_session)
+    db_item = exec_repo.get_by_id(execution.id)
+    assert db_item is not None
+    tampered_input = dict(db_item.input_json)
+    tampered_input["launch_fingerprint"] = "9999999999999999" * 4
+    db_item.input_json = tampered_input
+    db_session.commit()
+
+    with pytest.raises(AuthorizationError, match="Approval invalidated: Persisted input digest does not match"):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    assert len(fake_adapter.launch_history) == 0
+
+
+@pytest.mark.anyio
+async def test_capability_execute_direct_missing_or_mismatched_fingerprint_produces_zero_launches() -> None:
+    """P8.1 Follow-up Req 7: Direct capability execute with missing/mismatched fingerprint produces zero process calls."""
+    cap = LaunchApplicationCapability()
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "direct_app",
+        "executable_path": "C:\\Tools\\app.exe",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    # 1. Missing fingerprint
+    res1 = await cap.execute({"alias": "direct_app", "launch_fingerprint": None}, None)  # type: ignore
+    assert res1.success is False
+    assert res1.output_data["status"] == LaunchVerificationStatus.REQUEST_REJECTED.value
+    assert "missing" in res1.error_message.lower()
+    assert len(fake_adapter.launch_history) == 0
+
+    # 2. Mismatched fingerprint
+    res2 = await cap.execute({"alias": "direct_app", "launch_fingerprint": "bad_fp" * 8}, None)  # type: ignore
+    assert res2.success is False
+    assert res2.output_data["status"] == LaunchVerificationStatus.REQUEST_REJECTED.value
+    assert "modified after approval" in res2.error_message.lower()
+    assert len(fake_adapter.launch_history) == 0
+
+
+def test_event_ledger_records_fingerprint_invalidation_without_leaking_secrets(db_session: Session) -> None:
+    """P8.1 Follow-up Req 10: Event ledger accurately records fingerprint rejection without leaking secrets."""
+    mgr = ApplicationAllowlistManager("{}")
+    mgr.register_profile({
+        "alias": "ledger_audit_app",
+        "executable_path": "C:\\Tools\\app_original.exe",
+    })
+    set_allowlist_manager(mgr)
+
+    fake_adapter = FakeOSAutomationAdapter()
+    set_os_adapter(fake_adapter)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="os.launch_application",
+        input_data={"alias": "ledger_audit_app"},
+        caller_permissions={"os:launch"},
+    )
+    engine.approve(
+        execution_id=execution.id,
+        approver="lead_operator",
+        approval_token=TEST_APPROVAL_TOKEN,
+    )
+
+    # Change profile
+    mgr.register_profile({
+        "alias": "ledger_audit_app",
+        "executable_path": "C:\\Tools\\app_tampered.exe",
+    })
+
+    with pytest.raises(AuthorizationError):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"os:launch"}))
+
+    # Assert zero process calls
+    assert len(fake_adapter.launch_history) == 0
+
+    # Inspect event ledger
+    ledger_repo = EventLedgerRepository(db_session)
+    events = ledger_repo.list_events(execution_id=execution.id)
+    event_types = [e.event_type for e in events]
+
+    assert "authorization_denied" in event_types
+
+    denied_event = next(e for e in events if e.event_type == "authorization_denied")
+    assert "modified after approval" in denied_event.payload_json["reason"].lower()
+    assert denied_event.payload_json["alias"] == "ledger_audit_app"
+
+    # Assert no secrets in any event
+    for e in events:
+        payload_str = str(e.payload_json)
+        assert TEST_APPROVAL_TOKEN not in payload_str
+        assert "password" not in payload_str.lower()

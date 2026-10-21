@@ -1,5 +1,6 @@
 """Explicit application allowlist configuration, validation, and registry."""
 
+import hashlib
 import json
 import os
 import re
@@ -192,3 +193,21 @@ class ApplicationAllowlistManager:
 
     def clear(self) -> None:
         self._profiles.clear()
+
+
+def compute_launch_profile_fingerprint(profile: LaunchProfile | dict[str, Any]) -> str:
+    """
+    Computes a canonical SHA-256 fingerprint of execution-relevant profile settings.
+    Binds application alias, normalized executable path, ordered args, and normalized working directory.
+    """
+    if not isinstance(profile, LaunchProfile):
+        profile = validate_launch_profile(profile)
+
+    payload = {
+        "alias": profile.alias,
+        "args": list(profile.args),
+        "executable_path": os.path.normpath(profile.executable_path),
+        "working_dir": os.path.normpath(profile.working_dir) if profile.working_dir else None,
+    }
+    canonical_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
