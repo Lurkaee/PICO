@@ -307,8 +307,31 @@ sequenceDiagram
      - Consequential approval requirement: Single-use human operator approval ticket bound to SHA-256 input digest (`APPROVAL_SECRET_TOKEN` validation).
      - Atomic claim (`claim_execution` compare-and-set) prevents duplicate or concurrent dispatches.
      - Honest Verification Statuses: Distinct states for `request_rejected`, `awaiting_approval`, `launch_dispatched`, `process_creation_confirmed`, `launch_uncertain`, `launch_failed`, and `independent_window_observation_confirmed`. Process creation is never equated with proof of application usability.
-2. **Planned Workspace Capabilities (Deferred)**:
-   - **Staged Filesystem Diffs (Planned for P8.2)**: Reversible file writes with approval diffs.
+2. **Staged Filesystem Diffs (Verified in Milestone P8.2)**:
+   - **Restricted Filesystem Access Boundary & Server Root Allowlist**:
+     - Provider-neutral filesystem boundary (`pico.filesystem`): `BaseFilesystemAdapter`, `WindowsFilesystemAdapter`, and `FakeFilesystemAdapter`.
+     - Server-side root allowlist (`PICO_FILESYSTEM_ALLOWED_ROOTS`): Maps root identifiers to canonical absolute directory paths. **Strictly empty by default**.
+     - Absolute containment validation: All target paths must remain strictly within an authorized canonical root.
+     - Hard path rejection: Traversal (`..`), alternate separators (`/` on Windows / raw mixing), Windows device paths (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`), UNC/device namespaces (`\\.\`, `\\?\`), and environment variables (`%`, `$`) are rejected fail-closed.
+     - Reparse Point & Symlink Defense: Target files and all parent directories in ancestry are checked against symlinks and Windows reparse points (`FILE_ATTRIBUTE_REPARSE_POINT`). Any link or junction escaping the root fails closed.
+   - **Bounded Text-Only Contract**:
+     - Strict UTF-8 text only; rejects binary payloads, NUL bytes (`\x00`), and unsupported encodings.
+     - Strict size limits: `max_file_bytes` (default 256 KB), `max_line_length` (default 4096 chars), `max_diff_bytes` (default 256 KB).
+     - Newline policy: Normalizes all line endings canonically to `\n` (LF) for deterministic diffing and hashing.
+     - Allowed operations limited strictly to `create` (new file, parent exists, target absent) and `replace` (full text replacement of existing file). Deletion, move, permissions, directory creation, and binary editing are prohibited in P8.2.
+   - **Staged Proposal Model & Unified Diff Review**:
+     - Structured `StagedDiff` entity recording proposal ID, root ID, relative path, operation, original SHA-256 (`ABSENT` or content hash), proposed SHA-256, unified diff text, and diff SHA-256.
+     - Original content snapshot retained in secure local SQLite storage for deterministic rollback.
+     - Human operator reviews the exact byte-for-byte diff before approval.
+   - **Cryptographic Approval Binding & Consequential Execution**:
+     - Dedicated permission `filesystem:write`, `RiskTier.HIGH`, `consequential=True`, `idempotent=False`, zero automatic retries (`max_retries=0`).
+     - Server-side `prepare_input` hook calculates and injects trusted `original_content_digest`, `proposed_content_digest`, and `diff_digest` before `input_digest` computation. Callers cannot forge digests or paths.
+     - Pre-dispatch gate in `ToolExecutionEngine`: Immediately before dispatch, re-verifies root allowlist membership, checks target file on disk against `expected_original_digest`, and verifies proposed content and diff against stored proposal. Any post-approval change to disk, proposal, or allowlist fails closed with zero writes.
+     - Atomic write: Safe temporary file created in the target directory (`.pico_tmp_*`), flushed and synced to disk (`os.fsync`), then atomically moved into place (`os.replace`).
+   - **Independent Verification & Guarded Conflict-Safe Rollback**:
+     - Independent read-back: Re-opens destination file through canonical boundary, reads contents, and verifies SHA-256 hash matches the approved proposed digest.
+     - Guarded rollback (`filesystem.rollback_staged_diff`): Requires dedicated authorization, verifies file currently on disk still matches post-apply hash (fails closed if external edits occurred), restores original content atomically, and independently verifies restored state.
+3. **Planned Workspace Capabilities (Deferred)**:
    - **Sandboxed Browser Automation (Planned for P8.3)**: Playwright adapter with untrusted web content isolation.
 
 ### 4.7 Home Automation & Physical Actuation (Home Assistant)
@@ -446,10 +469,10 @@ Target Environment:
 - *Status*: **STAGE A (P7.1/P7.2) & STAGE B (P7.3) VERIFIED; P7.4 PLANNED**.
 
 ### Milestone P8: Computer Control & Engineering Workspace
-- Sandboxed desktop application and window inspection.
-- Staged filesystem diffs with human-in-the-loop review.
-- Sandboxed Playwright browser automation with untrusted web content isolation.
-- *Status*: **PLANNED**.
+- Sandboxed desktop application and window inspection (P8.1).
+- Staged filesystem diffs with human-in-the-loop review and guarded rollback (P8.2).
+- Sandboxed Playwright browser automation with untrusted web content isolation (P8.3).
+- *Status*: **P8.1 & P8.2 VERIFIED; P8.3 PLANNED**.
 
 ### Milestone P9: Workflow Planning & Multi-Agent Coordination
 - Multi-step planning over Task Engine.

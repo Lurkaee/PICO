@@ -58,3 +58,10 @@ class NotFoundError(EntityNotFoundError):
         super(PicoError, self).__init__(message)
         self.message = message
         self.details = {}
+
+
+class ExecutionError(PicoError):
+    """Raised when capability execution fails."""
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message, details=details)

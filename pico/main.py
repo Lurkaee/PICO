@@ -12,6 +12,7 @@ from pico.api.homeassistant import router as homeassistant_router
 from pico.api.memory import router as memory_router
 from pico.api.perception import router as perception_router
 from pico.api.projects import router as projects_router
+from pico.api.filesystem import router as filesystem_router
 from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
 from pico.core.config import settings
@@ -168,3 +169,4 @@ app.include_router(memory_router)
 app.include_router(tools_router)
 app.include_router(perception_router)
 app.include_router(homeassistant_router)
+app.include_router(filesystem_router)

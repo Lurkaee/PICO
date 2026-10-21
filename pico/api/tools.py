@@ -218,6 +218,11 @@ async def run_execution(
     elif item.capability_id == "os.launch_application":
         if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
             effective_perms.add("os:launch")
+    elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
+        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+            effective_perms.add("filesystem:write")
+        elif not settings.APPROVAL_SECRET_TOKEN and item.status == "approved":
+            effective_perms.add("filesystem:write")
 
     execution = await engine.execute(execution_id, caller_permissions=effective_perms)
     return ToolExecutionResponse.model_validate(execution)
@@ -239,7 +244,7 @@ def approve_execution(
     if not item:
         raise EntityNotFoundError("ToolExecution", execution_id)
 
-    # Physical actuation and application launch must fail closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid.
+    # Physical actuation, application launch, and filesystem writes must fail closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid.
     if item.capability_id == "homeassistant.test_light_actuate":
         if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
             raise AuthorizationError("Physical actuation approval fails closed without valid X-Pico-Approval-Token.")
@@ -247,6 +252,10 @@ def approve_execution(
     elif item.capability_id == "os.launch_application":
         if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
             raise AuthorizationError("Application launch approval fails closed without valid X-Pico-Approval-Token.")
+        authenticated_principal = "authenticated_token_holder"
+    elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
+        if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+            raise AuthorizationError("Filesystem modification approval fails closed without valid X-Pico-Approval-Token.")
         authenticated_principal = "authenticated_token_holder"
     elif settings.APPROVAL_SECRET_TOKEN:
         if x_approval_token != settings.APPROVAL_SECRET_TOKEN:

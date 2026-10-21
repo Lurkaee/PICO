@@ -76,7 +76,7 @@ class LaunchApplicationCapability(BaseCapability):
     input_model = LaunchApplicationInput
     output_model = LaunchApplicationOutput
 
-    def prepare_input(self, input_data: dict[str, Any]) -> dict[str, Any]:
+    def prepare_input(self, input_data: dict[str, Any], db: Any = None) -> dict[str, Any]:
         """
         Enriches and binds the trusted server-computed launch profile fingerprint.
         Fails closed if caller attempts to forge, substitute, or tamper with fingerprint.
