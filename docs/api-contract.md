@@ -670,6 +670,14 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
 
 ### 2.11 Filesystem Operations & Staged Diffs (Milestone P8.2)
 
+**Operational Invariants & Path Safety Boundaries**:
+- **Windows Handle Boundary & Directory Hierarchy Pinning**: During reads, mutations, deletions, and rollback, PICO pins every directory from the root down to the target parent via `pin_directory_hierarchy` using `CreateFileW` with `FILE_LIST_DIRECTORY`, `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`, and `FILE_SHARE_READ | FILE_SHARE_WRITE` (omitting `FILE_SHARE_DELETE`). The Windows NT kernel rejects external process attempts to delete, rename, or swap parent directories with junctions (`WinError 32: ERROR_SHARING_VIOLATION`).
+- **Handle-Based Operations & Rollback Deletion**: Reads and exclusive creations (`CREATE_NEW`) operate via verified file handles (`FILE_FLAG_OPEN_REPARSE_POINT`). Rollback deletions open target files with `DELETE | FILE_READ_DATA | FILE_FLAG_OPEN_REPARSE_POINT`, verify file identity and expected digest on the handle, and issue deletion via `SetFileInformationByHandle(FileDispositionInfo, True)`. Deletions are bound directly to the verified filesystem object, preventing redirected deletions outside the allowlisted root.
+- **Fail-Closed Reparse Inspection**: `is_symlink_or_reparse_point` distinguishes `FileNotFoundError` (genuinely absent file during creation) from `PermissionError` and other unexpected `OSError`/`ValueError` states, which fail closed (`ValidationError`).
+- **Honest Replacement Semantics**: On Windows NTFS, file replacement via `os.replace` / `MoveFileExW` is not an atomic kernel compare-and-swap on file content. Replacement is guarded by parent directory hierarchy pinning, directory-local temporary staging (`CREATE_NEW`), pre-replace digest check, and mandatory post-write verification. If concurrent modification occurs on the target file between verification and replacement, post-write verification detects the digest mismatch and fails closed (`ExecutionError`) with zero automated retries.
+- **Fail-Closed Write Permissions**: Write operations (`filesystem:write`) strictly require a non-empty server-side `APPROVAL_SECRET_TOKEN` and constant-time match (`secrets.compare_digest`). Unset secret, missing token, or mismatched token fails closed with zero mutations (`403 Forbidden`).
+- **Safe Temporary Cleanup**: `safe_unlink` verifies handles before unlinking, ensuring temporary staging files (`.pico_tmp_*`) are never unlinked if redirected outside the authorized root.
+
 #### REST Endpoints: `/api/filesystem/proposals`
 
 ##### `POST /api/filesystem/proposals`

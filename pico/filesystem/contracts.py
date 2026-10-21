@@ -52,20 +52,25 @@ class ProposalStatus(str, Enum):
 def is_symlink_or_reparse_point(path: str) -> bool:
     """
     Detect whether path is a symbolic link, directory junction, or Windows reparse point.
-    Fails closed if inspection encounters errors.
+    Returns True if path is a symlink or reparse point.
+    Returns False if path genuinely does not exist (FileNotFoundError).
+    Fails closed by raising ValidationError if filesystem inspection encounters any
+    other error (e.g., PermissionError, uncertain OS error, invalid parameter).
     """
     try:
-        if os.path.islink(path):
-            return True
         st = os.lstat(path)
-        reparse_attr = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-        if hasattr(st, "st_file_attributes") and (st.st_file_attributes & reparse_attr):
-            return True
-        if hasattr(st, "st_reparse_tag") and st.st_reparse_tag != 0:
-            return True
-    except (OSError, ValueError):
-        # If path does not exist, lstat raises FileNotFoundError, which is fine
-        pass
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError) as exc:
+        raise ValidationError(f"Filesystem inspection failed for '{path}': {exc}") from exc
+
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    reparse_attr = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if hasattr(st, "st_file_attributes") and (st.st_file_attributes & reparse_attr):
+        return True
+    if getattr(st, "st_reparse_tag", 0) != 0:
+        return True
     return False
 
 

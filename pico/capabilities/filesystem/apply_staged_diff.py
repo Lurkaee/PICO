@@ -211,6 +211,7 @@ class ApplyStagedDiffCapability(BaseCapability):
                     content=proposal.proposed_content,
                     root_path=canonical_root,
                     exclusive=True,
+                    expected_proposed_digest=validated.expected_proposed_digest,
                 )
             else:
                 adapter.write_text_atomic(
@@ -219,6 +220,7 @@ class ApplyStagedDiffCapability(BaseCapability):
                     root_path=canonical_root,
                     exclusive=False,
                     expected_original_digest=validated.expected_original_state,
+                    expected_proposed_digest=validated.expected_proposed_digest,
                 )
 
             # Independent post-write verification: Re-open and verify destination bytes

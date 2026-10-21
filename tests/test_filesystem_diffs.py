@@ -1287,3 +1287,297 @@ def test_adversarial_no_changes_outside_authorized_root(client: TestClient, tmp_
     )
     assert res.status_code in (400, 422)
     assert outside_file.read_text(encoding="utf-8") == "protected content\n"
+
+
+def test_adversarial_parent_directory_junction_swap_before_creation(tmp_path, db_session: Session):
+    """A parent directory replaced by a junction immediately before creation fails closed with zero outside writes."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    real_sub = ws / "subdir"
+    real_sub.mkdir()
+
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    outside_target = outside_dir / "created.txt"
+
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="subdir/created.txt",
+        operation="create",
+        proposed_content="malicious creation payload\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Swap real_sub with a directory junction pointing to outside_dir
+    import shutil
+    import sys
+    shutil.rmtree(real_sub)
+
+    junction_created = False
+    if sys.platform == "win32":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(outside_dir), str(real_sub))
+            junction_created = True
+        except Exception:
+            junction_created = False
+
+    if junction_created:
+        with pytest.raises((ValidationError, ExecutionError, AuthorizationError)):
+            asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+        # Outside directory must have NO new file created
+        assert not outside_target.exists()
+
+
+def test_adversarial_parent_directory_junction_swap_before_replacement(tmp_path, db_session: Session):
+    """A parent directory replaced immediately before replacement fails closed with zero outside mutations."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    real_sub = ws / "subdir"
+    real_sub.mkdir()
+    target = real_sub / "target.txt"
+    target.write_text("initial text\n", encoding="utf-8")
+
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "target.txt"
+    outside_file.write_text("outside protected content\n", encoding="utf-8")
+
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="subdir/target.txt",
+        operation="replace",
+        proposed_content="malicious overwrite\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Swap real_sub with a directory junction pointing to outside_dir
+    import shutil
+    import sys
+    shutil.rmtree(real_sub)
+
+    junction_created = False
+    if sys.platform == "win32":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(outside_dir), str(real_sub))
+            junction_created = True
+        except Exception:
+            junction_created = False
+
+    if junction_created:
+        with pytest.raises((ValidationError, ExecutionError, AuthorizationError)):
+            asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+        # Outside file must remain byte-for-byte untouched
+        assert outside_file.read_text(encoding="utf-8") == "outside protected content\n"
+
+
+def test_adversarial_target_substituted_between_digest_validation_and_mutation(tmp_path, db_session: Session, monkeypatch: pytest.MonkeyPatch):
+    """A target substituted or modified between expected-digest validation and mutation fails closed."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target = ws / "substitute.txt"
+    target.write_text("legitimate content\n", encoding="utf-8")
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="substitute.txt",
+        operation="replace",
+        proposed_content="approved replacement\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Tamper with the target immediately before execution
+    target.write_text("concurrent attacker tamper\n", encoding="utf-8")
+
+    with pytest.raises((ExecutionError, AuthorizationError)):
+        asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # The file should still contain the untampered state or failed state, NOT approved replacement
+    assert target.read_text(encoding="utf-8") == "concurrent attacker tamper\n"
+
+
+def test_adversarial_parent_substituted_before_rollback_deletion(tmp_path, db_session: Session):
+    """A parent directory substituted before rollback deletion refuses to delete outside target."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    real_sub = ws / "sub_rollback"
+    real_sub.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="sub_rollback/rollback_target.txt",
+        operation="create",
+        proposed_content="to be rolled back\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+    asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    created_file = real_sub / "rollback_target.txt"
+    assert created_file.exists()
+
+    # Outside victim directory with same relative filename
+    outside_dir = tmp_path / "outside_rollback"
+    outside_dir.mkdir()
+    outside_victim = outside_dir / "rollback_target.txt"
+    outside_victim.write_text("critical outside victim\n", encoding="utf-8")
+
+    # Submit and approve rollback
+    rb_exec = engine.submit(
+        capability_id="filesystem.rollback_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(rb_exec.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    # Now substitute real_sub with junction to outside_dir before rollback executes
+    import shutil
+    import sys
+    shutil.rmtree(real_sub)
+
+    junction_created = False
+    if sys.platform == "win32":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(outside_dir), str(real_sub))
+            junction_created = True
+        except Exception:
+            junction_created = False
+
+    if junction_created:
+        with pytest.raises((ValidationError, ExecutionError, AuthorizationError)):
+            asyncio.run(engine.execute(rb_exec.id, caller_permissions={"filesystem:write"}))
+
+        # Outside victim must remain intact and NOT deleted!
+        assert outside_victim.exists()
+        assert outside_victim.read_text(encoding="utf-8") == "critical outside victim\n"
+
+
+def test_adversarial_inspection_error_fails_closed(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """An inspection error (PermissionError / unknown OSError) fails closed with ValidationError."""
+    from pico.filesystem.contracts import is_symlink_or_reparse_point
+    from pico.filesystem.adapter import verify_boundary_and_reparse
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    target = ws / "test.txt"
+
+    # Non-existent file genuinely returns False
+    assert is_symlink_or_reparse_point(str(target)) is False
+
+    # Simulate PermissionError during inspection
+    def mock_lstat_permission_denied(path):
+        raise PermissionError(13, "Permission denied during adversarial inspection test")
+
+    monkeypatch.setattr(os, "lstat", mock_lstat_permission_denied)
+
+    # is_symlink_or_reparse_point must fail closed by raising ValidationError, NEVER returning False
+    with pytest.raises(ValidationError, match="Filesystem inspection failed"):
+        is_symlink_or_reparse_point(str(target))
+
+    # verify_boundary_and_reparse must also fail closed
+    with pytest.raises(ValidationError, match="Filesystem inspection failed"):
+        verify_boundary_and_reparse(str(target), root_path=str(ws))
+
+
+def test_adversarial_cleanup_when_path_redirected(tmp_path):
+    """Cleanup after a failed operation when the original path has been redirected refuses to delete outside target."""
+    from pico.filesystem.adapter import safe_unlink
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside = tmp_path / "outside_clean"
+    outside.mkdir()
+    outside_victim = outside / "victim.txt"
+    outside_victim.write_text("protected outside victim\n", encoding="utf-8")
+
+    # 1. Attempt to safe_unlink a file outside root: ignored and untouched
+    safe_unlink(str(outside_victim), root_path=str(ws))
+    assert outside_victim.exists()
+    assert outside_victim.read_text(encoding="utf-8") == "protected outside victim\n"
+
+    # 2. If path is a junction inside workspace pointing outside, safe_unlink refuses to follow or delete outside
+    import sys
+    if sys.platform == "win32":
+        import _winapi
+        junc = ws / "junc_link"
+        try:
+            _winapi.CreateJunction(str(outside), str(junc))
+            junc_created = True
+        except Exception:
+            junc_created = False
+
+        if junc_created:
+            safe_unlink(str(junc / "victim.txt"), root_path=str(ws))
+            assert outside_victim.exists()
+            assert outside_victim.read_text(encoding="utf-8") == "protected outside victim\n"
+
+
+def test_adversarial_pinned_directory_blocks_external_rename_or_deletion(tmp_path):
+    """Windows kernel blocks external process attempts to delete or rename pinned directories with ERROR_SHARING_VIOLATION."""
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific NT kernel sharing violation test")
+
+    from pico.filesystem.adapter import pin_directory_hierarchy
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    sub1 = ws / "level1"
+    sub1.mkdir()
+    sub2 = sub1 / "level2"
+    sub2.mkdir()
+
+    with pin_directory_hierarchy(str(sub2), str(ws)) as handles:
+        assert len(handles) == 3
+
+        # Attempt to delete sub2 externally while pinned -> WinError 32
+        with pytest.raises(OSError) as exc_info:
+            os.rmdir(str(sub2))
+        assert exc_info.value.winerror == 32 or "used by another process" in str(exc_info.value)
+
+        # Attempt to rename sub1 externally while pinned -> WinError 32
+        with pytest.raises(OSError) as exc_info2:
+            os.rename(str(sub1), str(ws / "level1_renamed"))
+        assert exc_info2.value.winerror == 32 or "used by another process" in str(exc_info2.value)

@@ -192,6 +192,7 @@ class RollbackStagedDiffCapability(BaseCapability):
                     root_path=canonical_root,
                     exclusive=False,
                     expected_original_digest=validated.expected_applied_digest,
+                    expected_proposed_digest=proposal.original_state,
                 )
 
                 # Independent verification: re-read file and verify original digest
