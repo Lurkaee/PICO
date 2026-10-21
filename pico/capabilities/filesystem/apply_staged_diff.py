@@ -175,17 +175,17 @@ class ApplyStagedDiffCapability(BaseCapability):
 
             # Pre-mutation state inspection on disk
             if proposal.operation == OperationType.CREATE.value:
-                if adapter.file_exists(target_path):
+                if adapter.file_exists(target_path, root_path=canonical_root):
                     raise ExecutionError(
                         f"Apply rejected: Target file unexpectedly exists at '{proposal.relative_path}' prior to creation."
                     )
             else:
                 # replace operation
-                if not adapter.file_exists(target_path):
+                if not adapter.file_exists(target_path, root_path=canonical_root):
                     raise ExecutionError(
                         f"Apply rejected: Target file does not exist at '{proposal.relative_path}'."
                     )
-                current_digest = adapter.get_content_digest(target_path)
+                current_digest = adapter.get_content_digest(target_path, root_path=canonical_root)
                 if current_digest != validated.expected_original_state:
                     raise ExecutionError(
                         f"Apply rejected: Current file digest '{current_digest}' does not match approved original digest '{validated.expected_original_state}'."
@@ -204,11 +204,25 @@ class ApplyStagedDiffCapability(BaseCapability):
                     f"Apply rejected: Staged diff digest '{current_diff_digest}' does not match approved diff digest '{validated.expected_diff_digest}'."
                 )
 
-            # Perform atomic write to target path
-            adapter.write_text_atomic(target_path, proposal.proposed_content)
+            # Perform atomic write to target path with exclusive creation or conditional replacement
+            if proposal.operation == OperationType.CREATE.value:
+                adapter.write_text_atomic(
+                    path=target_path,
+                    content=proposal.proposed_content,
+                    root_path=canonical_root,
+                    exclusive=True,
+                )
+            else:
+                adapter.write_text_atomic(
+                    path=target_path,
+                    content=proposal.proposed_content,
+                    root_path=canonical_root,
+                    exclusive=False,
+                    expected_original_digest=validated.expected_original_state,
+                )
 
             # Independent post-write verification: Re-open and verify destination bytes
-            actual_text = adapter.read_text(target_path)
+            actual_text = adapter.read_text(target_path, root_path=canonical_root)
             actual_digest = compute_content_digest(actual_text)
 
             if actual_digest != validated.expected_proposed_digest:

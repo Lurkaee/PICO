@@ -125,6 +125,10 @@ class FilesystemRootsManager:
             if not os.path.isdir(parent_dir):
                 raise ValidationError(f"Parent path is not a directory for '{relative_path}'.")
 
+        if os.path.lexists(candidate):
+            if is_symlink_or_reparse_point(candidate):
+                raise ValidationError(f"Target file is a symlink or reparse point: '{relative_path}'.")
+
         # Check target existence constraints
         if must_exist:
             if not os.path.exists(candidate):
@@ -134,8 +138,7 @@ class FilesystemRootsManager:
             if is_symlink_or_reparse_point(candidate):
                 raise ValidationError(f"Target file is a symlink or reparse point: '{relative_path}'.")
 
-        canonical_target = os.path.realpath(os.path.abspath(candidate))
-        return canonical_root, canonical_target
+        return canonical_root, candidate
 
 
 _roots_manager: FilesystemRootsManager | None = None
