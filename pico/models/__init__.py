@@ -11,6 +11,8 @@ from pico.models.staged_diff import StagedDiff
 from pico.models.task import Task
 from pico.models.tool_execution import ToolExecution
 from pico.models.workflow import WorkflowRun, WorkflowStep
+from pico.models.workflow_compensation import WorkflowCompensation
+from pico.models.workflow_verification import WorkflowVerification
 from pico.models.working_memory import WorkingMemoryItem
 
 __all__ = [
@@ -29,4 +31,6 @@ __all__ = [
     "StagedDiff",
     "WorkflowRun",
     "WorkflowStep",
+    "WorkflowVerification",
+    "WorkflowCompensation",
 ]

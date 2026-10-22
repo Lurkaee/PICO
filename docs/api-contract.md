@@ -1071,9 +1071,86 @@ Provider-neutral model execution scheduling layer enforcing single-model residen
 
 ---
 
+### 2.17 Independent Verification & Bounded Compensation (Milestone P9.3)
+
+Workflow-level verification engine gating the release of step outputs to downstream dependent steps, multi-stage evidence auditing (structural, execution evidence, domain semantic/postconditions, risk-sensitive policy decision), model-assisted review via `ResourceScheduler` (`WorkerRole.VERIFIER`), and controlled reverse-dependency compensation.
+
+#### `GET /api/workflows/{workflow_id}/verifications`
+- **Description**: Retrieves all durable verification decision records for the workflow run, detailing evaluation status, pipeline stage reached, method used, input/output digests, sanitized findings, and machine-readable reasons.
+- **Response (200 OK)**:
+  ```json
+  [
+    {
+      "id": "wfver_abc123456789",
+      "workflow_run_id": "wf_1234567890abcdef",
+      "workflow_step_id": "step_abcdef123456",
+      "tool_execution_id": "exec_fedcba987654",
+      "policy_id": "evidence.default.v1",
+      "policy_version": "1.0.0",
+      "method": "deterministic_recomputation",
+      "status": "passed",
+      "stage": "stage_d_decision",
+      "input_digest": "sha256:...",
+      "output_digest": "sha256:...",
+      "passed": true,
+      "reason": "All verification stages passed: structural integrity, execution evidence, and semantic checks satisfied.",
+      "findings": {
+        "stage_a_structural": {"status": "passed"},
+        "stage_b_evidence": {"status": "passed"},
+        "stage_c_semantic": {"status": "passed"},
+        "stage_d_decision": {"status": "accepted"}
+      },
+      "data_classification": "PUBLIC",
+      "created_at": "2026-10-22T17:00:00Z",
+      "completed_at": "2026-10-22T17:00:01Z"
+    }
+  ]
+  ```
+
+#### `GET /api/workflows/{workflow_id}/steps/{step_key}/verification`
+- **Description**: Retrieves the latest durable verification decision record for a specific step in the workflow run.
+- **Response (200 OK)**: `WorkflowVerificationResponse`.
+- **Response (404 Not Found)**: When step or verification does not exist.
+
+#### `POST /api/workflows/{workflow_id}/compensate`
+- **Description**: Triggers reverse-dependency compensation for completed workflow steps having registered compensation definitions. Consequential compensations pause in `awaiting_approval` and require explicit human operator approval before execution.
+- **Request Body**:
+  ```json
+  {
+    "caller_permissions": ["test:execute"],
+    "reason": "Operator requested compensation rollback."
+  }
+  ```
+- **Response (200 OK)**: Updated `WorkflowRunResponse` with status `compensated` or `awaiting_approval`.
+
+#### `GET /api/workflows/{workflow_id}/compensations`
+- **Description**: Retrieves all registered and executed compensation records for the workflow run in reverse dependency order.
+- **Response (200 OK)**:
+  ```json
+  [
+    {
+      "id": "wfcomp_123456789",
+      "workflow_run_id": "wf_1234567890abcdef",
+      "workflow_step_id": "step_abcdef123456",
+      "original_tool_execution_id": "exec_1",
+      "compensation_capability_id": "filesystem.rollback_staged_diff",
+      "compensation_capability_version": "1.0.0",
+      "compensation_tool_execution_id": "exec_2",
+      "status": "completed",
+      "input_digest": "sha256:...",
+      "order_index": 1,
+      "reason": "Registered compensation for step 'apply_diff'",
+      "created_at": "2026-10-22T17:00:00Z",
+      "updated_at": "2026-10-22T17:00:05Z",
+      "completed_at": "2026-10-22T17:00:05Z"
+    }
+  ]
+  ```
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:
 
-- `POST /api/verifications` & `GET /api/verifications/{id}` — Independent verification engine and adversarial safety checks (P9.3)
 - `GET /api/evaluations/reports` — Evaluation harness metrics and test suite results (Phase 3)

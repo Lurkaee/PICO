@@ -12,6 +12,7 @@ class WorkerRole(str, Enum):
     EXECUTOR = "executor"
     SUMMARIZER = "summarizer"
     ROUTINE = "routine"
+    VERIFIER = "verifier"
 
 
 class PriorityClass(str, Enum):

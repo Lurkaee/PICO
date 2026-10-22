@@ -166,8 +166,14 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Workflow coordinator integration: `WorkflowService.cancel_workflow` purges queued model tickets immediately; `model.infer` registered capability (`RiskTier.READ_ONLY`) enables workflow steps to execute governed inference via `ToolExecutionEngine`.
   - Operational diagnostics & REST API: `/api/scheduler/status` and `/api/scheduler/metrics` providing sanitized metrics, queue depth, and memory telemetry without leaking prompts or credentials.
   - Comprehensive adversarial test suite in `tests/test_resource_scheduler.py` (16 dedicated tests covering residency, worker sharing, queue bounds, deadline timeouts, cancellation, streaming abort lease cleanup, cloud privacy, workflow cancellation, and REST API).
-- [ ] **P9.3 Independent Verification**: Verifier audits worker outputs before dependent tasks proceed.
-- **Status**: **P9.1 & P9.2 COMPLETED & VERIFIED; P9.3 PLANNED**.
+- [x] **P9.3 Independent Verification**: Verifier audits worker outputs before dependent tasks proceed.
+  - Distinct verification stage: outputs gated until verified (`verifying` -> `succeeded` / `verification_failed` / `review_required`); downstream steps cannot consume unverified outputs.
+  - Multi-stage pipeline: Stage A (structural integrity), Stage B (execution evidence cross-check), Stage C (domain-specific semantic & postcondition verification), Stage D (risk-sensitive policy decision).
+  - Model-assisted semantic review: optional `WorkerRole.VERIFIER` scheduled via `ResourceScheduler` over single resident local model; untrusted verdicts cannot override failed deterministic checks; non-public context pinned locally.
+  - Reverse-dependency compensation: explicit compensation registry executing in reverse dependency order; consequential compensations require prior operator approval.
+  - Durable persistence: `workflow_verifications` and `workflow_compensations` entities with full foreign keys, SQLite WAL indexing, and Alembic migrations.
+  - Dedicated adversarial test suite in `tests/test_workflow_verification.py` (13 tests covering arithmetic gating, tampered output rejection, inconclusive reviews, scheduler lease acquisition, crash recovery, reverse compensation, consequential approval halts, cancellation, and REST API).
+- **Status**: **P9.1, P9.2 & P9.3 COMPLETED & VERIFIED**.
 
 ### Milestone P10: Unified PICO Experience
 - [ ] **P10.1 Desktop Web Experience**: Streaming chat, voice toggle, memory inspector, task timeline, approvals.
