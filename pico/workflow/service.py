@@ -547,6 +547,12 @@ class WorkflowService:
         cancel_reason = reason or "Workflow cancelled by operator."
         steps = self.repo.get_steps_for_run(run.id)
 
+        try:
+            from pico.scheduler import get_scheduler
+            get_scheduler().cancel_workflow_requests_sync(run.id)
+        except Exception:
+            pass
+
         for s in steps:
             if s.status in ("pending", "ready", "awaiting_approval", "running"):
                 if s.tool_execution_id:

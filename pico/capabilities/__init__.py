@@ -7,6 +7,7 @@ from pico.capabilities.base import (
     VerificationResult,
 )
 from pico.capabilities.core.calculator import CalculatorCapability
+from pico.capabilities.core.model_infer import ModelInferCapability
 from pico.capabilities.core.validate_json import ValidateJsonCapability
 from pico.capabilities.database.read_project import ReadProjectCapability
 from pico.capabilities.database.read_task import ReadTaskCapability
@@ -77,6 +78,7 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(ApplyStagedDiffCapability())
     reg.register(RollbackStagedDiffCapability())
     reg.register(OpenPageCapability())
+    reg.register(ModelInferCapability())
 
 
 
@@ -120,4 +122,5 @@ __all__ = [
     "ApplyStagedDiffCapability",
     "RollbackStagedDiffCapability",
     "OpenPageCapability",
+    "ModelInferCapability",
 ]

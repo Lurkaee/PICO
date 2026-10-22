@@ -155,9 +155,19 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Truthful restart recovery: interrupted runs reconciled against persistent tool execution records and immutable event ledger evidence without blind replay of non-idempotent operations.
   - Comprehensive adversarial test suite covering cycles, invalid schemas, missing dependencies, approval halts, idempotent deduplication, cancellation, crash recovery, and REST API routes (`/api/workflows`).
   - 18 dedicated tests in `tests/test_workflow_coordination.py` passing cleanly (425 total passing tests across entire regression suite).
-- [ ] **P9.2 Single-Model Resource Scheduling**: Logical workers scheduled over single resident model.
+- [x] **P9.2 Single-Model Resource Scheduling — Logical Workers Scheduled Over Single Resident Model**:
+  - Provider-neutral model-execution scheduling layer (`pico.scheduler`): `ResourceScheduler`, `PriorityFairQueue`, `LocalAdmissionGate`, `CloudAdmissionGate`, and truthful hardware telemetry collector (`SchedulerTelemetryCollector`).
+  - Strict single-model residency invariant: enforced hard concurrency limit of 1 on PICO-managed local inference leases. Rejects conflicting local model instantiations (`ModelResidencyConflictError`) without downloading, killing, or unsetting Ollama models.
+  - Logical worker multiplexing: workers (`planner`, `researcher`, `executor`, `summarizer`, `routine`, `interactive`) multiplex over the single configured resident model (`qwen3.5:2b` / `settings.OLLAMA_MODEL`).
+  - Fair priority scheduling: multi-tier priority classes (`interactive`, `workflow`, `background`) with aging fairness (aging bonus every 5.0s) preventing indefinite background starvation.
+  - Full-stream lease retention: local inference leases are acquired before streaming begins and held for the entire token stream lifetime, released deterministically in `finally` cleanups upon completion, client disconnect (`CancelledError`), or failure.
+  - Bounded queue & backpressure: max queue depth (50) rejecting excess requests with `QueueFullError` (HTTP 429), deadline timeouts (`SchedulingTimeoutError` / HTTP 504), cooperative cancellation, and duplicate ticket protection.
+  - Privacy gate & cloud boundary: central privacy gate remains authoritative; non-public context (`INTERNAL`, `SENSITIVE`, `SECRET`, missing/unknown) is strictly pinned locally; cloud requests require `PUBLIC` data and explicit enablement; cloud fallbacks acquire the local execution lease.
+  - Workflow coordinator integration: `WorkflowService.cancel_workflow` purges queued model tickets immediately; `model.infer` registered capability (`RiskTier.READ_ONLY`) enables workflow steps to execute governed inference via `ToolExecutionEngine`.
+  - Operational diagnostics & REST API: `/api/scheduler/status` and `/api/scheduler/metrics` providing sanitized metrics, queue depth, and memory telemetry without leaking prompts or credentials.
+  - Comprehensive adversarial test suite in `tests/test_resource_scheduler.py` (16 dedicated tests covering residency, worker sharing, queue bounds, deadline timeouts, cancellation, streaming abort lease cleanup, cloud privacy, workflow cancellation, and REST API).
 - [ ] **P9.3 Independent Verification**: Verifier audits worker outputs before dependent tasks proceed.
-- **Status**: **P9.1 COMPLETED & VERIFIED; P9.2 & P9.3 PLANNED**.
+- **Status**: **P9.1 & P9.2 COMPLETED & VERIFIED; P9.3 PLANNED**.
 
 ### Milestone P10: Unified PICO Experience
 - [ ] **P10.1 Desktop Web Experience**: Streaming chat, voice toggle, memory inspector, task timeline, approvals.

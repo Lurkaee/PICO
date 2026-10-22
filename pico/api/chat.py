@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
 
+from pico.core.config import settings
 from pico.core.errors import EntityNotFoundError, ValidationError
 from pico.core.id_gen import generate_id
 from pico.db.session import get_db
@@ -22,6 +23,12 @@ from pico.repositories.conversation_repo import ConversationRepository
 from pico.repositories.message_repo import MessageRepository
 from pico.repositories.routing_decision_repo import RoutingDecisionRepository
 from pico.schemas.chat import ChatStreamRequest
+from pico.scheduler import (
+    PriorityClass,
+    SchedulingRequest,
+    WorkerRole,
+    get_scheduler,
+)
 from pico.services.context_compiler import ContextCompiler
 from pico.services.routing_service import RoutingService, StepRoutingDecision
 
@@ -151,13 +158,29 @@ async def chat_stream(
                         f"Security policy violation: Non-local provider override attempted on '{effective_classification}' context."
                     )
 
-            provider = ProviderFactory.get_provider(
-                provider_name=decision.provider,
+            scheduler = getattr(request.app.state, "scheduler", None) or get_scheduler()
+            est_prompt_tokens = max(1, sum(len(m.content) // 4 for m in chat_messages))
+            sched_req = SchedulingRequest(
+                request_id=generate_id("sched"),
+                role=WorkerRole.INTERACTIVE,
+                priority=PriorityClass.INTERACTIVE,
+                provider=decision.provider,
                 model_name=decision.model_name,
-                override_instance=override_provider,
+                task_category=decision.task_category,
+                data_classification=effective_classification,
+                prompt_tokens=est_prompt_tokens,
+                max_tokens=options.max_tokens or getattr(settings, "SCHEDULER_COMPLETION_BUDGET_TOKENS", 512),
+                timeout_seconds=settings.OLLAMA_TIMEOUT_SECONDS,
+                queue_timeout_seconds=getattr(settings, "SCHEDULER_QUEUE_TIMEOUT_SECONDS", 30.0),
+                correlation_id=payload.conversation_id,
             )
 
-            async for event in provider.stream_chat(chat_messages, options):
+            async for event in scheduler.schedule_stream(
+                request=sched_req,
+                messages=chat_messages,
+                options=options,
+                override_provider=override_provider,
+            ):
                 # Check for client disconnect
                 if await request.is_disconnected():
                     raise asyncio.CancelledError()
