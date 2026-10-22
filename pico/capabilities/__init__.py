@@ -28,6 +28,7 @@ from pico.capabilities.homeassistant.ha_actuation import (
 from pico.capabilities.homeassistant.ha_readiness import (
     HomeAssistantActuationReadinessCapability,
 )
+from pico.capabilities.browser import OpenPageCapability
 from pico.capabilities.os.inspect_windows import InspectWindowsCapability
 from pico.capabilities.os.launch_application import LaunchApplicationCapability
 from pico.capabilities.perception.perception_capabilities import (
@@ -75,6 +76,7 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(InspectDiffCapability())
     reg.register(ApplyStagedDiffCapability())
     reg.register(RollbackStagedDiffCapability())
+    reg.register(OpenPageCapability())
 
 
 
@@ -117,4 +119,5 @@ __all__ = [
     "InspectDiffCapability",
     "ApplyStagedDiffCapability",
     "RollbackStagedDiffCapability",
+    "OpenPageCapability",
 ]

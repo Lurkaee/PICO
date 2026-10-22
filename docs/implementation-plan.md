@@ -132,9 +132,18 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Pre-dispatch gate: `ToolExecutionEngine.execute` re-verifies root allowlist membership, checks target file on disk against `expected_original_digest`, and checks stored proposed content and diff digests before execution. Post-approval tampering fails closed with zero writes.
   - Independent post-write verification: re-opens target file handle, computes SHA-256 digest, and asserts exact match against approved proposed digest before declaring success. Zero automatic retries.
   - REST endpoints at `/api/filesystem/proposals` (`POST`, `GET`, `GET /{id}`, `POST /{id}/discard`, `POST /{id}/apply`, `POST /{id}/rollback`).
-  - 50 dedicated adversarial and functional tests in `tests/test_filesystem_diffs.py` executing inside pytest temporary workspaces (`tmp_path`) with zero modifications to real files during CI.
-- [ ] **P8.3 Sandboxed Browser Automation**: Playwright adapter with untrusted web content isolation.
-- **Status**: **P8.1 & P8.2 (INCLUDING FAIL-CLOSED WRITE BOUNDARY, WINDOWS HANDLE BOUNDARY, TARGET IDENTITY BINDING & TEMPORARY HANDLE IDENTITY HARDENING) COMPLETED & VERIFIED; P8.3 PLANNED**.
+- [x] **P8.3 Sandboxed Browser Automation**:
+  - Provider-neutral browser adapter contract (`pico.browser`): `BaseBrowserAdapter`, `PlaywrightBrowserAdapter`, and deterministic `FakeBrowserAdapter` for offline unit testing and CI without downloading browser binaries or needing external network access.
+  - Optional and lazy-loaded Playwright dependency: missing Playwright packages or missing browser binaries fail gracefully with truthful `unavailable` status; zero uncontrolled downloads in CI or test suites.
+  - Fail-closed security configuration: disabled by default (`BROWSER_AUTOMATION_ENABLED=False`), server-side origin allowlist (`BROWSER_ALLOWED_ORIGINS=[]`) empty by default with zero wildcards.
+  - Comprehensive SSRF mitigation: blocks loopback (`127.0.0.0/8`, `::1`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), cloud metadata (`169.254.169.254`, `metadata.google.internal`), and resolves destination hostnames.
+  - Full redirect and subresource enforcement: redirects, popups, and requests are intercepted and verified against the approved-origin policy and SSRF checks.
+  - Ephemeral browser context isolation: fresh, isolated browser context per request with zero persistence of cookies, local storage, sessions, or credentials; Chromium sandbox strictly maintained (never `--no-sandbox`); disabled downloads, service workers, browser permissions, and arbitrary JS execution.
+  - Bounded page observation: strict limits on byte size (`max_bytes=65536`) and links count (`max_links=50`); sanitizes URL queries and fragments in observations and logs to prevent credential leaks.
+  - Untrusted data & prompt injection defense: page observations carry explicit source provenance and conservative `INTERNAL` classification; strictly pinned locally via `RULE_PRIVATE_LOCAL_PIN` (zero cloud transmission); adversarial page content cannot elevate caller permissions, alter tool schemas, or bypass approvals.
+  - Registered capability: `browser.open_page` (`RiskTier.READ_ONLY`, `browser:open` permission, `INTERNAL` classification, idempotent, zero retries, independent verification).
+  - 15 dedicated adversarial and functional tests in `tests/test_browser_automation.py` passing 100% offline without live internet access or browser binary downloads.
+- **Status**: **P8.1, P8.2 & P8.3 COMPLETED & VERIFIED; P9 PLANNED**.
 
 ### Milestone P9: Multi-Agent Workflow Coordination
 - [ ] **P9.1 Task Delegation**: Subtask execution over persistent Task Engine.

@@ -1,3 +1,6 @@
+import json
+from typing import Any
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -74,6 +77,34 @@ class Settings(BaseSettings):
     PICO_FILESYSTEM_MAX_FILE_BYTES: int = 256 * 1024       # 256 KB max file size
     PICO_FILESYSTEM_MAX_LINE_LENGTH: int = 4096            # 4 KB max line length
     PICO_FILESYSTEM_MAX_DIFF_BYTES: int = 256 * 1024       # 256 KB max diff size
+
+    # Sandboxed Browser Automation Settings (Milestone P8.3)
+    BROWSER_AUTOMATION_ENABLED: bool = False
+    BROWSER_ALLOWED_ORIGINS: list[str] = []
+    BROWSER_NAVIGATION_TIMEOUT_SECONDS: float = 15.0
+    BROWSER_MAX_OBSERVATION_BYTES: int = 64 * 1024         # 64 KB bounded text extraction
+    BROWSER_MAX_LINKS: int = 50                            # max extracted links
+    BROWSER_HEADLESS: bool = True
+    BROWSER_BLOCK_THIRD_PARTY_SUBRESOURCES: bool = True
+
+    @field_validator("BROWSER_ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except Exception:
+                    pass
+            return [x.strip() for x in v.split(",") if x.strip()]
+        if isinstance(v, (list, tuple, set)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return []
 
     model_config = SettingsConfigDict(
         env_file=".env",

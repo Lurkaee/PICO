@@ -841,6 +841,53 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
   }
   ```
 
+#### Capability: `browser.open_page`
+- **Capability ID**: `browser.open_page` (version: `1.0.0`)
+- **Risk Tier**: `READ_ONLY`
+- **Required Permission**: `browser:open`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `false` | **Idempotent**: `true` | **Max Retries**: 0 | **Timeout**: 15.0s | **Max Output Bytes**: 65536
+- **Configuration & Enablement**:
+  - `BROWSER_AUTOMATION_ENABLED`: `false` by default. Must be set to `true` to enable browser operations.
+  - `BROWSER_ALLOWED_ORIGINS`: `[]` by default. Unapproved origins fail closed with `status="rejected"`.
+  - `BROWSER_NAVIGATION_TIMEOUT_SECONDS`: default `15.0`.
+  - `BROWSER_MAX_OBSERVATION_BYTES`: default `65536`.
+  - `BROWSER_MAX_LINKS`: default `50`.
+  - `BROWSER_HEADLESS`: default `true`.
+  - `BROWSER_BLOCK_THIRD_PARTY_SUBRESOURCES`: default `true`.
+- **SSRF Mitigations**:
+  - Loopback, private (RFC 1918 / RFC 4193), link-local, multicast, unspecified, and cloud metadata (`169.254.169.254`, `metadata.google.internal`) addresses and resolved hostnames are strictly rejected before navigation and on all redirects.
+- **Untrusted Web Content & Privacy Boundaries**:
+  - External web text is classified as `INTERNAL`.
+  - `RULE_PRIVATE_LOCAL_PIN` strictly pins observations locally; cloud routing is forbidden.
+  - Web text cannot elevate caller permissions, alter tool schemas, or bypass human approvals.
+- **Input Schema**:
+  ```json
+  {
+    "url": "https://approved.example.com/docs"
+  }
+  ```
+- **Output Schema**:
+  ```json
+  {
+    "status": "success",
+    "requested_url": "https://approved.example.com/docs",
+    "final_url": "https://approved.example.com/docs",
+    "title": "Documentation",
+    "text_content": "Extracted text content...",
+    "links": [
+      {
+        "url": "https://approved.example.com/docs/guide",
+        "text": "User Guide"
+      }
+    ],
+    "truncated": false,
+    "byte_size": 1024,
+    "classification": "INTERNAL",
+    "message": null
+  }
+  ```
+
 ---
 
 ## 3. Planned Endpoints (Future Phases)
