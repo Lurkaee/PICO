@@ -982,9 +982,98 @@ Durable, dependency-aware workflow coordinator for multi-step task delegation ex
 
 ---
 
+### 2.16 Single-Model Resource Scheduler & Logical Worker Multiplexing (Milestone P9.2)
+
+Provider-neutral model execution scheduling layer enforcing single-model residency over target hardware (`RTX 3050 Laptop GPU, 4 GB VRAM`), fair priority queueing across logical worker roles, bounded backpressure, and strict cloud privacy controls.
+
+#### `GET /api/scheduler/status`
+- **Description**: Returns bounded, sanitized operational diagnostics of the resource scheduler, including current residency, queue depth, priority class distribution, and truthful memory telemetry. Does not leak prompts, context, or credentials.
+- **Response (200 OK)**:
+  ```json
+  {
+    "enabled": true,
+    "active_local_model": "qwen3.5:2b",
+    "max_active_local": 1,
+    "current_active_local": 0,
+    "max_active_cloud": 5,
+    "current_active_cloud": 0,
+    "queue_depth": 0,
+    "max_queue_depth": 50,
+    "queue_by_priority": {
+      "interactive": 0,
+      "workflow": 0,
+      "background": 0
+    },
+    "telemetry": {
+      "ram_total_mb": 16384,
+      "ram_available_mb": 8192,
+      "vram_total_mb": 4096,
+      "vram_allocated_mb": 2437,
+      "vram_free_mb": 1659,
+      "is_estimated": false,
+      "source": "psutil"
+    },
+    "recent_outcomes": []
+  }
+  ```
+
+#### `GET /api/scheduler/metrics`
+- **Description**: Returns operational counter summaries for the scheduler (completed, failed, timed out, cancelled, rejected).
+- **Response (200 OK)**:
+  ```json
+  {
+    "enabled": true,
+    "total_dispatched": 42,
+    "total_completed": 40,
+    "total_failed": 1,
+    "total_timeouts": 0,
+    "total_cancelled": 1,
+    "total_rejected": 0,
+    "queue_depth": 0
+  }
+  ```
+
+#### Capability: `model.infer`
+- **Capability ID**: `model.infer` (version: `1.0.0`)
+- **Risk Tier**: `READ_ONLY`
+- **Required Permission**: `model:infer`
+- **Data Classification**: `INTERNAL`
+- **Consequential**: `false` | **Idempotent**: `true` | **Max Retries**: 0 | **Timeout**: 60.0s
+- **Description**: Executes governed model inference for logical workers (planner, researcher, executor, summarizer, routine) scheduled through `ResourceScheduler`.
+- **Input Schema**:
+  ```json
+  {
+    "prompt": "Summarize the observation.",
+    "system_prompt": "You are a helpful assistant.",
+    "role": "summarizer",
+    "priority": "workflow",
+    "model_name": "qwen3.5:2b",
+    "max_tokens": 512,
+    "temperature": 0.2
+  }
+  ```
+- **Output Schema**:
+  ```json
+  {
+    "status": "success",
+    "text": "Generated response content.",
+    "model": "qwen3.5:2b",
+    "provider": "ollama",
+    "usage": {
+      "prompt_tokens": 120,
+      "completion_tokens": 45,
+      "total_tokens": 165
+    },
+    "execution_time_ms": 450.2,
+    "data_classification": "INTERNAL"
+  }
+  ```
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:
 
-- `POST /api/jobs` & `GET /api/jobs/{job_id}` — Concurrent model worker scheduler and resource allocation (P9.2)
+- `POST /api/verifications` & `GET /api/verifications/{id}` — Independent verification engine and adversarial safety checks (P9.3)
 - `GET /api/evaluations/reports` — Evaluation harness metrics and test suite results (Phase 3)

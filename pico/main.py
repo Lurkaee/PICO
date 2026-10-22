@@ -13,6 +13,7 @@ from pico.api.memory import router as memory_router
 from pico.api.perception import router as perception_router
 from pico.api.projects import router as projects_router
 from pico.api.filesystem import router as filesystem_router
+from pico.api.scheduler import router as scheduler_router
 from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
 from pico.api.workflows import router as workflows_router
@@ -20,6 +21,15 @@ from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
 from pico.db.base import Base
 from pico.db.session import SessionLocal, engine
+from pico.scheduler import (
+    ContextBudgetExceededError,
+    ModelResidencyConflictError,
+    QueueFullError,
+    RequestCancelledError,
+    ResourceScheduler,
+    SchedulingTimeoutError,
+    get_scheduler,
+)
 from pico.providers.errors import (
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -41,6 +51,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         engine_svc.recover_interrupted_executions()
         workflow_svc = WorkflowService(db)
         workflow_svc.recover_interrupted_workflows()
+    # Initialize resource scheduler
+    app.state.scheduler = get_scheduler()
     yield
 
 
@@ -155,6 +167,46 @@ async def provider_error_handler(
     )
 
 
+@app.exception_handler(QueueFullError)
+async def queue_full_error_handler(request: Request, exc: QueueFullError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": exc.message, "code": exc.code, "details": exc.details},
+    )
+
+
+@app.exception_handler(SchedulingTimeoutError)
+async def scheduling_timeout_error_handler(request: Request, exc: SchedulingTimeoutError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        content={"detail": exc.message, "code": exc.code, "details": exc.details},
+    )
+
+
+@app.exception_handler(ModelResidencyConflictError)
+async def model_residency_conflict_error_handler(request: Request, exc: ModelResidencyConflictError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.message, "code": exc.code, "details": exc.details},
+    )
+
+
+@app.exception_handler(ContextBudgetExceededError)
+async def context_budget_exceeded_error_handler(request: Request, exc: ContextBudgetExceededError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.message, "code": exc.code, "details": exc.details},
+    )
+
+
+@app.exception_handler(RequestCancelledError)
+async def request_cancelled_error_handler(request: Request, exc: RequestCancelledError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": exc.message, "code": exc.code, "details": exc.details},
+    )
+
+
 @app.exception_handler(PicoError)
 async def pico_error_handler(request: Request, exc: PicoError) -> JSONResponse:
     return JSONResponse(
@@ -175,3 +227,4 @@ app.include_router(perception_router)
 app.include_router(homeassistant_router)
 app.include_router(filesystem_router)
 app.include_router(workflows_router)
+app.include_router(scheduler_router)

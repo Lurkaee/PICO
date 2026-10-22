@@ -504,7 +504,16 @@ Target Environment:
   - Truthful restart recovery: interrupted runs reconciled against persistent tool execution records and immutable event ledger evidence without blind replay of non-idempotent operations.
   - Comprehensive adversarial test suite covering cycles, invalid schemas, missing dependencies, approval halts, idempotent deduplication, cancellation, crash recovery, and REST API routes (`/api/workflows`).
   - *Status*: **P9.1 VERIFIED**.
-- **P9.2 Local Model Resource Scheduling**: Logical specialist workers scheduled over single resident model with memory constraints. *Status*: **PLANNED**.
+- **P9.2 Single-Model Resource Scheduling — Logical Worker Multiplexing & Fair Scheduling**:
+  - Provider-neutral model execution scheduler (`ResourceScheduler`) enforcing single-model local residency (concurrency limit = 1 for local GPU inference).
+  - Logical worker roles (`planner`, `researcher`, `executor`, `summarizer`, `routine`, `interactive`) multiplexed over the single configured resident local model (`qwen3.5:2b` / `settings.OLLAMA_MODEL`) without creating multiple model instances or downloading models.
+  - Priority classes with starvation prevention: `interactive` (base weight 0), `workflow` (base weight 10), and `background` (base weight 20) with bounded priority aging (aging bonus every 5 seconds) to ensure interactive responsiveness without starving background summarization.
+  - Admission control & backpressure: bounded queue (max 50 depth, `QueueFullError`), deadline expiration checks (`SchedulingTimeoutError`), and cooperative cancellation.
+  - Full-stream lease retention: execution slot held for the entire streaming duration and reliably released in `finally` cleanups upon completion, error, or client cancellation.
+  - Central privacy gating: Cloud admission strictly limited to `PUBLIC` context with explicit enablement (`CLOUD_ENABLED=true`); non-public data (`INTERNAL`, `SENSITIVE`, `SECRET`) pinned to local execution; cloud fallbacks acquire the local execution lease.
+  - Capability & workflow integration: `model.infer` registered capability allowing workflow steps and logical workers to execute model inference through `ToolExecutionEngine` while governed by the scheduler; workflow cancellation immediately purges queued model tickets.
+  - Truthful hardware telemetry: RAM and VRAM snapshots without fabricating unavailable metrics; sanitized diagnostic endpoints (`GET /api/scheduler/status`, `GET /api/scheduler/metrics`) scrubbing prompts and credentials.
+  - *Status*: **P9.2 VERIFIED**.
 - **P9.3 Independent Worker Verification & Failure Resilience**: Multi-stage verification and compensation rollback across workers. *Status*: **PLANNED**.
 
 ### Milestone P10: Unified PICO Experience

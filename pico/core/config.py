@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     CLOUD_BASE_URL: str | None = None
     CLOUD_MODEL: str | None = None
     CLOUD_API_KEY: str | None = None
+
+    # Single-Model Resource Scheduler Settings (Milestone P9.2)
+    SCHEDULER_ENABLED: bool = True
+    SCHEDULER_MAX_QUEUE_DEPTH: int = 50
+    SCHEDULER_QUEUE_TIMEOUT_SECONDS: float = 30.0
+    SCHEDULER_MAX_ACTIVE_LOCAL: int = 1
+    SCHEDULER_MAX_ACTIVE_CLOUD: int = 5
+    SCHEDULER_AGING_INTERVAL_SECONDS: float = 5.0
+    SCHEDULER_PROMPT_BUDGET_TOKENS: int = 3328
+    SCHEDULER_COMPLETION_BUDGET_TOKENS: int = 512
     # Memory Subsystem Settings
     WORKING_MEMORY_MAX_ITEMS_PER_SESSION: int = 50
     WORKING_MEMORY_DEFAULT_TTL_SECONDS: int = 86400
