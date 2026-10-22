@@ -54,6 +54,50 @@ class WorkflowCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WorkflowVerificationResponse(BaseModel):
+    """Auditable verification outcome for an individual workflow step."""
+    id: str
+    workflow_run_id: str
+    workflow_step_id: str
+    tool_execution_id: str | None = None
+    policy_id: str
+    policy_version: str
+    verification_method: str
+    status: str
+    stage: str
+    input_digest: str
+    output_digest: str
+    findings: dict[str, Any] | None = None
+    evidence: dict[str, Any] | None = None
+    reason: str | None = None
+    data_classification: str
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkflowCompensationResponse(BaseModel):
+    """Representation of an explicit capability compensation record."""
+    id: str
+    workflow_run_id: str
+    workflow_step_id: str
+    original_tool_execution_id: str | None = None
+    compensation_capability_id: str
+    compensation_capability_version: str
+    compensation_tool_execution_id: str | None = None
+    status: str
+    input_digest: str
+    order_index: int = 0
+    reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class WorkflowStepResponse(BaseModel):
     """Representation of an individual workflow step and its execution status."""
     id: str
@@ -73,6 +117,7 @@ class WorkflowStepResponse(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    verification: WorkflowVerificationResponse | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -94,6 +139,7 @@ class WorkflowRunResponse(BaseModel):
     error_message: str | None = None
     metadata: dict[str, Any] | None = None
     steps: list[WorkflowStepResponse] = Field(default_factory=list)
+    compensations: list[WorkflowCompensationResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None
@@ -121,6 +167,21 @@ class WorkflowAdvanceRequest(BaseModel):
 class WorkflowCancelRequest(BaseModel):
     """Cancellation request for a workflow run."""
     reason: str | None = Field(default=None, max_length=512, description="Reason for cancellation")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkflowCompensateRequest(BaseModel):
+    """Parameters to trigger reverse-dependency compensation for a workflow run."""
+    caller_permissions: list[str] = Field(
+        default_factory=list,
+        description="Caller permissions required for consequential compensation execution",
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Operator reason for triggering workflow compensation",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

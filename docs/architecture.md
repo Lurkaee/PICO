@@ -514,7 +514,17 @@ Target Environment:
   - Capability & workflow integration: `model.infer` registered capability allowing workflow steps and logical workers to execute model inference through `ToolExecutionEngine` while governed by the scheduler; workflow cancellation immediately purges queued model tickets.
   - Truthful hardware telemetry: RAM and VRAM snapshots without fabricating unavailable metrics; sanitized diagnostic endpoints (`GET /api/scheduler/status`, `GET /api/scheduler/metrics`) scrubbing prompts and credentials.
   - *Status*: **P9.2 VERIFIED**.
-- **P9.3 Independent Worker Verification & Failure Resilience**: Multi-stage verification and compensation rollback across workers. *Status*: **PLANNED**.
+- **P9.3 Independent Worker Verification & Failure Resilience**:
+  - Distinct workflow verification stage: no workflow step may release its output to dependent steps until the configured verification policy has accepted that output using appropriate evidence.
+  - Multi-stage verification pipeline (Stages A-D):
+    - **Stage A — Structural Integrity**: Validates presence, bounded payload, and exact conformance against declared output schema and cross-field invariants.
+    - **Stage B — Execution Evidence**: Cross-checks terminal execution status, stored tool verification result, input/output digests, and capability metadata in `ToolExecution` records; fails closed on missing or mismatched evidence.
+    - **Stage C — Semantic & Postcondition Verification**: Evaluates domain-specific postconditions (deterministic recomputations for calculators, digest-based verification for filesystem operations, read-after-write state for Home Assistant mutations). Reports strategy limitations honestly rather than fabricating passes.
+    - **Stage D — Policy Decision**: Applies risk-sensitive acceptance rules, persisting auditable decisions with machine-readable reasons and bounded findings.
+  - Model-assisted semantic review: optional verifier logical-worker role (`WorkerRole.VERIFIER`) scheduled via `ResourceScheduler` over the single resident local model. Untrusted model verdicts cannot override failed deterministic checks, grant permissions, or mark external mutations verified. Non-public context (`INTERNAL`, `SENSITIVE`, `SECRET`) remains strictly pinned locally.
+  - Controlled reverse-dependency compensation: explicitly registered compensation definitions (e.g., `filesystem.apply_staged_diff` -> `filesystem.rollback_staged_diff`) executed in reverse dependency order. Consequential compensations require prior human operator approval and cannot inherit prior approvals from the original action.
+  - Durable persistence & ledger integrity: new `workflow_verifications` and `workflow_compensations` entities with full foreign keys, SQLite WAL indexing, Alembic migrations, and immutable audit event ledger logging.
+  - *Status*: **P9.3 VERIFIED**.
 
 ### Milestone P10: Unified PICO Experience
 - Comprehensive desktop web application with streaming chat, voice interaction, memory editor, task timeline, approval tickets, and device control cards.

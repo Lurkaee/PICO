@@ -336,3 +336,45 @@ The following entities are planned for subsequent phases and do NOT form part of
   - `updated_at` (DATETIME, NOT NULL, INDEX): UTC last update timestamp.
   - `started_at` (DATETIME, NULLABLE): UTC execution start timestamp.
   - `completed_at` (DATETIME, NULLABLE): UTC completion timestamp.
+
+### 8.3 `workflow_verifications` (Independent Verification Decisions — Milestone P9.3)
+- Durable record of independent output verification and evidence auditing before step results are released downstream.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `wfver_<uuid>`.
+  - `workflow_run_id` (VARCHAR(64), FK `workflow_runs.id`, ON DELETE CASCADE, NOT NULL, INDEX): Associated workflow run.
+  - `workflow_step_id` (VARCHAR(64), FK `workflow_steps.id`, ON DELETE CASCADE, NOT NULL, INDEX): Associated workflow step.
+  - `tool_execution_id` (VARCHAR(64), FK `tool_executions.id`, ON DELETE SET NULL, NULLABLE, INDEX): Dispatched tool execution record evaluated.
+  - `policy_id` (VARCHAR(128), NOT NULL, INDEX): Active verification policy identifier (e.g. `evidence.default.v1`, `evidence.model_assisted.v1`).
+  - `policy_version` (VARCHAR(32), NOT NULL, DEFAULT `'1.0.0'`): Verification policy semver.
+  - `method` (VARCHAR(64), NOT NULL): Verification method utilized (`deterministic_recomputation`, `schema_and_evidence`, `filesystem_handle_digest`, `device_state_poll`, `model_assisted_review`, `unsupported_fallback`).
+  - `status` (VARCHAR(32), NOT NULL, INDEX): Terminal evaluation status (`passed`, `failed`, `inconclusive`, `requires_review`).
+  - `stage` (VARCHAR(32), NOT NULL): Pipeline evaluation stage reached (`stage_a_structural`, `stage_b_evidence`, `stage_c_semantic`, `stage_d_decision`).
+  - `input_digest` (VARCHAR(64), NOT NULL, INDEX): SHA256 digest of evaluated input data.
+  - `output_digest` (VARCHAR(64), NOT NULL, INDEX): SHA256 digest of evaluated output data.
+  - `passed` (BOOLEAN, NOT NULL, DEFAULT FALSE): Boolean assertion of successful verification.
+  - `reason` (TEXT, NULLABLE): Human and machine-readable explanation of verification outcome.
+  - `findings_json` (JSON, NULLABLE): Structured diagnostic findings from each pipeline stage.
+  - `evidence_json` (JSON, NULLABLE): Cryptographic/observational evidence references.
+  - `blockers_json` (JSON, NULLABLE): List of unresolved blockers or integrity violations.
+  - `data_classification` (VARCHAR(32), NOT NULL, DEFAULT `'INTERNAL'`): Security classification tag.
+  - `created_at` (DATETIME, NOT NULL, INDEX): UTC verification start timestamp.
+  - `completed_at` (DATETIME, NULLABLE): UTC verification completion timestamp.
+
+### 8.4 `workflow_compensations` (Controlled Reverse-Dependency Compensation — Milestone P9.3)
+- Durable record of registered and executed compensation actions for reversible completed workflow steps.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `wfcomp_<uuid>`.
+  - `workflow_run_id` (VARCHAR(64), FK `workflow_runs.id`, ON DELETE CASCADE, NOT NULL, INDEX): Associated workflow run.
+  - `workflow_step_id` (VARCHAR(64), FK `workflow_steps.id`, ON DELETE CASCADE, NOT NULL, INDEX): Original step being compensated.
+  - `original_tool_execution_id` (VARCHAR(64), FK `tool_executions.id`, ON DELETE SET NULL, NULLABLE, INDEX): Original execution record.
+  - `compensation_capability_id` (VARCHAR(128), NOT NULL, INDEX): Compensating capability identifier (e.g. `filesystem.rollback_staged_diff`).
+  - `compensation_capability_version` (VARCHAR(32), NOT NULL, DEFAULT `'1.0.0'`): Compensating capability semver.
+  - `compensation_tool_execution_id` (VARCHAR(64), FK `tool_executions.id`, ON DELETE SET NULL, NULLABLE, INDEX): Dispatched compensating execution record.
+  - `status` (VARCHAR(32), NOT NULL, DEFAULT `'registered'`, INDEX): Compensation lifecycle status (`registered`, `awaiting_approval`, `dispatched`, `completed`, `failed`).
+  - `input_json` (JSON, NOT NULL): Immutable input parameters constructed for the compensating action.
+  - `input_digest` (VARCHAR(64), NOT NULL, INDEX): SHA256 digest of compensation input parameters.
+  - `order_index` (INTEGER, NOT NULL, DEFAULT 0): Step order index used for deterministic reverse dependency ordering.
+  - `reason` (TEXT, NULLABLE): Operator or coordinator rationale for triggering compensation.
+  - `created_at` (DATETIME, NOT NULL, INDEX): UTC registration timestamp.
+  - `updated_at` (DATETIME, NOT NULL): UTC last update timestamp.
+  - `completed_at` (DATETIME, NULLABLE): UTC execution completion timestamp.

@@ -7,6 +7,8 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session, selectinload
 
 from pico.models.workflow import WorkflowRun, WorkflowStep
+from pico.models.workflow_compensation import WorkflowCompensation
+from pico.models.workflow_verification import WorkflowVerification
 
 
 def utc_now() -> datetime:
@@ -213,3 +215,150 @@ class WorkflowRepository:
             .options(selectinload(WorkflowRun.steps))
         )
         return list(self.db.scalars(stmt).all())
+
+    # -------------------------------------------------------------------------
+    # Milestone P9.3: Workflow Verification & Compensation Records
+    # -------------------------------------------------------------------------
+
+    def create_verification(
+        self,
+        workflow_run_id: str,
+        workflow_step_id: str,
+        policy_id: str,
+        policy_version: str,
+        verification_method: str,
+        status: str,
+        stage: str,
+        input_digest: str,
+        output_digest: str,
+        tool_execution_id: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        findings: dict[str, Any] | None = None,
+        reason: str | None = None,
+        data_classification: str = "INTERNAL",
+    ) -> WorkflowVerification:
+        """Create and persist a WorkflowVerification record."""
+        ver_id = f"wver_{uuid.uuid4().hex[:16]}"
+        now = utc_now()
+        ver = WorkflowVerification(
+            id=ver_id,
+            workflow_run_id=workflow_run_id,
+            workflow_step_id=workflow_step_id,
+            tool_execution_id=tool_execution_id,
+            policy_id=policy_id,
+            policy_version=policy_version,
+            verification_method=verification_method,
+            status=status,
+            stage=stage,
+            input_digest=input_digest,
+            output_digest=output_digest,
+            evidence_json=evidence,
+            findings_json=findings,
+            reason=reason,
+            data_classification=data_classification,
+            created_at=now,
+            updated_at=now,
+            completed_at=now,
+        )
+        self.db.add(ver)
+        self.db.flush()
+        return ver
+
+    def get_verification_by_id(self, verification_id: str) -> WorkflowVerification | None:
+        """Fetch a verification record by ID."""
+        stmt = select(WorkflowVerification).where(WorkflowVerification.id == verification_id)
+        return self.db.scalars(stmt).first()
+
+    def get_verifications_for_run(self, workflow_run_id: str) -> list[WorkflowVerification]:
+        """Fetch all verification records for a workflow run ordered by created_at."""
+        stmt = (
+            select(WorkflowVerification)
+            .where(WorkflowVerification.workflow_run_id == workflow_run_id)
+            .order_by(WorkflowVerification.created_at.asc())
+        )
+        return list(self.db.scalars(stmt).all())
+
+    def get_verification_for_step(self, workflow_step_id: str) -> WorkflowVerification | None:
+        """Fetch the most recent verification record for a step."""
+        stmt = (
+            select(WorkflowVerification)
+            .where(WorkflowVerification.workflow_step_id == workflow_step_id)
+            .order_by(WorkflowVerification.created_at.desc())
+        )
+        return self.db.scalars(stmt).first()
+
+    def create_compensation(
+        self,
+        workflow_run_id: str,
+        workflow_step_id: str,
+        compensation_capability_id: str,
+        input_json: dict[str, Any],
+        input_digest: str,
+        original_tool_execution_id: str | None = None,
+        compensation_capability_version: str = "1.0.0",
+        order_index: int = 0,
+        status: str = "registered",
+        reason: str | None = None,
+    ) -> WorkflowCompensation:
+        """Create and persist a WorkflowCompensation record."""
+        comp_id = f"wcomp_{uuid.uuid4().hex[:16]}"
+        now = utc_now()
+        comp = WorkflowCompensation(
+            id=comp_id,
+            workflow_run_id=workflow_run_id,
+            workflow_step_id=workflow_step_id,
+            original_tool_execution_id=original_tool_execution_id,
+            compensation_capability_id=compensation_capability_id,
+            compensation_capability_version=compensation_capability_version,
+            status=status,
+            input_json=input_json,
+            input_digest=input_digest,
+            order_index=order_index,
+            reason=reason,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(comp)
+        self.db.flush()
+        return comp
+
+    def get_compensations_for_run(self, workflow_run_id: str) -> list[WorkflowCompensation]:
+        """Fetch all compensations for a workflow run ordered by order_index descending (reverse dependency)."""
+        stmt = (
+            select(WorkflowCompensation)
+            .where(WorkflowCompensation.workflow_run_id == workflow_run_id)
+            .order_by(WorkflowCompensation.order_index.desc())
+        )
+        return list(self.db.scalars(stmt).all())
+
+    def get_compensation_for_step(self, workflow_step_id: str) -> WorkflowCompensation | None:
+        """Fetch compensation record for a step."""
+        stmt = select(WorkflowCompensation).where(
+            WorkflowCompensation.workflow_step_id == workflow_step_id
+        )
+        return self.db.scalars(stmt).first()
+
+    def update_compensation_status(
+        self,
+        compensation_id: str,
+        status: str,
+        compensation_tool_execution_id: str | None = None,
+        reason: str | None = None,
+    ) -> WorkflowCompensation | None:
+        """Update compensation status and execution reference."""
+        stmt = select(WorkflowCompensation).where(WorkflowCompensation.id == compensation_id)
+        comp = self.db.scalars(stmt).first()
+        if not comp:
+            return None
+
+        comp.status = status
+        comp.updated_at = utc_now()
+        if compensation_tool_execution_id is not None:
+            comp.compensation_tool_execution_id = compensation_tool_execution_id
+        if reason is not None:
+            comp.reason = reason
+        if status in ("succeeded", "failed", "uncertain") and comp.completed_at is None:
+            comp.completed_at = utc_now()
+
+        self.db.flush()
+        return comp
