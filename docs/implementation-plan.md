@@ -146,10 +146,18 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - **Status**: **P8.1, P8.2 & P8.3 COMPLETED & VERIFIED; P9 PLANNED**.
 
 ### Milestone P9: Multi-Agent Workflow Coordination
-- [ ] **P9.1 Task Delegation**: Subtask execution over persistent Task Engine.
+- [x] **P9.1 Task Delegation — Subtask Execution over Persistent Task Engine**:
+  - Durable workflow coordination layer separating user tasks (`Task`), workflow runs (`WorkflowRun`), delegated steps (`WorkflowStep`), and tool executions (`ToolExecution`).
+  - Pre-dispatch DAG graph validation: cycle detection via Kahn's algorithm, self-dependency rejection, unresolved prerequisite checks, registered capability existence and version matching, input schema validation, undeclared dependency-output reference rejection, and strict graph bounds (max 50 steps, max depth 20, max payload 1MB).
+  - Deterministic coordinator executing eligible ready steps in dependency order exclusively through the existing `CapabilityRegistry` and `ToolExecutionEngine`.
+  - Dependency output mapping (`{"$from_step": "<step_key>", "$path": "<dot_path>"}`) with runtime validation against the destination capability's declared schema.
+  - Human approval integrity: consequential steps pause workflow advancement at `awaiting_approval` and require verified human approval before dispatch. Input-digest bindings prevent step mutation after approval.
+  - Truthful restart recovery: interrupted runs reconciled against persistent tool execution records and immutable event ledger evidence without blind replay of non-idempotent operations.
+  - Comprehensive adversarial test suite covering cycles, invalid schemas, missing dependencies, approval halts, idempotent deduplication, cancellation, crash recovery, and REST API routes (`/api/workflows`).
+  - 18 dedicated tests in `tests/test_workflow_coordination.py` passing cleanly (425 total passing tests across entire regression suite).
 - [ ] **P9.2 Single-Model Resource Scheduling**: Logical workers scheduled over single resident model.
 - [ ] **P9.3 Independent Verification**: Verifier audits worker outputs before dependent tasks proceed.
-- **Status**: **PLANNED**.
+- **Status**: **P9.1 COMPLETED & VERIFIED; P9.2 & P9.3 PLANNED**.
 
 ### Milestone P10: Unified PICO Experience
 - [ ] **P10.1 Desktop Web Experience**: Streaming chat, voice toggle, memory inspector, task timeline, approvals.

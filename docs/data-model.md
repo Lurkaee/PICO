@@ -288,3 +288,51 @@ The following entities are planned for subsequent phases and do NOT form part of
   - `retention_policy` (VARCHAR(32), NOT NULL, DEFAULT `'standard'`): Lifecycle retention tier (`transient`, `standard`, `durable`).
   - `parent_event_id` (VARCHAR(64), FK `perception_events.id`, ON DELETE SET NULL, NULLABLE, INDEX): Parent event for fused/correlated observations.
   - `created_at` (DATETIME, NOT NULL, INDEX): Monotonic UTC timestamp.
+
+---
+
+## 8. Workflow Coordination Subsystem (Implemented in Milestone P9.1)
+
+### 8.1 `workflow_runs` (Durable Coordinated Workflow Execution)
+- Represents one durable execution of a multi-step dependency-directed acyclic graph (DAG).
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `wf_<uuid>`.
+  - `task_id` (VARCHAR(64), FK `tasks.id`, ON DELETE SET NULL, NULLABLE, INDEX): Optional associated parent user task.
+  - `session_id` (VARCHAR(64), NULLABLE, INDEX): Optional originating interaction session.
+  - `correlation_id` (VARCHAR(64), NULLABLE, INDEX): Tracing identifier across workflow execution and ledger events.
+  - `idempotency_key` (VARCHAR(128), UNIQUE, NULLABLE, INDEX): Client-provided token for deterministic deduplication.
+  - `name` (VARCHAR(255), NOT NULL): Human-readable workflow plan title.
+  - `description` (TEXT, NULLABLE): Extended workflow intent or purpose.
+  - `status` (VARCHAR(32), NOT NULL, DEFAULT `'queued'`, INDEX): Lifecycle state (`queued`, `running`, `awaiting_approval`, `succeeded`, `failed`, `cancelled`).
+  - `data_classification` (VARCHAR(32), NOT NULL, DEFAULT `'INTERNAL'`): Security classification tag (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`).
+  - `total_steps` (INTEGER, NOT NULL, DEFAULT 0): Total number of subtask steps in plan.
+  - `completed_steps` (INTEGER, NOT NULL, DEFAULT 0): Count of successfully completed steps.
+  - `failed_steps` (INTEGER, NOT NULL, DEFAULT 0): Count of failed steps.
+  - `error_message` (TEXT, NULLABLE): Top-level failure summary or blocker description.
+  - `metadata_json` (JSON, NULLABLE): Extensible metadata.
+  - `created_at` (DATETIME, NOT NULL): UTC creation timestamp.
+  - `updated_at` (DATETIME, NOT NULL, INDEX): UTC last update timestamp.
+  - `started_at` (DATETIME, NULLABLE): UTC execution start timestamp.
+  - `completed_at` (DATETIME, NULLABLE): UTC termination timestamp.
+
+### 8.2 `workflow_steps` (Delegated Units of Work)
+- Individual subtask step within a workflow run, executing a registered capability with explicit dependencies.
+- Table constraint: `UNIQUE(workflow_run_id, step_key)` ensures step identifier uniqueness per workflow.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `step_<uuid>`.
+  - `workflow_run_id` (VARCHAR(64), FK `workflow_runs.id`, ON DELETE CASCADE, NOT NULL, INDEX): Parent workflow run.
+  - `step_key` (VARCHAR(128), NOT NULL, INDEX): Plan-local unique step identifier.
+  - `capability_id` (VARCHAR(128), NOT NULL, INDEX): Registered capability identifier.
+  - `capability_version` (VARCHAR(32), NOT NULL, DEFAULT `'1.0.0'`): Capability version constraint.
+  - `status` (VARCHAR(32), NOT NULL, DEFAULT `'pending'`, INDEX): Step lifecycle state (`pending`, `ready`, `running`, `awaiting_approval`, `succeeded`, `failed`, `cancelled`, `blocked`, `verification_failed`).
+  - `dependencies_json` (JSON, NOT NULL): Array of prerequisite `step_key` strings.
+  - `input_template_json` (JSON, NOT NULL): Declared input template including static values and dependency references (`{"$from_step": "<step_key>", "$path": "<dot_path>"}`).
+  - `resolved_input_json` (JSON, NULLABLE): Sanitized, resolved input parameters dispatched to the execution engine.
+  - `tool_execution_id` (VARCHAR(64), FK `tool_executions.id`, ON DELETE SET NULL, NULLABLE, INDEX): Dispatched execution record.
+  - `output_json` (JSON, NULLABLE): Output payload returned from successful execution.
+  - `error_message` (TEXT, NULLABLE): Error details if step failed or was blocked.
+  - `order_index` (INTEGER, NOT NULL, DEFAULT 0): Topological execution order index.
+  - `created_at` (DATETIME, NOT NULL): UTC creation timestamp.
+  - `updated_at` (DATETIME, NOT NULL, INDEX): UTC last update timestamp.
+  - `started_at` (DATETIME, NULLABLE): UTC execution start timestamp.
+  - `completed_at` (DATETIME, NULLABLE): UTC completion timestamp.

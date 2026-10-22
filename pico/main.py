@@ -15,6 +15,7 @@ from pico.api.projects import router as projects_router
 from pico.api.filesystem import router as filesystem_router
 from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
+from pico.api.workflows import router as workflows_router
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
 from pico.db.base import Base
@@ -27,6 +28,7 @@ from pico.providers.errors import (
     ProviderTimeoutError,
 )
 from pico.services.execution_engine import ToolExecutionEngine
+from pico.workflow.service import WorkflowService
 
 
 @asynccontextmanager
@@ -37,6 +39,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     with SessionLocal() as db:
         engine_svc = ToolExecutionEngine(db)
         engine_svc.recover_interrupted_executions()
+        workflow_svc = WorkflowService(db)
+        workflow_svc.recover_interrupted_workflows()
     yield
 
 
@@ -170,3 +174,4 @@ app.include_router(tools_router)
 app.include_router(perception_router)
 app.include_router(homeassistant_router)
 app.include_router(filesystem_router)
+app.include_router(workflows_router)
