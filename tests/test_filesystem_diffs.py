@@ -1781,3 +1781,237 @@ def test_adversarial_non_windows_mutations_fail_closed(tmp_path, monkeypatch):
     # 3. Deletion fails closed
     with pytest.raises(ExecutionError, match="Handle-bound atomic file deletion requires Windows NT kernel"):
         adapter.delete_file(str(target), root_path=str(ws))
+
+
+def test_adversarial_temp_file_substitution_attempt_blocked_by_handle_identity(tmp_path, db_session: Session):
+    """
+    Finding 1: An external process attempts to tamper with or replace the .pico_tmp_* file
+    between content staging and the final move.
+    Because h_temp is held open with exclusive sharing (no FILE_SHARE_WRITE, no FILE_SHARE_DELETE),
+    external tampering/deletion fails with PermissionError (sharing violation), and the move
+    remains strictly bound to the approved temporary file object written by PICO.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows NT kernel handle sharing test")
+
+    from pathlib import Path
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target_file = ws / "config.txt"
+    target_file.write_text("setting=alpha\n", encoding="utf-8")
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="config.txt",
+        operation="replace",
+        proposed_content="setting=beta_approved\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    adapter = get_filesystem_adapter()
+    assert isinstance(adapter, WindowsFilesystemAdapter)
+
+    tamper_attempt_recorded = []
+
+    def attack_temp_hook(temp_path: str, norm_path: str):
+        # Adversary attempts to delete or overwrite the temporary file while PICO holds h_temp
+        try:
+            os.remove(temp_path)
+            tamper_attempt_recorded.append("unlocked_delete_succeeded")
+        except PermissionError:
+            tamper_attempt_recorded.append("delete_blocked_by_kernel")
+
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write("MALICIOUS_SUBSTITUTE\n")
+            tamper_attempt_recorded.append("unlocked_write_succeeded")
+        except PermissionError:
+            tamper_attempt_recorded.append("write_blocked_by_kernel")
+
+    adapter._on_pre_temp_rename = attack_temp_hook
+
+    result_exec = asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # Assert sharing protections prevented any external tampering with temp file
+    assert "delete_blocked_by_kernel" in tamper_attempt_recorded
+    assert "write_blocked_by_kernel" in tamper_attempt_recorded
+    assert "unlocked_delete_succeeded" not in tamper_attempt_recorded
+    assert "unlocked_write_succeeded" not in tamper_attempt_recorded
+
+    # Assert execution succeeded with approved content
+    assert result_exec.status == "succeeded"
+    assert target_file.read_text(encoding="utf-8") == "setting=beta_approved\n"
+
+    # Assert clean state: temp file and backup file cleaned up
+    assert len(list(ws.glob(".pico_tmp_*"))) == 0
+    assert len(list(ws.glob(".pico_backup_*"))) == 0
+
+
+def test_adversarial_post_move_verification_failure_preserves_backup_and_remains_staged(tmp_path, db_session: Session):
+    """
+    Finding 2: If destination verification fails after the handle rename (e.g. content mismatch),
+    PICO fails closed, PRESERVES the displaced original backup file, records the backup location in the error,
+    and leaves the proposal in 'staged' status with zero automatic retries.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows NT kernel handle test")
+
+    from pathlib import Path
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target_file = ws / "important.txt"
+    target_file.write_text("critical_original_data\n", encoding="utf-8")
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="important.txt",
+        operation="replace",
+        proposed_content="new_data_value\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    execution = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(execution.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    adapter = get_filesystem_adapter()
+    assert isinstance(adapter, WindowsFilesystemAdapter)
+
+    # Injected adversarial hook: after move succeeds but BEFORE post-write verification,
+    # corrupt the destination file content so verification digest check fails.
+    def corrupt_post_move(norm_path: str):
+        Path(norm_path).write_text("CORRUPTED_AFTER_MOVE\n", encoding="utf-8")
+
+    adapter._on_post_replace_move = corrupt_post_move
+
+    result_exec = asyncio.run(engine.execute(execution.id, caller_permissions={"filesystem:write"}))
+
+    # Assert execution failed closed
+    assert result_exec.status == "failed"
+    assert "Post-write verification failed" in (result_exec.error_message or "")
+    assert "Displaced original preserved in" in (result_exec.error_message or "")
+
+    # Crucial: verify backup was NOT destroyed and contains original data
+    backup_files = list(ws.glob(".pico_backup_*"))
+    assert len(backup_files) == 1
+    assert backup_files[0].read_text(encoding="utf-8") == "critical_original_data\n"
+
+    # Crucial: proposal was NOT marked applied
+    staged_repo = StagedDiffRepository(db_session)
+    refreshed = staged_repo.get_by_id(proposal.id)
+    assert refreshed is not None
+    assert refreshed.status == "staged"
+
+
+def test_adversarial_rollback_post_move_verification_failure_preserves_backup_and_remains_applied(tmp_path, db_session: Session):
+    """
+    Finding 2 (Rollback): If post-move verification fails during a rollback operation,
+    the displaced file is preserved in backup, and the proposal status remains 'applied'.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Windows NT kernel handle test")
+
+    from pathlib import Path
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    set_roots_manager(FilesystemRootsManager({"ws": str(ws)}))
+
+    target_file = ws / "rollback_target.txt"
+    target_file.write_text("initial_original\n", encoding="utf-8")
+
+    proposal = stage_diff_proposal(
+        db=db_session,
+        root_id="ws",
+        relative_path="rollback_target.txt",
+        operation="replace",
+        proposed_content="applied_state\n",
+    )
+
+    engine = ToolExecutionEngine(db_session, registry)
+    apply_exec = engine.submit(
+        capability_id="filesystem.apply_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(apply_exec.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+    res_apply = asyncio.run(engine.execute(apply_exec.id, caller_permissions={"filesystem:write"}))
+    assert res_apply.status == "succeeded"
+
+    # Stage and approve rollback
+    rollback_exec = engine.submit(
+        capability_id="filesystem.rollback_staged_diff",
+        input_data={"proposal_id": proposal.id},
+        caller_permissions={"filesystem:write"},
+    )
+    engine.approve(rollback_exec.id, approver="admin", approval_token=TEST_APPROVAL_TOKEN)
+
+    adapter = get_filesystem_adapter()
+    assert isinstance(adapter, WindowsFilesystemAdapter)
+
+    # Injected corrupt hook during rollback post-move verification
+    def corrupt_rollback_post_move(norm_path: str):
+        Path(norm_path).write_text("CORRUPTED_DURING_ROLLBACK\n", encoding="utf-8")
+
+    adapter._on_post_replace_move = corrupt_rollback_post_move
+
+    res_rollback = asyncio.run(engine.execute(rollback_exec.id, caller_permissions={"filesystem:write"}))
+
+    assert res_rollback.status == "failed"
+    assert "Post-write verification failed" in (res_rollback.error_message or "")
+    assert "Displaced original preserved in" in (res_rollback.error_message or "")
+
+    # Assert backup file is preserved
+    backup_files = list(ws.glob(".pico_backup_*"))
+    assert len(backup_files) == 1
+    assert backup_files[0].read_text(encoding="utf-8") == "applied_state\n"
+
+    # Assert proposal was NOT marked rolled_back, remains 'applied'
+    staged_repo = StagedDiffRepository(db_session)
+    refreshed = staged_repo.get_by_id(proposal.id)
+    assert refreshed is not None
+    assert refreshed.status == "applied"
+
+
+def test_adversarial_cleanup_does_not_delete_unrelated_files(tmp_path):
+    """
+    Ensure safe_unlink and adapter cleanup mechanisms strictly avoid deleting
+    unrelated files or directories, and refuse to delete reparse points.
+    """
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    unrelated_file = ws / "unrelated_user_file.txt"
+    unrelated_file.write_text("DO_NOT_DELETE\n", encoding="utf-8")
+
+    from pico.filesystem.adapter import safe_unlink
+    # safe_unlink outside root does nothing
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("OUTSIDE\n", encoding="utf-8")
+    safe_unlink(str(outside_file), str(ws))
+    assert outside_file.exists()
+
+    # safe_unlink on root itself does nothing
+    safe_unlink(str(ws), str(ws))
+    assert ws.exists()
+
+    # Unrelated user file is untouched
+    assert unrelated_file.exists()
+    assert unrelated_file.read_text(encoding="utf-8") == "DO_NOT_DELETE\n"
