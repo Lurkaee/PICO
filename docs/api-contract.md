@@ -890,9 +890,101 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
 
 ---
 
+### 2.15 Workflow Coordination & Task Delegation (Milestone P9.1)
+
+Durable, dependency-aware workflow coordinator for multi-step task delegation executing over PICO's existing `ToolExecutionEngine` and `CapabilityRegistry`.
+
+#### `POST /api/workflows`
+- **Description**: Registers and persists a validated, bounded dependency workflow graph. Validates DAG invariants (no cycles, no self-dependencies, resolved prerequisites, valid capability schemas, graph bounds). Supports idempotent submissions.
+- **Request Body**:
+  ```json
+  {
+    "name": "Chained Computation Workflow",
+    "description": "Performs multi-step task execution",
+    "task_id": "task_12345",
+    "session_id": "sess_abc",
+    "correlation_id": "corr_xyz",
+    "idempotency_key": "wf-unique-key-42",
+    "data_classification": "INTERNAL",
+    "metadata": {},
+    "steps": [
+      {
+        "step_key": "step_1",
+        "capability_id": "core.calculator",
+        "capability_version": "1.0.0",
+        "dependencies": [],
+        "input_template": {
+          "expression": "10 + 20"
+        }
+      },
+      {
+        "step_key": "step_2",
+        "capability_id": "core.calculator",
+        "capability_version": "1.0.0",
+        "dependencies": ["step_1"],
+        "input_template": {
+          "expression": "30 * 2"
+        }
+      }
+    ]
+  }
+  ```
+- **Validation**:
+  - `name`: 1-255 characters.
+  - `steps`: 1-50 steps.
+  - Graph depth: <= 20 levels.
+  - Payload size: <= 1,048,576 bytes.
+  - Dependencies must be acyclic and reference declared step keys.
+  - Dependency references in inputs (`{"$from_step": "<step_key>", "$path": "<path>"}`) must declare upstream step in `dependencies`.
+- **Response (201 Created)**: Returns `WorkflowRunResponse` with status `queued` and step summaries.
+
+#### `GET /api/workflows`
+- **Description**: Lists and filters workflow runs with pagination.
+- **Query Parameters**:
+  - `task_id` (optional): Filter by parent user task ID.
+  - `status` (optional): Filter by workflow run status (`queued`, `running`, `awaiting_approval`, `succeeded`, `failed`, `cancelled`).
+  - `limit` (default: 50, max: 100).
+  - `offset` (default: 0).
+- **Response (200 OK)**:
+  ```json
+  {
+    "items": [...],
+    "total": 1,
+    "limit": 50,
+    "offset": 0
+  }
+  ```
+
+#### `GET /api/workflows/{workflow_id}`
+- **Description**: Retrieves full workflow run state, including composed step statuses, resolved inputs, outputs, error messages, and tool execution references.
+- **Response (200 OK)**: `WorkflowRunResponse`.
+
+#### `POST /api/workflows/{workflow_id}/advance`
+- **Description**: Advances workflow coordinator, evaluating prerequisite readiness and sequentially executing eligible ready steps through `ToolExecutionEngine`. Steps awaiting approval remain paused until human approval is recorded.
+- **Request Body**:
+  ```json
+  {
+    "caller_permissions": ["tools:calculate", "test:execute"],
+    "max_steps": 10
+  }
+  ```
+- **Response (200 OK)**: Updated `WorkflowRunResponse`.
+
+#### `POST /api/workflows/{workflow_id}/cancel`
+- **Description**: Cancels an active or queued workflow run. Cancels pending/running steps and associated queued tool executions.
+- **Request Body**:
+  ```json
+  {
+    "reason": "Operator requested cancellation."
+  }
+  ```
+- **Response (200 OK)**: Updated `WorkflowRunResponse` with status `cancelled`.
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:
 
-- `POST /api/jobs` & `GET /api/jobs/{job_id}` — Multi-step execution coordinator jobs (DAG workflow coordinator)
+- `POST /api/jobs` & `GET /api/jobs/{job_id}` — Concurrent model worker scheduler and resource allocation (P9.2)
 - `GET /api/evaluations/reports` — Evaluation harness metrics and test suite results (Phase 3)

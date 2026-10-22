@@ -13,8 +13,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Dynamically set DB URL from application settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Dynamically set DB URL from application settings if not already provided
+if config.get_main_option("sqlalchemy.url") in (None, "", "driver://user:pass@localhost/dbname"):
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 target_metadata = Base.metadata
 

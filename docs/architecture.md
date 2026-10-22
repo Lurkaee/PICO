@@ -492,13 +492,20 @@ Target Environment:
 - Sandboxed desktop application and window inspection (P8.1).
 - Staged filesystem diffs with human-in-the-loop review and guarded rollback (P8.2).
 - Sandboxed Playwright browser automation with untrusted web content isolation (P8.3).
-- *Status*: **P8.1 & P8.2 VERIFIED; P8.3 PLANNED**.
+- *Status*: **P8.1, P8.2 & P8.3 VERIFIED**.
 
 ### Milestone P9: Workflow Planning & Multi-Agent Coordination
-- Multi-step planning over Task Engine.
-- Logical specialist workers scheduled over single resident model.
-- Independent verification of worker outputs before dependent tasks proceed.
-- *Status*: **PLANNED**.
+- **P9.1 Task Delegation — Subtask Execution over Persistent Task Engine**:
+  - Durable workflow coordination layer separating user tasks (`Task`), workflow runs (`WorkflowRun`), delegated steps (`WorkflowStep`), and tool executions (`ToolExecution`).
+  - Pre-dispatch DAG graph validation: cycle detection via Kahn's algorithm, self-dependency rejection, unresolved prerequisite checks, registered capability existence and version matching, input schema validation, undeclared dependency-output reference rejection, and strict graph bounds (max 50 steps, max depth 20, max payload 1MB).
+  - Deterministic coordinator executing eligible ready steps in dependency order exclusively through the existing `CapabilityRegistry` and `ToolExecutionEngine`.
+  - Dependency output mapping (`{"$from_step": "<step_key>", "$path": "<dot_path>"}`) with runtime validation against the destination capability's declared schema.
+  - Human approval integrity: consequential steps pause workflow advancement at `awaiting_approval` and require verified human approval before dispatch. Input-digest bindings prevent step mutation after approval.
+  - Truthful restart recovery: interrupted runs reconciled against persistent tool execution records and immutable event ledger evidence without blind replay of non-idempotent operations.
+  - Comprehensive adversarial test suite covering cycles, invalid schemas, missing dependencies, approval halts, idempotent deduplication, cancellation, crash recovery, and REST API routes (`/api/workflows`).
+  - *Status*: **P9.1 VERIFIED**.
+- **P9.2 Local Model Resource Scheduling**: Logical specialist workers scheduled over single resident model with memory constraints. *Status*: **PLANNED**.
+- **P9.3 Independent Worker Verification & Failure Resilience**: Multi-stage verification and compensation rollback across workers. *Status*: **PLANNED**.
 
 ### Milestone P10: Unified PICO Experience
 - Comprehensive desktop web application with streaming chat, voice interaction, memory editor, task timeline, approval tickets, and device control cards.
