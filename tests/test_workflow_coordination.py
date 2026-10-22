@@ -552,4 +552,3 @@ def test_workflow_alembic_migration(tmp_path) -> None:
 
     # Upgrade again
     command.upgrade(cfg, "head")
-
