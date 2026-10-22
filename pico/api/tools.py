@@ -121,6 +121,10 @@ async def submit_execution(
         configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
         if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
             effective_perms.add("filesystem:write")
+    elif payload.capability_id == "browser.open_page":
+        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+            effective_perms.add("browser:open")
 
     execution = engine.submit(
         capability_id=payload.capability_id,
@@ -227,6 +231,10 @@ async def run_execution(
         configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
         if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
             effective_perms.add("filesystem:write")
+    elif item.capability_id == "browser.open_page":
+        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+            effective_perms.add("browser:open")
 
     execution = await engine.execute(execution_id, caller_permissions=effective_perms)
     return ToolExecutionResponse.model_validate(execution)

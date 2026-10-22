@@ -331,8 +331,28 @@ sequenceDiagram
    - **Independent Verification & Guarded Conflict-Safe Rollback**:
      - Independent read-back: Re-opens destination file through canonical boundary, reads contents, and verifies SHA-256 hash matches the approved proposed digest.
      - Guarded rollback (`filesystem.rollback_staged_diff`): Requires dedicated authorization, verifies file currently on disk still matches post-apply hash (fails closed if external edits occurred), restores original content atomically, and independently verifies restored state.
-3. **Planned Workspace Capabilities (Deferred)**:
-   - **Sandboxed Browser Automation (Planned for P8.3)**: Playwright adapter with untrusted web content isolation.
+3. **Sandboxed Browser Automation (Verified in Milestone P8.3)**:
+   - **Provider-Neutral Browser Adapter Boundary (`pico.browser`)**:
+     - `BaseBrowserAdapter`: Abstract interface defining `open_page(url, timeout_seconds, max_bytes, max_links)`.
+     - `PlaywrightBrowserAdapter`: Production implementation utilizing Playwright with ephemeral browser contexts, route interception for subresource/origin enforcement, popup/download blocking, and Chromium sandbox enabled. Playwright is an optional runtime dependency loaded lazily, truthfully returning `unavailable` status if the library or browser binaries are not installed, without uncontrolled background downloads.
+     - `FakeBrowserAdapter`: Deterministic fake browser adapter for offline unit tests and CI, enforcing identical security, origin allowlist, and SSRF gates against registered test fixtures with zero network dependencies.
+   - **Fail-Closed Security Configuration**:
+     - Browser automation is disabled by default (`BROWSER_AUTOMATION_ENABLED=False`).
+     - Server-side origin allowlist (`BROWSER_ALLOWED_ORIGINS=[]`) is strictly empty by default with zero wildcard allowlisting.
+     - Destination validation rejects unsupported schemes (only `http` and `https`), embedded credentials, malformed URLs, and unapproved origins.
+     - Comprehensive SSRF mitigation validates IP literals and resolved hostnames against loopback (`127.0.0.0/8`, `::1`), private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and cloud metadata (`169.254.169.254`, `metadata.google.internal`) addresses before navigation and on every redirect or subresource request.
+   - **Ephemeral Contexts & Untrusted Content Isolation**:
+     - Fresh, non-persistent browser context per request with zero persistence or leakage of cookies, credentials, session tokens, or local storage.
+     - Non-essential capabilities disabled: downloads, service workers, browser permissions, file uploads, and arbitrary JavaScript execution are blocked.
+     - Chromium security sandbox remains enabled (strictly never `--no-sandbox`).
+   - **Bounded Observations & Privacy Pinned Data**:
+     - Page observations return bounded structures with explicit length truncation indicators (`max_bytes=65536`, `max_links=50`).
+     - Query strings, authentication tokens, and fragments are stripped from logged and persisted URLs (`sanitize_url`).
+     - External web content is strictly classified as untrusted `INTERNAL` data and pinned to local execution via `RULE_PRIVATE_LOCAL_PIN` (zero cloud transmission).
+     - Adversarial web text cannot elevate caller permissions, alter tool schemas, or bypass the Policy & Approval Engine.
+   - **Capability Registration & Verification**:
+     - Registered capability `browser.open_page` (`RiskTier.READ_ONLY`, `browser:open` permission, `INTERNAL` classification, idempotent, zero retries).
+     - Independent post-execution verifier validates output structure and schema conformance.
 
 ### 4.7 Home Automation & Physical Actuation (Home Assistant)
 - Home Assistant REST/WebSocket API as the sole integration hub.
