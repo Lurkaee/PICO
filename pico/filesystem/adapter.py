@@ -637,57 +637,60 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
                 backup_filename = f".pico_backup_{uuid.uuid4().hex}"
                 backup_path = os.path.join(parent_dir, backup_filename)
 
-                # 1. Target verification via handle with EXCLUSIVE access (no write, no delete sharing)
-                h_target = kernel32.CreateFileW(
-                    norm_path,
-                    GENERIC_READ | DELETE,
-                    FILE_SHARE_READ,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_FLAG_OPEN_REPARSE_POINT,
-                    None,
-                )
-                if is_invalid_handle(h_target):
-                    err = ctypes.get_last_error()
-                    raise ExecutionError(f"Failed to open target file for replacement '{path}': WinError {err}")
+                backup_created = False
+                h_temp = None
                 try:
-                    info_tgt = BY_HANDLE_FILE_INFORMATION()
-                    if not kernel32.GetFileInformationByHandle(h_target, byref(info_tgt)):
-                        err = ctypes.get_last_error()
-                        raise ExecutionError(f"Failed to inspect target handle '{path}': WinError {err}")
-                    if info_tgt.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
-                        raise ValidationError(f"Target cannot be a symlink or reparse point: '{path}'")
-                    final_target_p = get_final_path_from_handle(h_target)
-                    try:
-                        common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_target_p)])
-                    except ValueError:
-                        raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
-                    if common != os.path.normcase(norm_root):
-                        raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
-
-                    if expected_original_digest:
-                        target_bytes = read_all_bytes_from_handle(h_target)
-                        target_text = target_bytes.decode("utf-8", errors="replace")
-                        current_digest = compute_content_digest(target_text)
-                        if current_digest != expected_original_digest:
-                            raise ExecutionError(
-                                f"Target file content modified prior to atomic replacement. Expected '{expected_original_digest}', found '{current_digest}'."
-                            )
-
-                    # 2. Stage new content exclusively in pinned parent
-                    h_temp = kernel32.CreateFileW(
-                        temp_path,
-                        GENERIC_READ | GENERIC_WRITE,
+                    # 1. Target verification via handle with EXCLUSIVE access (no write, no delete sharing)
+                    h_target = kernel32.CreateFileW(
+                        norm_path,
+                        GENERIC_READ | DELETE,
                         FILE_SHARE_READ,
                         None,
-                        CREATE_NEW,
-                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                        OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT,
                         None,
                     )
-                    if is_invalid_handle(h_temp):
+                    if is_invalid_handle(h_target):
                         err = ctypes.get_last_error()
-                        raise ExecutionError(f"Failed to create temporary file for atomic write: WinError {err}")
+                        raise ExecutionError(f"Failed to open target file for replacement '{path}': WinError {err}")
                     try:
+                        info_tgt = BY_HANDLE_FILE_INFORMATION()
+                        if not kernel32.GetFileInformationByHandle(h_target, byref(info_tgt)):
+                            err = ctypes.get_last_error()
+                            raise ExecutionError(f"Failed to inspect target handle '{path}': WinError {err}")
+                        if info_tgt.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
+                            raise ValidationError(f"Target cannot be a symlink or reparse point: '{path}'")
+                        final_target_p = get_final_path_from_handle(h_target)
+                        try:
+                            common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_target_p)])
+                        except ValueError:
+                            raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
+                        if common != os.path.normcase(norm_root):
+                            raise ValidationError(f"Target resolves outside root: '{final_target_p}'")
+
+                        if expected_original_digest:
+                            target_bytes = read_all_bytes_from_handle(h_target)
+                            target_text = target_bytes.decode("utf-8", errors="replace")
+                            current_digest = compute_content_digest(target_text)
+                            if current_digest != expected_original_digest:
+                                raise ExecutionError(
+                                    f"Target file content modified prior to atomic replacement. Expected '{expected_original_digest}', found '{current_digest}'."
+                                )
+
+                        # 2. Stage new content exclusively in pinned parent (with DELETE for handle rename/disposition)
+                        h_temp = kernel32.CreateFileW(
+                            temp_path,
+                            GENERIC_READ | GENERIC_WRITE | DELETE,
+                            FILE_SHARE_READ,
+                            None,
+                            CREATE_NEW,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                            None,
+                        )
+                        if is_invalid_handle(h_temp):
+                            err = ctypes.get_last_error()
+                            raise ExecutionError(f"Failed to create temporary file for atomic write: WinError {err}")
+
                         info_tmp = BY_HANDLE_FILE_INFORMATION()
                         if not kernel32.GetFileInformationByHandle(h_temp, byref(info_tmp)):
                             err = ctypes.get_last_error()
@@ -703,72 +706,140 @@ class WindowsFilesystemAdapter(BaseFilesystemAdapter):
                             raise ValidationError(f"Temporary file resolves outside root: '{final_temp_p}'")
 
                         write_all_bytes_to_handle(h_temp, raw_bytes)
-                    finally:
-                        kernel32.CloseHandle(h_temp)
+                        kernel32.FlushFileBuffers(h_temp)
 
-                    # 3. Vacate target path by renaming verified target to backup via open handle
-                    fri = FILE_RENAME_INFO()
-                    fri.ReplaceIfExists = False
-                    fri.RootDirectory = None
-                    fri.FileNameLength = len(backup_path) * 2
-                    fri.FileName = backup_path
-                    res = kernel32.SetFileInformationByHandle(
-                        h_target, FileRenameInfo, byref(fri), sizeof(fri)
-                    )
-                    if res == 0:
-                        err = ctypes.get_last_error()
-                        safe_unlink(temp_path, norm_root)
-                        raise ExecutionError(f"Failed to relocate target to backup for atomic write: WinError {err}")
-                finally:
-                    kernel32.CloseHandle(h_target)
-
-                # Hook for deterministic adversarial testing of race condition
-                if getattr(self, "_on_pre_replace_move", None) is not None:
-                    self._on_pre_replace_move(norm_path)
-
-                # 4. Move temp_path into norm_path WITHOUT replacing existing file
-                move_res = kernel32.MoveFileW(temp_path, norm_path)
-                if not move_res:
-                    err = ctypes.get_last_error()
-                    safe_unlink(temp_path, norm_root)
-                    # Notice: backup_path is preserved so displaced original is not lost
-                    raise ExecutionError(
-                        f"Target file was concurrently created or substituted prior to replacement (WinError {err}). "
-                        f"Displaced original preserved in '{backup_path}'; mutation aborted with zero overwrite."
-                    )
-
-                # 5. On successful move, safely clean up backup file
-                safe_unlink(backup_path, norm_root)
-
-                # 6. Independent post-write verification via handle
-                h_post = kernel32.CreateFileW(
-                    norm_path,
-                    GENERIC_READ,
-                    FILE_SHARE_READ,
-                    None,
-                    OPEN_EXISTING,
-                    FILE_FLAG_OPEN_REPARSE_POINT,
-                    None,
-                )
-                if is_invalid_handle(h_post):
-                    err = ctypes.get_last_error()
-                    raise ExecutionError(f"Post-write verification failed to open file '{path}': WinError {err}")
-                try:
-                    final_post_p = get_final_path_from_handle(h_post)
-                    try:
-                        common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_post_p)])
-                    except ValueError:
-                        raise ValidationError(f"Post-write file resolves outside root: '{final_post_p}'")
-                    if common != os.path.normcase(norm_root):
-                        raise ValidationError(f"Post-write file resolves outside root: '{final_post_p}'")
-                    written_bytes = read_all_bytes_from_handle(h_post)
-                    written_digest = compute_content_digest(written_bytes.decode("utf-8", errors="replace"))
-                    if written_digest != target_proposed_digest:
-                        raise ExecutionError(
-                            f"Post-write verification failed: Resulting file digest '{written_digest}' does not match expected '{target_proposed_digest}'."
+                        # 3. Vacate target path by renaming verified target to backup via open handle
+                        fri_target = FILE_RENAME_INFO()
+                        fri_target.ReplaceIfExists = False
+                        fri_target.RootDirectory = None
+                        fri_target.FileNameLength = len(backup_path) * 2
+                        fri_target.FileName = backup_path
+                        res_target = kernel32.SetFileInformationByHandle(
+                            h_target, FileRenameInfo, byref(fri_target), sizeof(fri_target)
                         )
-                finally:
-                    kernel32.CloseHandle(h_post)
+                        if res_target == 0:
+                            err = ctypes.get_last_error()
+                            raise ExecutionError(f"Failed to relocate target to backup for atomic write: WinError {err}")
+                        backup_created = True
+                    finally:
+                        kernel32.CloseHandle(h_target)
+
+                    # Target handle is now closed and target is vacated.
+                    # Hooks for deterministic adversarial testing of race condition
+                    if getattr(self, "_on_pre_replace_move", None) is not None:
+                        self._on_pre_replace_move(norm_path)
+                    if getattr(self, "_on_pre_temp_rename", None) is not None:
+                        self._on_pre_temp_rename(temp_path, norm_path)
+
+                    # 4. Rename h_temp directly to norm_path WITHOUT replacing existing file
+                    fri_temp = FILE_RENAME_INFO()
+                    fri_temp.ReplaceIfExists = False
+                    fri_temp.RootDirectory = None
+                    fri_temp.FileNameLength = len(norm_path) * 2
+                    fri_temp.FileName = norm_path
+                    res_temp = kernel32.SetFileInformationByHandle(
+                        h_temp, FileRenameInfo, byref(fri_temp), sizeof(fri_temp)
+                    )
+                    if res_temp == 0:
+                        err = ctypes.get_last_error()
+                        # Safe handle-bound cleanup of h_temp: mark for disposition and close
+                        disp = FILE_DISPOSITION_INFO(True)
+                        kernel32.SetFileInformationByHandle(
+                            h_temp, FileDispositionInfo, byref(disp), sizeof(disp)
+                        )
+                        kernel32.CloseHandle(h_temp)
+                        h_temp = None
+                        safe_unlink(temp_path, norm_root)
+                        raise ExecutionError(
+                            f"Target file was concurrently created or substituted prior to replacement (WinError {err}). "
+                            f"Displaced original preserved in '{backup_path}'; mutation aborted with zero overwrite."
+                        )
+
+                    # Successfully renamed h_temp to norm_path. Close handle before post-verification.
+                    kernel32.CloseHandle(h_temp)
+                    h_temp = None
+
+                    # Hook for deterministic adversarial testing after move but before post-write verification
+                    if getattr(self, "_on_post_replace_move", None) is not None:
+                        self._on_post_replace_move(norm_path)
+
+                    # 5. Independent post-write verification via handle BEFORE backup cleanup
+                    h_post = kernel32.CreateFileW(
+                        norm_path,
+                        GENERIC_READ,
+                        FILE_SHARE_READ,
+                        None,
+                        OPEN_EXISTING,
+                        FILE_FLAG_OPEN_REPARSE_POINT,
+                        None,
+                    )
+                    if is_invalid_handle(h_post):
+                        err = ctypes.get_last_error()
+                        raise ExecutionError(
+                            f"Post-write verification failed to open file '{path}': WinError {err}. "
+                            f"Displaced original preserved in '{backup_path}'."
+                        )
+                    try:
+                        info_post = BY_HANDLE_FILE_INFORMATION()
+                        if not kernel32.GetFileInformationByHandle(h_post, byref(info_post)):
+                            err = ctypes.get_last_error()
+                            raise ExecutionError(
+                                f"Post-write verification failed to inspect handle: WinError {err}. "
+                                f"Displaced original preserved in '{backup_path}'."
+                            )
+                        if info_post.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT:
+                            raise ValidationError(
+                                f"Post-write file is an unexpected symlink or reparse point: '{path}'. "
+                                f"Displaced original preserved in '{backup_path}'."
+                            )
+                        final_post_p = get_final_path_from_handle(h_post)
+                        try:
+                            common = os.path.commonpath([os.path.normcase(norm_root), os.path.normcase(final_post_p)])
+                        except ValueError:
+                            raise ValidationError(
+                                f"Post-write file resolves outside root: '{final_post_p}'. "
+                                f"Displaced original preserved in '{backup_path}'."
+                            )
+                        if common != os.path.normcase(norm_root):
+                            raise ValidationError(
+                                f"Post-write file resolves outside root: '{final_post_p}'. "
+                                f"Displaced original preserved in '{backup_path}'."
+                            )
+                        written_bytes = read_all_bytes_from_handle(h_post)
+                        written_digest = compute_content_digest(written_bytes.decode("utf-8", errors="replace"))
+                        if written_digest != target_proposed_digest:
+                            raise ExecutionError(
+                                f"Post-write verification failed: Resulting file digest '{written_digest}' does not match expected '{target_proposed_digest}'. "
+                                f"Displaced original preserved in '{backup_path}'."
+                            )
+                    finally:
+                        kernel32.CloseHandle(h_post)
+
+                    # 6. ONLY on successful post-write verification, safely clean up backup file
+                    safe_unlink(backup_path, norm_root)
+                    if os.path.lexists(backup_path):
+                        raise ExecutionError(
+                            f"Post-write verification succeeded, but backup file '{backup_path}' could not be safely removed. "
+                            f"Displaced original preserved in '{backup_path}'; cleanup conflict."
+                        )
+
+                except Exception:
+                    # Clean up h_temp if still open
+                    if h_temp is not None and not is_invalid_handle(h_temp):
+                        try:
+                            disp = FILE_DISPOSITION_INFO(True)
+                            kernel32.SetFileInformationByHandle(
+                                h_temp, FileDispositionInfo, byref(disp), sizeof(disp)
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            kernel32.CloseHandle(h_temp)
+                        except Exception:
+                            pass
+                        h_temp = None
+                        safe_unlink(temp_path, norm_root)
+                    raise
 
     def delete_file(
         self,
