@@ -150,25 +150,43 @@ def test_operator_session_can_approve_consequential_execution(monkeypatch):
     assert auth_approve.json()["approved_by"] == "local_operator"
 
 
-def test_spa_fallback_serving_and_api_isolation():
+def test_spa_fallback_serving_and_api_isolation(tmp_path, monkeypatch):
+    import pico.main as pico_main
+
+    # Create hermetic test dist directory
+    test_dist = tmp_path / "frontend" / "dist"
+    test_dist.mkdir(parents=True)
+    index_file = test_dist / "index.html"
+    index_file.write_text('<!DOCTYPE html><html><body><div id="root">PICO Desktop</div></body></html>', encoding="utf-8")
+
+    sample_file = test_dist / "sample.txt"
+    sample_file.write_text("sample static content", encoding="utf-8")
+
+    monkeypatch.setattr(pico_main, "frontend_dist", test_dist)
+
     client = TestClient(app)
 
     # 1. Root serves index.html
     root_res = client.get("/")
     assert root_res.status_code == 200
-    assert "<div id=\"root\">" in root_res.text
+    assert '<div id="root">' in root_res.text
 
     # 2. Client route serves index.html
     client_route_res = client.get("/workflows")
     assert client_route_res.status_code == 200
-    assert "<div id=\"root\">" in client_route_res.text
+    assert '<div id="root">' in client_route_res.text
 
-    # 3. Unhandled GET on /api returns 404, not SPA index.html
+    # 3. Direct static file in dist is served
+    file_res = client.get("/sample.txt")
+    assert file_res.status_code == 200
+    assert file_res.text == "sample static content"
+
+    # 4. Unhandled GET on /api returns 404, not SPA index.html
     api_get = client.get("/api/nonexistent_route")
     assert api_get.status_code == 404
-    assert "<div id=\"root\">" not in api_get.text
+    assert '<div id="root">' not in api_get.text
 
-    # 4. Unhandled POST on /api returns 404, never 405 or SPA
+    # 5. Unhandled POST on /api returns 404, never 405 or SPA
     api_post = client.post("/api/nonexistent_route", json={"foo": "bar"})
     assert api_post.status_code == 404
-    assert "<div id=\"root\">" not in api_post.text
+    assert '<div id="root">' not in api_post.text
