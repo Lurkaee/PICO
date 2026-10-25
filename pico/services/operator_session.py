@@ -37,6 +37,9 @@ ALLOWED_HOSTS = {
 }
 
 
+LOCAL_OPERATOR_IDENTITY: str = "local_operator"
+
+
 def ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -47,7 +50,7 @@ def ensure_utc(dt: datetime) -> datetime:
 class PairingCode:
     code: str
     expires_at: datetime
-    approver: str = "human_operator"
+    approver: str = LOCAL_OPERATOR_IDENTITY
 
 
 @dataclass
@@ -93,12 +96,10 @@ class OperatorSessionService:
 
     def generate_pairing_code(
         self,
-        approver: str = "human_operator",
         ttl_seconds: int = 300,
         db: Optional[Session] = None,
     ) -> PairingCode:
-        """Generate a 6-digit one-time code and persist its challenge in the database."""
-        clean_approver = (approver or "human_operator").strip() or "human_operator"
+        """Generate a 6-digit one-time code and persist its challenge in the database bound to local_operator."""
         code = f"{secrets.randbelow(900000) + 100000:06d}"
         salt = secrets.token_hex(16)
         code_hash = hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
@@ -119,7 +120,7 @@ class OperatorSessionService:
                 id=challenge_id,
                 code_hash=code_hash,
                 salt=salt,
-                approver=clean_approver,
+                approver=LOCAL_OPERATOR_IDENTITY,
                 failed_attempts=0,
                 max_attempts=5,
                 created_at=now,
@@ -129,15 +130,15 @@ class OperatorSessionService:
             s.add(challenge)
             s.commit()
 
-        return PairingCode(code=code, expires_at=expires_at, approver=clean_approver)
+        return PairingCode(code=code, expires_at=expires_at, approver=LOCAL_OPERATOR_IDENTITY)
 
     def pair(
         self,
         code: str,
-        approver: Optional[str] = None,  # Kept for backward signature compatibility, ignored
         session_ttl_seconds: int = 3600,
         db: Optional[Session] = None,
     ) -> OperatorSession:
+
         """
         Validate pairing code against active unconsumed challenges.
         Atomically consumes the code and creates an authenticated OperatorSession.

@@ -51,12 +51,13 @@ async def test_consequential_action_requires_authenticated_approval(db_session: 
     # 5. Verified local operator session allows approval and records authenticated approver
     approved = engine.approve(
         item.id,
-        approver="lead_engineer",
+        approver="untrusted_caller_override_attempt",
         notes="Confirmed deletion request via local operator session.",
         authenticated_principal="local_operator",
     )
     assert approved.status == "queued"
-    assert approved.approved_by == "lead_engineer"
+    # Approver MUST be bound to local_operator, ignoring any caller-supplied override attempt
+    assert approved.approved_by == "local_operator"
     assert approved.approved_at is not None
     assert approved.approval_input_digest == item.input_digest
 

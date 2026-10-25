@@ -124,10 +124,11 @@ def test_authenticated_operator_can_advance_consequential_workflow_through_appro
     """
     # 1. Pair operator session
     service = OperatorSessionService.get_instance()
-    challenge = service.generate_pairing_code(approver="lead_operator")
+    challenge = service.generate_pairing_code()
     pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
     assert pair_res.status_code == 200
     csrf_token = pair_res.json()["csrf_token"]
+    assert pair_res.json()["approver"] == "local_operator"
 
     # 2. Create workflow with consequential step
     wf_payload = {
@@ -157,15 +158,15 @@ def test_authenticated_operator_can_advance_consequential_workflow_through_appro
     tool_exec_id = step["tool_execution_id"]
     assert tool_exec_id is not None
 
-    # 4. Operator explicitly reviews and approves the execution item
+    # 4. Operator explicitly reviews and approves the execution item, attempting spoofed approver in JSON
     approve_res = client.post(
         f"/api/tools/executions/{tool_exec_id}/approve",
-        json={"notes": "Operator confirmed restart"},
+        json={"notes": "Operator confirmed restart", "approver": "forged_operator_override"},
         headers={"X-CSRF-Token": csrf_token},
     )
     assert approve_res.status_code == 200
     assert approve_res.json()["status"] == "queued"
-    assert approve_res.json()["approved_by"] == "lead_operator"
+    assert approve_res.json()["approved_by"] == "local_operator"
 
     # 5. Advance workflow again -> step executes and completes
     adv2 = client.post(f"/api/workflows/{wf_id}/advance", json={}, headers={"X-CSRF-Token": csrf_token})
@@ -174,3 +175,79 @@ def test_authenticated_operator_can_advance_consequential_workflow_through_appro
     assert adv2_data["status"] == "succeeded"
     assert adv2_data["completed_steps"] == 1
     assert adv2_data["steps"][0]["status"] == "succeeded"
+
+
+def test_scoped_permissions_derived_for_workflow_runs(client: TestClient) -> None:
+    """
+    Finding C verification:
+    Verify that derive_workflow_permissions scopes permissions to only the
+    permissions required by the specific workflow run, rather than granting
+    all privileged permissions indiscriminately.
+    """
+    from pico.api.workflows import (
+        SAFE_DEFAULT_PERMISSIONS,
+        derive_workflow_permissions,
+        extract_workflow_run_permissions,
+    )
+    from pico.services.operator_session import OperatorSession
+
+    dummy_session = OperatorSession(
+        session_id="sess_test",
+        csrf_token="csrf_test_token",
+        approver="local_operator",
+        created_at=None,
+        expires_at=None,
+    )
+
+    # Workflow requiring only safe capability (core.calculator -> tools:calculate)
+    required_safe = {"tools:calculate"}
+    perms_safe = derive_workflow_permissions(
+        dummy_session, None, required_permissions=required_safe
+    )
+    # Safe permissions must be present
+    assert "tools:calculate" in perms_safe
+    # Unnecessary privileged permissions must NOT be granted
+    assert "admin:consequential" not in perms_safe
+    assert "homeassistant:actuate" not in perms_safe
+    assert "filesystem:write" not in perms_safe
+    assert "os:launch" not in perms_safe
+
+    # Workflow requiring consequential capability
+    required_consequential = {"admin:consequential"}
+    perms_consequential = derive_workflow_permissions(
+        dummy_session, None, required_permissions=required_consequential
+    )
+    assert "admin:consequential" in perms_consequential
+    assert "homeassistant:actuate" not in perms_consequential
+    assert "filesystem:write" not in perms_consequential
+
+
+def test_unpaired_caller_cannot_advance_privileged_workflow(client: TestClient) -> None:
+    """
+    Finding C verification:
+    Unpaired caller attempting to advance a workflow containing privileged steps
+    (e.g., os.launch_application requiring 'os:launch') fails closed because
+    unauthenticated requests receive ONLY SAFE_DEFAULT_PERMISSIONS.
+    """
+    wf_payload = {
+        "name": "unauthorized_privileged_workflow",
+        "data_classification": "INTERNAL",
+        "steps": [
+            {
+                "step_key": "launch_step",
+                "capability_id": "os.launch_application",
+                "capability_version": "1.0.0",
+                "dependencies": [],
+                "input_template": {"alias": "notepad"},
+            }
+        ],
+    }
+    create_res = client.post("/api/workflows", json=wf_payload)
+    assert create_res.status_code == 201
+    wf_id = create_res.json()["id"]
+
+    adv_res = client.post(f"/api/workflows/{wf_id}/advance", json={})
+    assert adv_res.status_code == 200
+    adv_data = adv_res.json()
+    assert adv_data["status"] == "failed"
+    assert "os:launch" in adv_data["error_message"]

@@ -17,7 +17,8 @@ class OperatorPairingChallenge(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     salt: Mapped[str] = mapped_column(String(32), nullable=False)
-    approver: Mapped[str] = mapped_column(String(128), nullable=False, default="human_operator")
+    approver: Mapped[str] = mapped_column(String(128), nullable=False, default="local_operator")
+
     failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     created_at: Mapped[datetime] = mapped_column(

@@ -99,7 +99,7 @@ async def submit_execution(
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
-    # Default local dev permissions grant standard development scopes (NEVER physical actuation)
+    # Default local dev permissions grant standard development scopes (NEVER physical actuation or consequential actions)
     default_perms = {
         "tools:calculate",
         "tools:validate",
@@ -107,28 +107,27 @@ async def submit_execution(
         "tasks:read",
         "system:diagnostics",
         "test:execute",
-        "admin:consequential",
     }
     effective_perms = set(default_perms)
     configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-    is_authorized = bool(operator_session is not None or (configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret)))
+    is_authorized = bool(
+        operator_session is not None
+        or (configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret))
+    )
 
-    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN or active Operator Session
-    if payload.capability_id == "homeassistant.test_light_actuate":
-        if is_authorized:
+    if is_authorized:
+        effective_perms.add("admin:consequential")
+        if payload.capability_id == "homeassistant.test_light_actuate":
             effective_perms.add("homeassistant:actuate")
-    elif payload.capability_id == "os.inspect_windows":
-        if is_authorized:
+        elif payload.capability_id == "os.inspect_windows":
             effective_perms.add("os:inspect")
-    elif payload.capability_id == "os.launch_application":
-        if is_authorized:
+        elif payload.capability_id == "os.launch_application":
             effective_perms.add("os:launch")
-    elif payload.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-        if is_authorized:
+        elif payload.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
             effective_perms.add("filesystem:write")
-    elif payload.capability_id == "browser.open_page":
-        if is_authorized:
+        elif payload.capability_id == "browser.open_page":
             effective_perms.add("browser:open")
+
 
     execution = engine.submit(
         capability_id=payload.capability_id,

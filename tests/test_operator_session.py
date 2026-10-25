@@ -48,9 +48,9 @@ def test_cross_process_cli_pairing_and_session_lifecycle():
 
     # 2. Trusted CLI generates pairing challenge in shared persistent store
     service = OperatorSessionService.get_instance()
-    challenge = service.generate_pairing_code(approver="trusted_operator", ttl_seconds=300)
+    challenge = service.generate_pairing_code(ttl_seconds=300)
     assert len(challenge.code) == 6
-    assert challenge.approver == "trusted_operator"
+    assert challenge.approver == "local_operator"
 
     # 3. Client attempts to pair and claim a forged approver identity -> must be ignored!
     pair_res = client.post(
@@ -62,7 +62,7 @@ def test_cross_process_cli_pairing_and_session_lifecycle():
     assert pair_data["status"] == "paired"
     assert "csrf_token" in pair_data
     # Approver MUST be bound to the trusted challenge issuance, NOT the caller's request body
-    assert pair_data["approver"] == "trusted_operator"
+    assert pair_data["approver"] == "local_operator"
     csrf_token = pair_data["csrf_token"]
 
     # Verify HttpOnly cookie was set
@@ -72,7 +72,7 @@ def test_cross_process_cli_pairing_and_session_lifecycle():
     res2 = client.get("/api/operator/session")
     assert res2.status_code == 200
     assert res2.json()["paired"] is True
-    assert res2.json()["approver"] == "trusted_operator"
+    assert res2.json()["approver"] == "local_operator"
     assert res2.json()["csrf_token"] == csrf_token
 
     # 5. One-time code cannot be reused (consumed atomically)
@@ -98,7 +98,7 @@ def test_pairing_code_expiry_rejection():
     """Verify expired pairing challenges are rejected."""
     service = OperatorSessionService.get_instance()
     # Create challenge that expired 10 seconds ago
-    challenge = service.generate_pairing_code(approver="human_operator", ttl_seconds=-10)
+    challenge = service.generate_pairing_code(ttl_seconds=-10)
 
     client = TestClient(app)
     res = client.post("/api/operator/pair", json={"code": challenge.code})
@@ -109,7 +109,7 @@ def test_pairing_code_expiry_rejection():
 def test_pairing_lockout_after_max_failed_attempts():
     """Verify rate-limiting lockout after repeated invalid pairing attempts."""
     service = OperatorSessionService.get_instance()
-    challenge = service.generate_pairing_code(approver="human_operator", ttl_seconds=300)
+    challenge = service.generate_pairing_code(ttl_seconds=300)
 
     client = TestClient(app)
 
@@ -127,7 +127,7 @@ def test_pairing_lockout_after_max_failed_attempts():
 def test_untrusted_host_and_origin_rejected():
     """Verify requests with untrusted host or origin are rejected."""
     service = OperatorSessionService.get_instance()
-    challenge = service.generate_pairing_code(approver="human_operator", ttl_seconds=300)
+    challenge = service.generate_pairing_code(ttl_seconds=300)
 
     client = TestClient(app)
     untrusted_res = client.post(
@@ -166,10 +166,9 @@ def test_csrf_protection_on_mutating_requests():
 def test_operator_session_can_approve_consequential_execution(monkeypatch):
     monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "super_secret_server_token_12345")
 
-    client = TestClient(app)
-
-    # Submit a consequential execution using test.consequential_action
-    submit_res = client.post(
+    # 1. Unauthenticated submission of consequential action must fail closed with 403
+    unauth_client = TestClient(app)
+    unauth_submit = unauth_client.post(
         "/api/tools/executions",
         json={
             "capability_id": "test.consequential_action",
@@ -177,33 +176,48 @@ def test_operator_session_can_approve_consequential_execution(monkeypatch):
         },
         params={"execute_now": False},
     )
+    assert unauth_submit.status_code == 403
+
+    # 2. Pair an operator session via trusted CLI
+    client = TestClient(app)
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert pair_res.status_code == 200
+    csrf_token = pair_res.json()["csrf_token"]
+    assert pair_res.json()["approver"] == "local_operator"
+
+    # 3. Authenticated operator submits consequential execution
+    submit_res = client.post(
+        "/api/tools/executions",
+        json={
+            "capability_id": "test.consequential_action",
+            "input_data": {"resource_id": "sys_disk_0", "operation": "wipe"},
+        },
+        params={"execute_now": False},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert submit_res.status_code == 201
     execution_id = submit_res.json()["id"]
     assert submit_res.json()["status"] == "awaiting_approval"
 
-    # Attempt approval without operator session or token -> must fail closed
-    unauth_approve = client.post(
+    # 4. Attempt approval without operator session or token -> must fail closed
+    unauth_approve = unauth_client.post(
         f"/api/tools/executions/{execution_id}/approve",
-        json={"notes": "unauthorized attempt", "approver": "human_operator"},
+        json={"notes": "unauthorized attempt", "approver": "impostor"},
     )
     assert unauth_approve.status_code == 403
 
-    # Now pair an operator session via trusted CLI
-    service = OperatorSessionService.get_instance()
-    challenge = service.generate_pairing_code(approver="verified_operator")
-    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
-    assert pair_res.status_code == 200
-    csrf_token = pair_res.json()["csrf_token"]
-
-    # Approve with valid operator session + CSRF token
+    # 5. Approve with valid operator session + CSRF token, attempting to pass spoofed approver in JSON
     auth_approve = client.post(
         f"/api/tools/executions/{execution_id}/approve",
-        json={"notes": "Approved from desktop operator UI"},
+        json={"notes": "Approved from desktop operator UI", "approver": "impostor_name"},
         headers={"X-CSRF-Token": csrf_token},
     )
     assert auth_approve.status_code == 200
     assert auth_approve.json()["status"] == "queued"
-    assert auth_approve.json()["approved_by"] == "verified_operator"
+    # Approver MUST be local_operator, ignoring the JSON parameter
+    assert auth_approve.json()["approved_by"] == "local_operator"
 
 
 def test_spa_fallback_serving_and_api_isolation(tmp_path, monkeypatch):

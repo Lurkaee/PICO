@@ -200,7 +200,7 @@ class ToolExecutionEngine:
         if is_consequential:
             configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
             if authenticated_principal == "local_operator":
-                recorded_principal = approver or "local_operator"
+                recorded_principal = "local_operator"
             elif not configured_secret or not approval_token or not secrets.compare_digest(approval_token, configured_secret):
                 self.ledger_repo.append(
                     event_type="approval_denied",
