@@ -527,6 +527,11 @@ Target Environment:
   - *Status*: **P9.3 VERIFIED**.
 
 ### Milestone P10: Unified PICO Experience
-- Comprehensive desktop web application with streaming chat, voice interaction, memory editor, task timeline, approval tickets, and device control cards.
-- Full offline degradation resilience.
-- *Status*: **PLANNED**.
+- **P10.1 Desktop Web Experience**:
+  - React 19 + TypeScript 5.7 + Vite 6 SPA in `frontend/` served by FastAPI via HTTP middleware fallback.
+  - Fetch-based SSE parser (`frontend/src/api/sse.ts`) handling split-chunk, multi-event, and UTF-8 boundary edge cases without using `EventSource`.
+  - Local operator session service (`pico/services/operator_session.py`): loopback-only 6-digit CSPRNG pairing code, 300 s TTL, `HttpOnly; SameSite=Strict` cookie, timing-safe CSRF header validation. `APPROVAL_SECRET_TOKEN` never leaves the server.
+  - Components: `ChatPanel` (streaming), `VoiceControl` (PTT, explicit consent), `WorkflowTimeline` (DAG + Stages A-D), `MemoryInspector` (FTS5 search + confirmed delete), `ApprovalInbox` (operator-gated), `SystemStatus`, `PairingModal`.
+  - *Status*: **P10.1 VERIFIED**.
+- **P10.2 Offline Resilience**: Graceful degradation when inference or network is offline.
+  - *Status*: **PLANNED**.

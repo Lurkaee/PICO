@@ -51,8 +51,63 @@ uvicorn pico.main:app --host 127.0.0.1 --port 8000 --reload
 Once running:
 - **Interactive OpenAPI Documentation**: `http://127.0.0.1:8000/docs`
 - **Health Check**: `http://127.0.0.1:8000/health`
+- **Desktop Web UI** (when built): `http://127.0.0.1:8000/`
 
 ---
+
+## Desktop Web Experience (Phase 10.1)
+
+PICO ships a polished local-first desktop UI in the `frontend/` directory. It connects directly to the FastAPI backend and exposes streaming chat, workflow timelines, memory inspection, approval handling, and system status in one command-centre interface.
+
+### Prerequisites
+
+- **Node.js** 22+ (22 LTS recommended)
+- **pnpm** 10+ (`npm install -g pnpm` or `winget install pnpm`)
+
+### Development mode (hot-reload, proxied to backend)
+
+```powershell
+# Start the FastAPI backend first (see above)
+uvicorn pico.main:app --host 127.0.0.1 --port 8000 --reload
+
+# In a second terminal — install and start the dev server
+cd frontend
+pnpm install
+pnpm run dev
+# Opens http://localhost:5173 with proxy to http://127.0.0.1:8000
+```
+
+### Production build (served directly by FastAPI)
+
+```powershell
+cd frontend
+pnpm run build          # Outputs to frontend/dist/
+# FastAPI auto-serves frontend/dist when dist/assets/ exists
+uvicorn pico.main:app --host 127.0.0.1 --port 8000
+# Now visit http://127.0.0.1:8000/
+```
+
+### Frontend test suite
+
+```powershell
+cd frontend
+pnpm run test           # Vitest — all 20 frontend tests
+pnpm run typecheck      # TypeScript strict type check
+```
+
+### Local operator pairing (for consequential approvals)
+
+Consequential tool-execution approvals require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is transmitted to the browser.
+
+```powershell
+# With the backend running, generate a one-time pairing code:
+python -m pico.cli.pair
+# Enter the 6-digit code shown in the desktop UI's pairing modal.
+# The HttpOnly session cookie is set; CSRF token is returned to the browser.
+```
+
+---
+
 
 ## Model Providers & Streaming Chat (Phase 1, Slice 2)
 
