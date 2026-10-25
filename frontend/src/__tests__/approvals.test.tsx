@@ -11,7 +11,6 @@ vi.mock('../api/client', () => ({
     cancelExecution: vi.fn(),
     pairOperator: vi.fn(),
     logoutOperator: vi.fn(),
-    requestPairingCode: vi.fn(),
   },
 }));
 

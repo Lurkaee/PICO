@@ -1114,10 +1114,11 @@ Workflow-level verification engine gating the release of step outputs to downstr
 
 #### `POST /api/workflows/{workflow_id}/compensate`
 - **Description**: Triggers reverse-dependency compensation for completed workflow steps having registered compensation definitions. Consequential compensations pause in `awaiting_approval` and require explicit human operator approval before execution.
+- **Authorization Note (Milestone P10.1.1)**: `caller_permissions` in the request body is untrusted client input and is strictly ignored by the server. Effective permissions are authoritatively derived on the server from the operator session cookie (`pico_operator_session`) or the `X-Pico-Approval-Token` header.
 - **Request Body**:
   ```json
   {
-    "caller_permissions": ["test:execute"],
+    "caller_permissions": [],
     "reason": "Operator requested compensation rollback."
   }
   ```
@@ -1146,6 +1147,63 @@ Workflow-level verification engine gating the release of step outputs to downstr
     }
   ]
   ```
+
+---
+
+### 2.18 Operator Session & Pairing API (Milestones P10.1 & P10.1.1)
+
+Local-first desktop operator authentication and consequential action approval boundary.
+
+#### Design Invariants:
+- **Loopback-Only Bound**: Endpoints are restricted strictly to loopback interfaces (`127.0.0.1`, `::1`). Non-loopback requests are rejected with `403 Forbidden`.
+- **Cross-Process SQLite Persistence**: One-time 6-digit challenges are generated exclusively via the trusted local CLI (`python -m pico.cli.pair`) and persisted in SQLite (`operator_pairing_challenges`). The server validates incoming codes against this store.
+- **No Self-Service Browser Minting**: The previous self-service code generation endpoint (`POST /api/operator/pairing-code`) has been removed to preserve the separate operator ceremony.
+- **Single-Use & Rate-Limited**: Challenges expire in 300 seconds and are consumed atomically. Failed attempts increment an attempt counter; 5 failed attempts trigger lockout.
+- **Bound Operator Identity**: Operator identity is bound to challenge issuance on the server; caller-supplied `approver` parameters cannot override it.
+- **HttpOnly Cookies & CSRF Protection**: Upon successful pairing, the backend sets an `HttpOnly; SameSite=Strict; Path=/api` cookie (`pico_operator_session`) and returns a separate CSRF token in JSON. Mutating operations require matching `X-CSRF-Token` headers.
+
+#### `POST /api/operator/pair`
+- **Description**: Verifies a one-time 6-digit pairing code issued by `python -m pico.cli.pair` and establishes an authenticated operator session.
+- **Request Body**:
+  ```json
+  {
+    "pairing_code": "482910"
+  }
+  ```
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "paired",
+    "approver": "local_operator",
+    "csrf_token": "csrf_f4b7c890123456789abcdef...",
+    "expires_at": "2026-10-25T19:00:00Z"
+  }
+  ```
+- **Response Headers**: `Set-Cookie: pico_operator_session=...; HttpOnly; SameSite=Strict; Path=/api`
+- **Response (400 Bad Request)**: Invalid code format (must be 6 digits).
+- **Response (401 Unauthorized)**: Expired code, already consumed code, invalid code, or lockout threshold exceeded.
+- **Response (403 Forbidden)**: Request originated from non-loopback address.
+
+#### `GET /api/operator/status`
+- **Description**: Inspects whether the calling browser context holds an active, unexpired operator session.
+- **Response (200 OK)**:
+  ```json
+  {
+    "paired": true,
+    "approver": "local_operator",
+    "expires_at": "2026-10-25T19:00:00Z"
+  }
+  ```
+
+#### `POST /api/operator/logout`
+- **Description**: Invalidates the active operator session in SQLite and clears the session cookie.
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "unpaired"
+  }
+  ```
+- **Response Headers**: Clears `pico_operator_session` cookie.
 
 ---
 

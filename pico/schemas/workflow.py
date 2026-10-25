@@ -152,7 +152,7 @@ class WorkflowAdvanceRequest(BaseModel):
     """Parameters to trigger or advance execution of ready workflow steps."""
     caller_permissions: list[str] = Field(
         default_factory=list,
-        description="Caller permissions to evaluate against capability execution requirements",
+        description="Client-supplied permission field; ignored by server-side authorization engine to enforce secure server-derived privileges",
     )
     max_steps: int = Field(
         default=10,
@@ -175,7 +175,7 @@ class WorkflowCompensateRequest(BaseModel):
     """Parameters to trigger reverse-dependency compensation for a workflow run."""
     caller_permissions: list[str] = Field(
         default_factory=list,
-        description="Caller permissions required for consequential compensation execution",
+        description="Client-supplied permission field; ignored by server-side authorization engine to enforce secure server-derived privileges",
     )
     reason: str | None = Field(
         default=None,

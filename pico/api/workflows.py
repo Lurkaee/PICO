@@ -1,8 +1,10 @@
-"""REST API routes for workflow coordination (Milestone P9.1)."""
-
-from fastapi import APIRouter, Depends, Query, status
+import secrets
+from typing import Optional
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
+from pico.api.operator import get_operator_session_optional
+from pico.core.config import settings
 from pico.db.session import get_db
 from pico.schemas.workflow import (
     WorkflowAdvanceRequest,
@@ -14,7 +16,48 @@ from pico.schemas.workflow import (
     WorkflowRunResponse,
     WorkflowVerificationResponse,
 )
+from pico.services.operator_session import OperatorSession
 from pico.workflow.service import WorkflowService
+
+SAFE_DEFAULT_PERMISSIONS: set[str] = {
+    "tools:calculate",
+    "tools:validate",
+    "projects:read",
+    "tasks:read",
+    "system:diagnostics",
+    "test:execute",
+}
+
+PRIVILEGED_OPERATOR_PERMISSIONS: set[str] = {
+    "homeassistant:actuate",
+    "os:inspect",
+    "os:launch",
+    "filesystem:write",
+    "browser:open",
+    "admin:consequential",
+}
+
+
+def derive_workflow_permissions(
+    operator_session: Optional[OperatorSession],
+    x_approval_token: Optional[str],
+) -> set[str]:
+    """
+    Derives trusted server-side permissions for workflow execution.
+    Untrusted caller_permissions supplied in HTTP request bodies are strictly ignored.
+    """
+    perms = set(SAFE_DEFAULT_PERMISSIONS)
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    has_token = bool(
+        configured_secret
+        and x_approval_token
+        and secrets.compare_digest(x_approval_token, configured_secret)
+    )
+    has_session = operator_session is not None
+    if has_token or has_session:
+        perms.update(PRIVILEGED_OPERATOR_PERMISSIONS)
+    return perms
+
 
 router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 
@@ -85,12 +128,15 @@ def get_workflow(
 async def advance_workflow(
     workflow_id: str,
     payload: WorkflowAdvanceRequest = WorkflowAdvanceRequest(),
+    operator_session: Optional[OperatorSession] = Depends(get_operator_session_optional),
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> WorkflowRunResponse:
+    effective_perms = derive_workflow_permissions(operator_session, x_approval_token)
     service = WorkflowService(db)
     return await service.advance_workflow(
         run_id=workflow_id,
-        caller_permissions=set(payload.caller_permissions),
+        caller_permissions=effective_perms,
         max_steps=payload.max_steps,
     )
 
@@ -148,13 +194,16 @@ def get_step_verification(
 async def compensate_workflow(
     workflow_id: str,
     payload: WorkflowCompensateRequest = WorkflowCompensateRequest(),
+    operator_session: Optional[OperatorSession] = Depends(get_operator_session_optional),
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> WorkflowRunResponse:
+    effective_perms = derive_workflow_permissions(operator_session, x_approval_token)
     service = WorkflowService(db)
     return await service.compensate_workflow(
         run_id=workflow_id,
         reason=payload.reason,
-        caller_permissions=set(payload.caller_permissions),
+        caller_permissions=effective_perms,
     )
 
 
