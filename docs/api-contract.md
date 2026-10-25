@@ -31,6 +31,9 @@ The desktop client implements a structured error model mapping transport, timeou
 1. **Zero Blind Retries on Mutating Endpoints**: Requests to mutating endpoints (`POST`, `PUT`, `DELETE`) resulting in network timeout or transport interruption are classified as **"Outcome unknown"**. The client strictly never automatically replays these mutations.
 2. **Single-Flight Health Probing**: Health probes against `/health` are single-flighted, preventing redundant concurrent probes. Backoff begins at 3 seconds, scales by 1.5x, and caps at 30 seconds with jitter.
 3. **Session Revalidation**: When backend connectivity recovers, the client immediately probes `GET /api/operator/status` before re-enabling consequential approval controls.
+4. **Entity-Scoped Ambiguous Mutation Locks (Milestone P10.2.1)**: When a mutation (`POST`, `PUT`, `DELETE`) encounters network timeout or transport failure, the affected entity is locked in an ambiguous state in client memory. All further mutation actions on the entity are disabled until an explicit `Reconcile` action performs an authoritative `GET` query to synchronize real server state.
+5. **Service Worker Cache Boundary (Milestone P10.2.1)**: Cache storage is strictly restricted to static shell assets (`/`, `/index.html`, `/favicon.ico`, `/manifest.webmanifest`, `/manifest.json`, `/vite.svg`, `/assets/*`). All non-GET methods, cross-origin requests, `/api/*`, `/health`, and schema/doc endpoints (`/openapi.json`, `/docs`, `/redoc`) strictly bypass the cache.
+6. **Connectivity Lifecycle & StrictMode Safety (Milestone P10.2.1)**: Disposed `ConnectivityManager` instances are never restarted during React StrictMode effect replay; a fresh viable manager is cleanly instantiated. Reconnection triggers operator session revalidation on confirmed backend reachability (`online` or `degraded`) regardless of local inference provider status.
 
 ---
 

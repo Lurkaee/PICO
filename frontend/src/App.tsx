@@ -60,7 +60,7 @@ export const App: React.FC = () => {
     setActiveConversation(conv);
   };
 
-  const handleReconnected = () => {
+  const handleReconnected = React.useCallback(() => {
     // Revalidate operator session status immediately upon confirmed backend recovery
     api
       .getOperatorSession()
@@ -72,7 +72,7 @@ export const App: React.FC = () => {
       .listExecutions('awaiting_approval', 50)
       .then((items) => setPendingApprovalsCount(items.length))
       .catch(() => {});
-  };
+  }, []);
 
   return (
     <ConnectivityProvider onReconnected={handleReconnected}>

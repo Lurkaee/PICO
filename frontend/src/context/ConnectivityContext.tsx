@@ -52,39 +52,57 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
   manager: customManager,
   onReconnected,
 }) => {
-  const managerRef = useRef<ConnectivityManager | null>(null);
-  if (!managerRef.current) {
-    managerRef.current = customManager ?? new ConnectivityManager();
-  }
-  const manager = managerRef.current;
+  const onReconnectedRef = useRef(onReconnected);
+  useEffect(() => {
+    onReconnectedRef.current = onReconnected;
+  });
 
-  const [state, setState] = useState<ConnectivityState>(manager.getState());
+  // Track the active manager instance.
+  const managerRef = useRef<ConnectivityManager>(customManager ?? new ConnectivityManager());
+  if (customManager && managerRef.current !== customManager) {
+    managerRef.current = customManager;
+  }
+
+  const [state, setState] = useState<ConnectivityState>(() => managerRef.current.getState());
   const [drafts, setDrafts] = useState<DraftMessage[]>([]);
-  const previousStatusRef = useRef<ConnectivityStatus>(state.status);
+  const previousReachableRef = useRef<boolean>(
+    managerRef.current.getState().isOnline || managerRef.current.getState().isDegraded
+  );
 
   useEffect(() => {
-    const unsubscribe = manager.subscribe((newState) => {
-      const prev = previousStatusRef.current;
-      previousStatusRef.current = newState.status;
+    // If the manager in managerRef was disposed (e.g. from StrictMode unmount cleanup)
+    // and no customManager was passed, construct a fresh viable manager.
+    let currentManager = customManager ?? managerRef.current;
+    if (!customManager && currentManager.disposed) {
+      currentManager = new ConnectivityManager();
+      managerRef.current = currentManager;
+      setState(currentManager.getState());
+      previousReachableRef.current = currentManager.getState().isOnline || currentManager.getState().isDegraded;
+    }
+
+    const unsubscribe = currentManager.subscribe((newState) => {
+      const wasReachable = previousReachableRef.current;
+      const isNowReachable = newState.isOnline || newState.isDegraded;
+      previousReachableRef.current = isNowReachable;
 
       setState(newState);
 
-      // Trigger recovery callback when transitioning from offline/reconnecting to online
-      if ((prev === 'offline' || prev === 'reconnecting') && newState.status === 'online') {
-        onReconnected?.();
+      // Trigger recovery callback when transitioning from offline/reconnecting to reachable (online or degraded)
+      if (!wasReachable && isNowReachable) {
+        onReconnectedRef.current?.();
       }
     });
 
-    manager.start();
+    currentManager.start();
 
     return () => {
       unsubscribe();
       // Only dispose if we created the manager internally
       if (!customManager) {
-        manager.dispose();
+        currentManager.dispose();
       }
     };
-  }, [manager, customManager, onReconnected]);
+  }, [customManager]);
 
   // Draft operations (Strictly in-memory!)
   const saveDraft = (
@@ -140,9 +158,9 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
       ...state,
       connectivity: state.status,
       isBackendReachable,
-      checkNow: () => manager.probeHealth(),
-      reportInferenceDegraded: (reason: string) => manager.reportInferenceDegraded(reason),
-      clearInferenceDegraded: () => manager.clearInferenceDegraded(),
+      checkNow: () => managerRef.current.probeHealth(),
+      reportInferenceDegraded: (reason: string) => managerRef.current.reportInferenceDegraded(reason),
+      clearInferenceDegraded: () => managerRef.current.clearInferenceDegraded(),
       drafts,
       saveDraft,
       addDraft,
@@ -150,7 +168,7 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
       removeDraft,
       clearDrafts,
     }),
-    [state, isBackendReachable, drafts, manager]
+    [state, isBackendReachable, drafts]
   );
 
   return (

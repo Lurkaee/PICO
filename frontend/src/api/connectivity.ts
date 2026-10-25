@@ -108,6 +108,14 @@ export class ConnectivityManager {
     }
   }
 
+  public get disposed(): boolean {
+    return this.isDisposed;
+  }
+
+  public isBackendReachable(): boolean {
+    return this.status === 'online' || this.status === 'degraded';
+  }
+
   public start(): void {
     if (this.isDisposed) return;
     this.probeHealth();

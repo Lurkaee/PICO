@@ -144,6 +144,22 @@ export interface StepVerificationRecord {
   timestamp?: string;
 }
 
+export interface WorkflowCompensation {
+  id: string;
+  workflow_run_id: string;
+  workflow_step_id: string;
+  original_tool_execution_id?: string | null;
+  compensation_capability_id: string;
+  compensation_capability_version: string;
+  compensation_tool_execution_id?: string | null;
+  status: string;
+  input_digest: string;
+  order_index?: number;
+  reason?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorkingMemoryItem {
   id: string;
   session_id: string;

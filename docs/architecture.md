@@ -541,3 +541,9 @@ Target Environment:
   - Ambiguous outcome integrity: interrupted chat streams tagged `[Response stream interrupted]`; mutations with dropped responses marked "Outcome unknown" with strictly zero blind retries.
   - Operator session revalidation: immediate revalidation on reconnect before unlocking consequential approval controls.
   - *Status*: **P10.2 VERIFIED**.
+- **P10.2.1 Offline Recovery, Mutation Safety & Cache Boundary Hardening**:
+  - `ConnectivityManager` lifecycle safety: React StrictMode mount-unmount-remount replay resilience; fresh manager instantiation on disposed instance; decoupled `onReconnected` callback reference stability; revalidation on backend reachability recovery regardless of provider status.
+  - Hardened Service Worker cache boundaries: Version `pico-shell-v2` with explicit static same-origin allowlist (`/`, `/index.html`, `/favicon.ico`, `/manifest.webmanifest`, `/manifest.json`, `/vite.svg`, `/assets/*`); explicit network bypass for cross-origin, mutations, `/api/*`, `/health`, and `/openapi.json`, `/docs`, `/redoc`.
+  - Entity-scoped ambiguous mutation locks: Mutating actions in `ApprovalInbox`, `WorkflowTimeline`, `MemoryInspector`, and `VoiceControl` enter a locked ambiguous state on network timeout/drop, requiring explicit reconciliation against authoritative backend GET endpoints.
+  - Verification state retention: In-memory verification records in `WorkflowTimeline` retained on fetch error with stale badge and timestamp indicator.
+  - *Status*: **P10.2.1 VERIFIED**.
