@@ -2,6 +2,7 @@ import secrets
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
+from pico.api.operator import get_operator_session_optional
 from pico.capabilities.registry import registry
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError
@@ -10,6 +11,7 @@ from pico.repositories.event_ledger_repo import EventLedgerRepository
 from pico.repositories.procedural_memory_repo import ProceduralMemoryRepository
 from pico.repositories.tool_execution_repo import ToolExecutionRepository
 from pico.schemas.tools import (
+
     CapabilityResponse,
     LedgerEventListResponse,
     LedgerEventResponse,
@@ -93,6 +95,7 @@ async def submit_execution(
     payload: ToolExecutionCreate,
     execute_now: bool = Query(default=True, description="Immediately execute if non-consequential and queued"),
     x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    operator_session=Depends(get_operator_session_optional),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
@@ -107,23 +110,24 @@ async def submit_execution(
         "admin:consequential",
     }
     effective_perms = set(default_perms)
-    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN to grant permission
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    is_authorized = bool(operator_session is not None or (configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret)))
+
+    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN or active Operator Session
     if payload.capability_id == "homeassistant.test_light_actuate":
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+        if is_authorized:
             effective_perms.add("homeassistant:actuate")
     elif payload.capability_id == "os.inspect_windows":
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+        if is_authorized:
             effective_perms.add("os:inspect")
     elif payload.capability_id == "os.launch_application":
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+        if is_authorized:
             effective_perms.add("os:launch")
     elif payload.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+        if is_authorized:
             effective_perms.add("filesystem:write")
     elif payload.capability_id == "browser.open_page":
-        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+        if is_authorized:
             effective_perms.add("browser:open")
 
     execution = engine.submit(
@@ -199,6 +203,7 @@ def get_execution(
 async def run_execution(
     execution_id: str,
     x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    operator_session=Depends(get_operator_session_optional),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
@@ -217,23 +222,24 @@ async def run_execution(
         "admin:consequential",
     }
     effective_perms = set(default_perms)
-    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN to grant permission
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    is_authorized = bool(operator_session is not None or (configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret)))
+
+    # Physical actuation and OS automation require verified server-side APPROVAL_SECRET_TOKEN or active Operator Session
     if item.capability_id == "homeassistant.test_light_actuate":
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+        if is_authorized:
             effective_perms.add("homeassistant:actuate")
     elif item.capability_id == "os.inspect_windows":
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+        if is_authorized:
             effective_perms.add("os:inspect")
     elif item.capability_id == "os.launch_application":
-        if settings.APPROVAL_SECRET_TOKEN and x_approval_token == settings.APPROVAL_SECRET_TOKEN:
+        if is_authorized:
             effective_perms.add("os:launch")
     elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+        if is_authorized:
             effective_perms.add("filesystem:write")
     elif item.capability_id == "browser.open_page":
-        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-        if configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret):
+        if is_authorized:
             effective_perms.add("browser:open")
 
     execution = await engine.execute(execution_id, caller_permissions=effective_perms)
@@ -249,6 +255,7 @@ def approve_execution(
     execution_id: str,
     payload: ToolApprovalRequest,
     x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    operator_session=Depends(get_operator_session_optional),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     repo = ToolExecutionRepository(db)
@@ -256,24 +263,26 @@ def approve_execution(
     if not item:
         raise EntityNotFoundError("ToolExecution", execution_id)
 
-    # Physical actuation, application launch, and filesystem writes must fail closed when APPROVAL_SECRET_TOKEN is unset, missing, or invalid.
-    if item.capability_id == "homeassistant.test_light_actuate":
-        if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
-            raise AuthorizationError("Physical actuation approval fails closed without valid X-Pico-Approval-Token.")
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    has_token = bool(configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret))
+    has_session = operator_session is not None
+
+    # High-risk physical actuation, application launch, and filesystem writes
+    if item.capability_id in (
+        "homeassistant.test_light_actuate",
+        "os.launch_application",
+        "filesystem.apply_staged_diff",
+        "filesystem.rollback_staged_diff",
+    ):
+        if not has_token and not has_session:
+            raise AuthorizationError("Consequential action approval fails closed without valid X-Pico-Approval-Token or active Operator Session.")
+        authenticated_principal = "authenticated_token_holder" if has_token else "local_operator"
+    elif has_token:
         authenticated_principal = "authenticated_token_holder"
-    elif item.capability_id == "os.launch_application":
-        if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
-            raise AuthorizationError("Application launch approval fails closed without valid X-Pico-Approval-Token.")
-        authenticated_principal = "authenticated_token_holder"
-    elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-        configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-        if not configured_secret or not x_approval_token or not secrets.compare_digest(x_approval_token, configured_secret):
-            raise AuthorizationError("Filesystem modification approval fails closed without valid X-Pico-Approval-Token.")
-        authenticated_principal = "authenticated_token_holder"
-    elif settings.APPROVAL_SECRET_TOKEN:
-        if x_approval_token != settings.APPROVAL_SECRET_TOKEN:
-            raise AuthorizationError("Invalid or missing approval authorization token.")
-        authenticated_principal = "authenticated_token_holder"
+    elif has_session:
+        authenticated_principal = "local_operator"
+    elif configured_secret:
+        raise AuthorizationError("Invalid or missing approval authorization token or operator session.")
     else:
         clean_approver = (payload.approver or "").strip()
         if not clean_approver or clean_approver not in settings.TRUSTED_APPROVER_IDENTITIES:
@@ -285,7 +294,7 @@ def approve_execution(
     engine = ToolExecutionEngine(db, registry)
     execution = engine.approve(
         execution_id=execution_id,
-        approver=payload.approver,
+        approver=payload.approver or (operator_session.approver if operator_session else None),
         notes=payload.notes,
         approval_token=x_approval_token,
         authenticated_principal=authenticated_principal,

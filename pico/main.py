@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
@@ -10,6 +12,7 @@ from pico.api.conversations import router as conversations_router
 from pico.api.health import router as health_router
 from pico.api.homeassistant import router as homeassistant_router
 from pico.api.memory import router as memory_router
+from pico.api.operator import router as operator_router
 from pico.api.perception import router as perception_router
 from pico.api.projects import router as projects_router
 from pico.api.filesystem import router as filesystem_router
@@ -17,6 +20,7 @@ from pico.api.scheduler import router as scheduler_router
 from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
 from pico.api.workflows import router as workflows_router
+
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
 from pico.db.base import Base
@@ -62,6 +66,23 @@ app = FastAPI(
     description="PICO: Personal Intelligence Coordinator & Operator",
     lifespan=lifespan,
 )
+
+# Cross-Origin Resource Sharing (Loopback / Local Desktop Web Experience)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 # Exception Handlers
@@ -217,6 +238,7 @@ async def pico_error_handler(request: Request, exc: PicoError) -> JSONResponse:
 
 # Include API Routers
 app.include_router(health_router)
+app.include_router(operator_router)
 app.include_router(conversations_router)
 app.include_router(projects_router)
 app.include_router(tasks_router)
@@ -228,3 +250,29 @@ app.include_router(homeassistant_router)
 app.include_router(filesystem_router)
 app.include_router(workflows_router)
 app.include_router(scheduler_router)
+
+# Static Frontend Production Serving (When built into frontend/dist)
+frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if (frontend_dist / "assets").exists():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+
+
+@app.middleware("http")
+async def spa_fallback_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if response.status_code == 404 and request.method in ("GET", "HEAD"):
+        path = request.url.path.lstrip("/")
+        if not (path.startswith("api") or path in ("health", "docs", "redoc", "openapi.json")):
+            target_file = frontend_dist / path
+            if target_file.is_file():
+                from starlette.responses import FileResponse
+
+                return FileResponse(str(target_file))
+            index_file = frontend_dist / "index.html"
+            if index_file.is_file():
+                from starlette.responses import FileResponse
+
+                return FileResponse(str(index_file))
+    return response

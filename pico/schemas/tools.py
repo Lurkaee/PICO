@@ -72,8 +72,9 @@ class ToolExecutionListResponse(BaseModel):
 
 
 class ToolApprovalRequest(BaseModel):
-    approver: str = Field(min_length=1, max_length=128)
+    approver: str | None = Field(default=None, max_length=128)
     notes: str | None = None
+
 
 
 class LedgerEventResponse(BaseModel):

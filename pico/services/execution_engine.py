@@ -201,7 +201,9 @@ class ToolExecutionEngine:
             "filesystem.rollback_staged_diff",
         ):
             configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-            if not configured_secret or not approval_token or not secrets.compare_digest(approval_token, configured_secret):
+            if authenticated_principal == "local_operator":
+                recorded_principal = "local_operator"
+            elif not configured_secret or not approval_token or not secrets.compare_digest(approval_token, configured_secret):
                 self.ledger_repo.append(
                     event_type="approval_denied",
                     execution_id=execution.id,
@@ -221,7 +223,8 @@ class ToolExecutionEngine:
                 raise AuthorizationError(
                     f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
                 )
-            recorded_principal = "authenticated_token_holder"
+            else:
+                recorded_principal = "authenticated_token_holder"
         elif authenticated_principal:
             recorded_principal = authenticated_principal
         elif approval_token and settings.APPROVAL_SECRET_TOKEN and secrets.compare_digest(approval_token, settings.APPROVAL_SECRET_TOKEN):

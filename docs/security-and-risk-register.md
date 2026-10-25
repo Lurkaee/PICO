@@ -115,3 +115,13 @@ Before PICO is authorized to execute real external actions (file writing outside
    - Reverse-dependency compensation executed only for explicitly registered compensation definitions; consequential compensations require separate human operator approval and cannot inherit approvals from the original action.
    - Crash recovery reconciles interrupted verifications truthfully; unverified outputs are never released on restart without a verified outcome.
    - Automated tests run against temporary SQLite databases and deterministic mock capabilities; zero external side effects or cloud network calls.
+12. **Desktop Web UI Operator Session Safety Gate (Milestone P10.1)**:
+   - `APPROVAL_SECRET_TOKEN` is a server-side-only secret; it is never injected into `VITE_*` environment variables, never embedded in the JavaScript bundle, never returned in API responses, never stored in browser `localStorage` / `sessionStorage`, and never logged.
+   - Local operator pairing is available exclusively over the loopback interface (`127.0.0.1` / `::1`); the `/api/operator/pair` endpoint returns `403 Forbidden` for non-loopback clients.
+   - The pairing code is a 6-digit CSPRNG-sourced token with a 300-second TTL; it can only be consumed once.
+   - After successful pairing the server issues an `HttpOnly; SameSite=Strict; Path=/api` cookie (`pico_operator_session`) and returns a separate CSRF token in the JSON body; the cookie is inaccessible to JavaScript.
+   - Every mutating request guarded by operator-session authorization must present the CSRF token in the `X-CSRF-Token` header; validation uses `hmac.compare_digest` to prevent timing oracle attacks.
+   - Session expiry is enforced server-side; the browser cannot extend session lifetime.
+   - Consequential tool-execution approvals validate both the session cookie and the CSRF token before granting `authenticated_principal="local_operator"`.
+   - SPA serving is implemented via HTTP middleware response-code interception (not a catch-all route); `POST /api/*`, `PUT /api/*`, and all non-GET API methods return `404 Not Found` (not `405 Method Not Allowed` or SPA HTML) for undefined routes.
+   - Automated tests in `tests/test_operator_session.py` verify: loopback restriction, one-time code consumption, CSRF rejection, approval via operator session, and SPA/API isolation.

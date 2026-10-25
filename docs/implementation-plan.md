@@ -176,6 +176,15 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - **Status**: **P9.1, P9.2 & P9.3 COMPLETED & VERIFIED**.
 
 ### Milestone P10: Unified PICO Experience
-- [ ] **P10.1 Desktop Web Experience**: Streaming chat, voice toggle, memory inspector, task timeline, approvals.
+- [x] **P10.1 Desktop Web Experience**: Streaming chat, voice push-to-talk, memory inspector, workflow timeline, approvals, system status.
+  - **Frontend stack**: React 19, TypeScript 5.7, Vite 6, Vitest, pnpm — `frontend/` directory.
+  - **Streaming chat**: fetch-based SSE parser (`frontend/src/api/sse.ts`) handling split chunks, multi-event packets, UTF-8 boundaries, completion, error, and user-cancellation; no automatic resubmission; no duplicate messages.
+  - **Operator session & security** (`pico/services/operator_session.py`, `pico/api/operator.py`): local loopback-only pairing via 6-digit one-time code (300 s TTL), `HttpOnly SameSite=Strict` session cookie, timing-safe CSRF token; `APPROVAL_SECRET_TOKEN` never reaches browser or logs; 6 dedicated tests in `tests/test_operator_session.py`.
+  - **Consequential approvals**: `ApprovalInbox` locks action buttons and directs user to pair before enabling; backend validates operator session + CSRF on every `/api/tools/executions/{id}/approve` call; `authenticated_principal="local_operator"` replaces raw token on server side.
+  - **Components**: `ChatPanel` (streaming conversation), `VoiceControl` (explicit PTT, `user_consent=true`), `WorkflowTimeline` (DAG + verification gates A–D), `MemoryInspector` (FTS5 semantic search, confirmed deletion), `ApprovalInbox`, `SystemStatus`, `PairingModal`.
+  - **SPA serving**: FastAPI middleware fallback (not a catch-all `GET` route) serves `frontend/dist` for non-API 404s; API routes at any method remain properly isolated; test `test_spa_fallback_serving_and_api_isolation` verifies `POST /api/nonexistent` → 404, not 405 or SPA.
+  - **CI**: `frontend` job in `.github/workflows/ci.yml` (Node 22, pnpm 10, frozen lockfile, typecheck, vitest, vite build).
+  - **Test suite**: 20 frontend tests (5 SSE, 4 chat, 3 voice, 2 memory, 3 workflow, 3 approvals) — all passing; 460 backend tests — all passing.
+  - **Acceptance criteria met**: zero secrets in bundle; zero auth weakening; all pre-existing backend tests green; `git diff --check` clean; `pnpm run typecheck` clean; `pnpm run build` 300 kB gzipped bundle.
 - [ ] **P10.2 Offline Resilience**: Graceful degradation when inference or network is offline.
-- **Status**: **PLANNED**.
+- **Status**: **P10.1 COMPLETED & VERIFIED**. P10.2 PLANNED.
