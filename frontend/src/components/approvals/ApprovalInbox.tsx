@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { ShieldCheck, ShieldAlert, Check, X, AlertTriangle, RefreshCw, Lock } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, Check, X, AlertTriangle, RefreshCw, Lock, Clock } from 'lucide-react';
 import { api } from '../../api/client';
 import { OperatorSessionState, ToolExecution } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 
 interface ApprovalInboxProps {
   sessionState: OperatorSessionState;
@@ -9,12 +10,15 @@ interface ApprovalInboxProps {
 }
 
 export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOpenPairingModal }) => {
+  const { isBackendReachable } = useConnectivity();
   const [executions, setExecutions] = useState<ToolExecution[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [approvalNote, setApprovalNote] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
+  const [isStale, setIsStale] = useState(false);
 
   const fetchAwaitingApprovals = async () => {
     setLoading(true);
@@ -22,11 +26,13 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     try {
       const items = await api.listExecutions('awaiting_approval');
       setExecutions(items || []);
+      setLastSuccessfulFetch(new Date());
+      setIsStale(false);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
-      setExecutions([]);
+      // Retain in-memory items during transient network failure; do not wipe array
+      setIsStale(true);
     } finally {
-
       setLoading(false);
     }
   };
@@ -38,6 +44,10 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
   }, []);
 
   const handleApprove = async (id: string) => {
+    if (!isBackendReachable) {
+      setActionError('Consequential approval controls are locked while backend is offline.');
+      return;
+    }
     if (!sessionState.paired) {
       onOpenPairingModal();
       return;
@@ -50,13 +60,22 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       setApprovalNote('');
       await fetchAwaitingApprovals();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setActionError('Outcome unknown: network interrupted during approval submission. Please refresh to inspect backend state before retrying.');
+      } else {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setProcessingId(null);
     }
   };
 
   const handleCancel = async (id: string) => {
+    if (!isBackendReachable) {
+      setActionError('Consequential rejection controls are locked while backend is offline.');
+      return;
+    }
     setProcessingId(id);
     setActionError(null);
     try {
@@ -64,7 +83,12 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       setConfirmingId(null);
       await fetchAwaitingApprovals();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setActionError('Outcome unknown: network interrupted during rejection submission. Please refresh to inspect backend state before retrying.');
+      } else {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setProcessingId(null);
     }
@@ -74,7 +98,14 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     <div className="panel-view">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Consequential Approval Inbox</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Consequential Approval Inbox</h2>
+            {isStale && lastSuccessfulFetch && (
+              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
+                <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             Actions with side effects (OS automation, physical actuation, filesystem mutations) require explicit operator confirmation.
           </p>
@@ -84,6 +115,26 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           Refresh
         </button>
       </div>
+
+      {!isBackendReachable && (
+        <div
+          style={{
+            padding: '12px 16px',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            color: '#fca5a5',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            fontSize: '0.85rem',
+          }}
+          role="alert"
+        >
+          <Lock style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <span>Backend offline: consequential controls are locked until connectivity and session state are revalidated.</span>
+        </div>
+      )}
 
       {!sessionState.paired && (
         <div
@@ -238,8 +289,9 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                       <button
                         className="btn btn-danger"
                         onClick={() => handleCancel(item.id)}
-                        disabled={isBusy}
+                        disabled={isBusy || !isBackendReachable}
                         style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                        title={!isBackendReachable ? 'Controls locked: backend offline' : 'Reject execution'}
                       >
                         <X style={{ width: 14, height: 14 }} />
                         Reject & Cancel
@@ -247,8 +299,9 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                       <button
                         className="btn btn-primary"
                         onClick={() => handleApprove(item.id)}
-                        disabled={isBusy || !sessionState.paired}
+                        disabled={isBusy || !sessionState.paired || !isBackendReachable}
                         style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                        title={!isBackendReachable ? 'Controls locked: backend offline' : !sessionState.paired ? 'Pair operator session to approve' : 'Confirm execution'}
                       >
                         <Check style={{ width: 14, height: 14 }} />
                         {isBusy ? 'Submitting...' : 'Confirm Approval'}
@@ -260,7 +313,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                     <button
                       className="btn btn-secondary"
                       onClick={() => handleCancel(item.id)}
-                      disabled={isBusy}
+                      disabled={isBusy || !isBackendReachable}
+                      title={!isBackendReachable ? 'Controls locked: backend offline' : 'Reject execution'}
                       style={{ fontSize: '0.8rem' }}
                     >
                       <X style={{ width: 14, height: 14 }} />
@@ -269,8 +323,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                     <button
                       className="btn btn-primary"
                       onClick={() => setConfirmingId(item.id)}
-                      disabled={isBusy || !sessionState.paired}
-                      title={!sessionState.paired ? 'Pair operator session to approve' : 'Approve execution'}
+                      disabled={isBusy || !sessionState.paired || !isBackendReachable}
+                      title={!isBackendReachable ? 'Controls locked: backend offline' : !sessionState.paired ? 'Pair operator session to approve' : 'Approve execution'}
                       style={{ fontSize: '0.8rem' }}
                     >
                       <Check style={{ width: 14, height: 14 }} />

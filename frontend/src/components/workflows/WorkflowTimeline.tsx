@@ -2,14 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { GitBranch, Play, StopCircle, RefreshCw, CheckCircle2, XCircle, Clock, AlertTriangle, ShieldCheck, HelpCircle } from 'lucide-react';
 import { api } from '../../api/client';
 import { StepVerificationRecord, WorkflowRun, WorkflowStep } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 
 export const WorkflowTimeline: React.FC = () => {
+  const { isBackendReachable } = useConnectivity();
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowRun | null>(null);
   const [verifications, setVerifications] = useState<StepVerificationRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
+  const [isStale, setIsStale] = useState(false);
 
   const fetchWorkflows = async () => {
     setLoading(true);
@@ -17,6 +21,8 @@ export const WorkflowTimeline: React.FC = () => {
     try {
       const runs = await api.listWorkflows(20, 0);
       setWorkflows(runs || []);
+      setLastSuccessfulFetch(new Date());
+      setIsStale(false);
       setSelectedWorkflow((curr) => {
         if (!curr && runs && runs.length > 0) return runs[0];
         if (curr && runs) {
@@ -27,7 +33,8 @@ export const WorkflowTimeline: React.FC = () => {
       });
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
-      setWorkflows([]);
+      // Retain in-memory view during transient disconnection; do not wipe array!
+      setIsStale(true);
     } finally {
       setLoading(false);
     }
@@ -62,6 +69,10 @@ export const WorkflowTimeline: React.FC = () => {
 
   const handleAdvance = async () => {
     if (!selectedWorkflow) return;
+    if (!isBackendReachable) {
+      setActionError('Cannot advance workflow while backend is offline. Automatic retry is prevented.');
+      return;
+    }
     setProcessing(true);
     setActionError(null);
     try {
@@ -69,7 +80,12 @@ export const WorkflowTimeline: React.FC = () => {
       setSelectedWorkflow(advanced);
       await fetchWorkflows();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setActionError('Outcome unknown: network interrupted during workflow advance. Please refresh state to inspect before repeating.');
+      } else {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setProcessing(false);
     }
@@ -77,6 +93,10 @@ export const WorkflowTimeline: React.FC = () => {
 
   const handleCancel = async () => {
     if (!selectedWorkflow) return;
+    if (!isBackendReachable) {
+      setActionError('Cannot cancel workflow while backend is offline. Automatic retry is prevented.');
+      return;
+    }
     setProcessing(true);
     setActionError(null);
     try {
@@ -84,7 +104,12 @@ export const WorkflowTimeline: React.FC = () => {
       setSelectedWorkflow(cancelled);
       await fetchWorkflows();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setActionError('Outcome unknown: network interrupted during workflow cancellation. Please refresh state to inspect before repeating.');
+      } else {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setProcessing(false);
     }
@@ -142,7 +167,14 @@ export const WorkflowTimeline: React.FC = () => {
     <div className="panel-view" style={{ maxWidth: 1400 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Workflows & Independent Verification</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Workflows & Independent Verification</h2>
+            {isStale && lastSuccessfulFetch && (
+              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
+                <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             Deterministic DAG coordination with evidence auditing before dependent step execution.
           </p>
@@ -237,8 +269,9 @@ export const WorkflowTimeline: React.FC = () => {
                       <button
                         className="btn btn-primary"
                         onClick={handleAdvance}
-                        disabled={processing}
+                        disabled={processing || !isBackendReachable}
                         style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                        title={!isBackendReachable ? 'Controls locked: backend is offline' : 'Advance workflow step'}
                       >
                         <Play style={{ width: 14, height: 14 }} />
                         Advance Step
@@ -246,8 +279,9 @@ export const WorkflowTimeline: React.FC = () => {
                       <button
                         className="btn btn-secondary"
                         onClick={handleCancel}
-                        disabled={processing}
+                        disabled={processing || !isBackendReachable}
                         style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                        title={!isBackendReachable ? 'Controls locked: backend is offline' : 'Cancel workflow run'}
                       >
                         <StopCircle style={{ width: 14, height: 14 }} />
                         Cancel
