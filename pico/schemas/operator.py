@@ -12,7 +12,7 @@ class PairingCodeResponse(BaseModel):
 
 class PairRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=12, description="One-time operator pairing code")
-    approver: Optional[str] = Field(default="human_operator", description="Operator identity name")
+
 
 
 class PairResponse(BaseModel):
