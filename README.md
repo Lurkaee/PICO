@@ -97,14 +97,37 @@ pnpm run typecheck      # TypeScript strict type check
 
 ### Local operator pairing (for consequential approvals)
 
-Consequential tool-execution approvals require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is transmitted to the browser.
+Consequential tool-execution approvals and privileged workflow operations require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is ever transmitted to the browser.
 
 ```powershell
-# With the backend running, generate a one-time pairing code:
+# In a separate terminal with the backend running, generate a single-use 6-digit challenge:
 python -m pico.cli.pair
-# Enter the 6-digit code shown in the desktop UI's pairing modal.
-# The HttpOnly session cookie is set; CSRF token is returned to the browser.
+
+# Output:
+# ============================================================
+# PICO Local Operator Pairing
+# ============================================================
+# Pairing Code: 482910
+# Expires in:   300 seconds
+# ============================================================
 ```
+
+Enter the 6-digit code shown into the desktop UI's pairing modal.
+- Challenges are persisted in the local SQLite store (`operator_pairing_challenges`), bridging CLI and backend processes.
+- Codes are single-use, hashed with salt, expire in 300 seconds, and lock out after 5 consecutive failed attempts.
+- Browser-side code minting (`POST /api/operator/pairing-code`) is completely removed to maintain a strict local-operator trust boundary.
+- The approved identity (`local_operator`) is bound to the challenge at CLI generation; caller-supplied approver values cannot override it.
+- Upon successful verification, the backend issues an `HttpOnly; SameSite=Strict` session cookie (`pico_operator_session`) and returns a separate CSRF token in JSON.
+
+#### UI Authorization & Operator States
+The PICO desktop interface accurately distinguishes six operator and action states:
+1. **Unpaired / Read-Only**: The desktop interface can inspect conversation history, view active workflows, search memories, and execute safe non-consequential tools.
+2. **Pairing Required**: Consequential action proposals halt in `awaiting_approval`; approval buttons in the Approval Inbox are locked until an operator pairs via the CLI.
+3. **Authenticated Operator Session**: A verified operator session exists. Consequential actions can be reviewed and approved by the human operator using the cryptographic digest.
+4. **Expired or Revoked Session**: The session has passed its expiration window or was explicitly revoked via logout; approval actions re-lock until a new CLI code is paired.
+5. **Unauthorized Action**: A client or workflow step requested a privileged capability without possessing the required capability permissions; execution fails closed with zero side effects.
+6. **Authorized Pending Approval**: A consequential capability step is authorized to run once approved by the human operator, bound to the SHA-256 canonical input digest.
+
 
 ---
 
@@ -330,23 +353,19 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
 
 ## Automated Tests
 
-Run the full automated test suite (offline, no external network calls):
+Run the full automated test suite (offline, zero external network calls):
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -v
+# Run backend pytest suite (467 tests across all subsystems)
+.\.venv\Scripts\pytest.exe
+
+# Run frontend test suite (20 tests: SSE parser, chat, voice, memory, workflows, approvals)
+cd frontend
+pnpm run test
+pnpm run typecheck
+pnpm run build
+cd ..
+
+# Comprehensive verification script (executes all unit, integration, and security checks)
+powershell -ExecutionPolicy Bypass -File .\scripts\pico-verify.ps1
 ```
-All 89 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
-- `tests/test_automation_scripts.py` (5 tests)
-- `tests/test_bench_runner.py` (9 tests)
-- `tests/test_chat_stream_api.py` (11 tests)
-- `tests/test_cloud_provider.py` (10 tests)
-- `tests/test_conversations.py` (4 tests)
-- `tests/test_foreign_keys.py` (2 tests)
-- `tests/test_health.py` (1 test)
-- `tests/test_messages.py` (5 tests)
-- `tests/test_mock_provider.py` (4 tests)
-- `tests/test_ollama_provider.py` (17 tests)
-- `tests/test_persistence_reopen.py` (1 test)
-- `tests/test_projects.py` (5 tests)
-- `tests/test_routing_persistence.py` (1 test)
-- `tests/test_routing_service.py` (9 tests)
-- `tests/test_tasks.py` (5 tests)
+All tests execute using deterministic mock transports, synthetic OS/filesystem/browser adapters, and isolated temporary SQLite databases.

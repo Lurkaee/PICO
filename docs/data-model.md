@@ -378,3 +378,34 @@ The following entities are planned for subsequent phases and do NOT form part of
   - `created_at` (DATETIME, NOT NULL, INDEX): UTC registration timestamp.
   - `updated_at` (DATETIME, NOT NULL): UTC last update timestamp.
   - `completed_at` (DATETIME, NULLABLE): UTC execution completion timestamp.
+
+---
+
+## 9. Operator Session & Pairing Entities (Milestones P10.1 & P10.1.1)
+
+Persists cross-process pairing challenges and authenticated operator sessions in the shared SQLite database.
+
+### 9.1 `operator_pairing_challenges`
+- Cross-process storage for one-time 6-digit pairing codes generated via `python -m pico.cli.pair` and verified by the FastAPI backend.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `pairch_<uuid>`.
+  - `code_hash` (VARCHAR(64), NOT NULL): SHA-256 hash of `salt + code`. Raw 6-digit code is never stored in plaintext.
+  - `salt` (VARCHAR(32), NOT NULL): Random hexadecimal salt generated per challenge.
+  - `approver` (VARCHAR(128), NOT NULL, DEFAULT `'local_operator'`): Operator identity bound to challenge issuance.
+  - `attempts` (INTEGER, NOT NULL, DEFAULT 0): Number of failed verification attempts (max 5).
+  - `is_locked` (BOOLEAN, NOT NULL, DEFAULT FALSE): Rate-limit lockout flag set when failed attempts >= 5.
+  - `consumed_at` (DATETIME, NULLABLE): UTC timestamp when successfully verified and consumed; prevents replay.
+  - `expires_at` (DATETIME, NOT NULL, INDEX): UTC expiration timestamp (300 seconds from issuance).
+  - `created_at` (DATETIME, NOT NULL, INDEX): UTC challenge generation timestamp.
+
+### 9.2 `operator_sessions`
+- Durable store of active and revoked local operator sessions created following successful pairing.
+- Schema:
+  - `id` (VARCHAR(64), PK): Stable typed prefix `opsess_<uuid>`.
+  - `session_token_hash` (VARCHAR(64), NOT NULL, UNIQUE, INDEX): SHA-256 hash of the session secret transmitted in the `pico_operator_session` cookie.
+  - `csrf_token` (VARCHAR(64), NOT NULL): Timing-safe CSRF validation token transmitted in request bodies / headers.
+  - `approver` (VARCHAR(128), NOT NULL): Authenticated operator identity bound from the pairing challenge.
+  - `is_revoked` (BOOLEAN, NOT NULL, DEFAULT FALSE, INDEX): Revocation flag set upon explicit logout or administrative revocation.
+  - `expires_at` (DATETIME, NOT NULL, INDEX): UTC expiration timestamp (default 1 hour from issuance).
+  - `created_at` (DATETIME, NOT NULL, INDEX): UTC session creation timestamp.
+  - `last_used_at` (DATETIME, NOT NULL): UTC timestamp of most recent authenticated action.

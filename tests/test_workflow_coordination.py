@@ -312,8 +312,12 @@ def test_consequential_action_halts_for_human_approval(db_session: Session) -> N
     assert exec_record is not None
     assert exec_record.status == "awaiting_approval"
 
-    # Human operator approves the tool execution
-    service.engine.approve(exec_record.id, approver="lead_engineer")
+    # Human operator approves the tool execution via authenticated local operator session
+    service.engine.approve(
+        exec_record.id,
+        approver="lead_engineer",
+        authenticated_principal="local_operator",
+    )
     db_session.commit()
 
     # Second advance executes approved execution and completes workflow

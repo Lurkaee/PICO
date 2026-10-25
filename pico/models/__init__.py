@@ -2,6 +2,10 @@ from pico.models.conversation import Conversation
 from pico.models.episodic_memory import EpisodicMemoryItem
 from pico.models.event_ledger import LedgerEvent
 from pico.models.message import Message
+from pico.models.operator_session import (
+    OperatorPairingChallenge,
+    OperatorSessionModel,
+)
 from pico.models.perception_event import PerceptionEvent
 from pico.models.procedural_memory import ProceduralMemoryItem
 from pico.models.project import Project
@@ -33,4 +37,6 @@ __all__ = [
     "WorkflowStep",
     "WorkflowVerification",
     "WorkflowCompensation",
+    "OperatorPairingChallenge",
+    "OperatorSessionModel",
 ]

@@ -194,15 +194,13 @@ class ToolExecutionEngine:
             raise EntityNotFoundError("ToolExecution", execution_id)
 
         # Derive honest server-defined approval principal
-        if execution.capability_id in (
-            "homeassistant.test_light_actuate",
-            "os.launch_application",
-            "filesystem.apply_staged_diff",
-            "filesystem.rollback_staged_diff",
-        ):
+        capability = self.registry.get(execution.capability_id, version=execution.capability_version)
+        is_consequential = bool(capability.metadata.consequential) if capability else True
+
+        if is_consequential:
             configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
             if authenticated_principal == "local_operator":
-                recorded_principal = "local_operator"
+                recorded_principal = approver or "local_operator"
             elif not configured_secret or not approval_token or not secrets.compare_digest(approval_token, configured_secret):
                 self.ledger_repo.append(
                     event_type="approval_denied",
@@ -210,7 +208,7 @@ class ToolExecutionEngine:
                     task_id=execution.task_id,
                     correlation_id=correlation_id,
                     capability_id=execution.capability_id,
-                    payload_json={"reason": "Missing or invalid server approval secret token"},
+                    payload_json={"reason": "Missing or invalid server approval secret token or operator session"},
                     data_classification=execution.data_classification,
                 )
                 action_desc = (
@@ -219,9 +217,11 @@ class ToolExecutionEngine:
                     else "Application launch"
                     if execution.capability_id == "os.launch_application"
                     else "Filesystem modification"
+                    if "filesystem" in execution.capability_id
+                    else "Consequential action"
                 )
                 raise AuthorizationError(
-                    f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
+                    f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN or active Operator Session."
                 )
             else:
                 recorded_principal = "authenticated_token_holder"
@@ -230,7 +230,7 @@ class ToolExecutionEngine:
         elif approval_token and settings.APPROVAL_SECRET_TOKEN and secrets.compare_digest(approval_token, settings.APPROVAL_SECRET_TOKEN):
             recorded_principal = "authenticated_token_holder"
         else:
-            # Fallback for internal direct-engine test invocations
+            # Fallback for internal direct-engine non-consequential invocations
             clean_approver = (approver or "").strip()
             if not clean_approver or clean_approver not in settings.TRUSTED_APPROVER_IDENTITIES:
                 self.ledger_repo.append(

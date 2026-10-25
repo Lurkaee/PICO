@@ -75,23 +75,43 @@ def test_api_consequential_approval_and_execution(client: TestClient) -> None:
     assert data["status"] == "awaiting_approval"
     exec_id = data["id"]
 
-    # 2. Reject untrusted approver
+    # 2. Reject unauthenticated approver even with trusted identity string
     untrusted_res = client.post(
         f"/api/tools/executions/{exec_id}/approve",
         json={"approver": "untrusted_robot_1"},
     )
     assert untrusted_res.status_code == 403
 
-    # 3. Approve with trusted human operator
+    # Naked trusted identity string without session or token must also be rejected
+    naked_identity_res = client.post(
+        f"/api/tools/executions/{exec_id}/approve",
+        json={"approver": "lead_engineer"},
+    )
+    assert naked_identity_res.status_code == 403
+
+    # 3. Pair operator session via trusted CLI challenge
+    from pico.services.operator_session import OperatorSessionService
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(approver="lead_engineer")
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert pair_res.status_code == 200
+    csrf_token = pair_res.json()["csrf_token"]
+
+    # 4. Approve with authenticated operator session and CSRF token
     approve_res = client.post(
         f"/api/tools/executions/{exec_id}/approve",
-        json={"approver": "lead_engineer", "notes": "Approved for testing"},
+        json={"notes": "Approved for testing via operator session"},
+        headers={"X-CSRF-Token": csrf_token},
     )
     assert approve_res.status_code == 200
     assert approve_res.json()["status"] == "queued"
+    assert approve_res.json()["approved_by"] == "lead_engineer"
 
-    # 4. Trigger execution
-    run_res = client.post(f"/api/tools/executions/{exec_id}/execute")
+    # 5. Trigger execution (with active operator session)
+    run_res = client.post(
+        f"/api/tools/executions/{exec_id}/execute",
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert run_res.status_code == 200
     assert run_res.json()["status"] == "succeeded"
     assert run_res.json()["output_data"]["performed"] is True

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, ShieldAlert, ShieldCheck, X, Key, LogOut } from 'lucide-react';
+import { Shield, ShieldAlert, ShieldCheck, X, LogOut, Terminal } from 'lucide-react';
 import { api } from '../../api/client';
 import { OperatorSessionState } from '../../types';
 
@@ -17,10 +17,8 @@ export const PairingModal: React.FC<PairingModalProps> = ({
   onSessionUpdate,
 }) => {
   const [code, setCode] = useState('');
-  const [approver, setApprover] = useState('human_operator');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -33,10 +31,9 @@ export const PairingModal: React.FC<PairingModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const updated = await api.pairOperator(code.trim(), approver);
+      const updated = await api.pairOperator(code.trim());
       onSessionUpdate(updated);
       setCode('');
-      setGeneratedCode(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -50,20 +47,6 @@ export const PairingModal: React.FC<PairingModalProps> = ({
     try {
       await api.logoutOperator();
       onSessionUpdate({ paired: false });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRequestLocalCode = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.requestPairingCode();
-      setGeneratedCode(res.code);
-      setCode(res.code);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -146,11 +129,14 @@ export const PairingModal: React.FC<PairingModalProps> = ({
             </div>
 
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Run the terminal command below to generate a secure pairing code on this machine:
+              To authenticate as the local operator, run the CLI pairing command in your local terminal:
             </p>
 
             <div
               style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
                 padding: '8px 12px',
                 borderRadius: 'var(--radius-sm)',
                 backgroundColor: 'var(--bg-canvas)',
@@ -160,26 +146,13 @@ export const PairingModal: React.FC<PairingModalProps> = ({
                 color: 'var(--text-primary)',
               }}
             >
-              python -m pico.cli.pair
+              <Terminal style={{ width: 14, height: 14, color: 'var(--primary)' }} />
+              <span>python -m pico.cli.pair</span>
             </div>
 
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={handleRequestLocalCode}
-                disabled={loading}
-                style={{ fontSize: '0.8rem' }}
-              >
-                <Key style={{ width: 14, height: 14 }} />
-                Generate Code (Loopback)
-              </button>
-              {generatedCode && (
-                <span style={{ fontSize: '0.8rem', color: 'var(--success)' }}>
-                  Code generated: <strong>{generatedCode}</strong>
-                </span>
-              )}
-            </div>
+            <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)' }}>
+              The terminal command generates a 6-digit challenge bound to the local machine. Operator identity is asserted at the CLI and cannot be modified by the browser.
+            </p>
 
             <form onSubmit={handlePair} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
@@ -206,30 +179,6 @@ export const PairingModal: React.FC<PairingModalProps> = ({
                     fontFamily: 'var(--font-mono)',
                     fontSize: '1rem',
                     letterSpacing: '0.1em',
-                  }}
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="approver-identity-input"
-                  style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: 4 }}
-                >
-                  Operator Identity
-                </label>
-                <input
-                  id="approver-identity-input"
-                  type="text"
-                  value={approver}
-                  onChange={(e) => setApprover(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: 'var(--radius-md)',
-                    border: '1px solid var(--border-default)',
-                    backgroundColor: 'var(--bg-canvas)',
-                    color: 'var(--text-primary)',
-                    fontSize: '0.875rem',
                   }}
                 />
               </div>
