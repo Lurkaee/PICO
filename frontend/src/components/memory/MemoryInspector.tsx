@@ -16,6 +16,7 @@ export const MemoryInspector: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [confirmForgetFactId, setConfirmForgetFactId] = useState<string | null>(null);
+  const [ambiguousFactIds, setAmbiguousFactIds] = useState<Record<string, string>>({});
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
 
@@ -61,9 +62,44 @@ export const MemoryInspector: React.FC = () => {
     loadData();
   };
 
+  const reconcileFact = async (factId: string) => {
+    setLoading(true);
+    setErrorNotice(null);
+    try {
+      const items = await api.getSemanticFacts(50, 0);
+      setSemanticFacts(items);
+      const stillExists = items.some((f) => f.id === factId);
+      if (!stillExists) {
+        setAmbiguousFactIds((prev) => {
+          const next = { ...prev };
+          delete next[factId];
+          return next;
+        });
+        setErrorNotice(`Reconciliation confirmed: memory fact ${factId} was deleted.`);
+      } else {
+        setAmbiguousFactIds((prev) => {
+          const next = { ...prev };
+          delete next[factId];
+          return next;
+        });
+        setErrorNotice(`Reconciliation confirmed: memory fact ${factId} still exists on backend. Controls unlocked.`);
+      }
+    } catch (err) {
+      setErrorNotice(
+        `Reconciliation inconclusive: could not verify memory state (${err instanceof Error ? err.message : String(err)}). Fact deletion remains locked.`
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleForgetFact = async (factId: string) => {
     if (!isBackendReachable) {
       setErrorNotice('Cannot forget memory while offline. Deletion requests are not queued offline.');
+      return;
+    }
+    if (ambiguousFactIds[factId]) {
+      setErrorNotice('Fact deletion outcome is unconfirmed. Reconcile with backend before retrying.');
       return;
     }
     setLoading(true);
@@ -79,11 +115,16 @@ export const MemoryInspector: React.FC = () => {
     } catch (err) {
       const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
       if (isNet) {
-        setErrorNotice('Outcome unknown: network interrupted during memory deletion. Please refresh state to inspect.');
+        setAmbiguousFactIds((prev) => ({
+          ...prev,
+          [factId]: 'Network interrupted during memory deletion; outcome is unconfirmed.',
+        }));
+        setErrorNotice('Outcome unknown: network interrupted during memory deletion. Controls locked until authoritative reconciliation.');
       } else {
         setErrorNotice(err instanceof Error ? err.message : String(err));
       }
     } finally {
+      setConfirmForgetFactId(null);
       setLoading(false);
     }
   };
@@ -249,7 +290,21 @@ export const MemoryInspector: React.FC = () => {
                       </div>
                     </div>
 
-                    {confirmForgetFactId === fact.id ? (
+                    {ambiguousFactIds[fact.id] ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--warning)' }}>Outcome unknown</span>
+                        <button
+                          className="btn btn-secondary"
+                          onClick={() => reconcileFact(fact.id)}
+                          disabled={loading || !isBackendReachable}
+                          style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                          title="Reconcile authoritative memory state from backend"
+                        >
+                          <RefreshCw className={loading ? 'animate-spin' : ''} style={{ width: 12, height: 12 }} />
+                          Reconcile
+                        </button>
+                      </div>
+                    ) : confirmForgetFactId === fact.id ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span style={{ fontSize: '0.75rem', color: 'var(--warning)' }}>Confirm forget?</span>
                         <button

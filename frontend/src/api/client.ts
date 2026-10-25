@@ -17,6 +17,7 @@ import {
   SystemHealth,
   ToolCapability,
   ToolExecution,
+  WorkflowCompensation,
   WorkflowRun,
   WorkingMemoryItem,
 } from '../types';
@@ -261,6 +262,20 @@ export const api = {
 
   async getWorkflowVerifications(workflowId: string): Promise<StepVerificationRecord[]> {
     return request<StepVerificationRecord[]>(`/api/workflows/${workflowId}/verifications`);
+  },
+
+  async compensateWorkflow(workflowId: string, reason?: string): Promise<WorkflowRun> {
+    return request<WorkflowRun>(
+      `/api/workflows/${workflowId}/compensate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason || 'Compensated by operator via workflow UI' }),
+      }
+    );
+  },
+
+  async getWorkflowCompensations(workflowId: string): Promise<WorkflowCompensation[]> {
+    return request<WorkflowCompensation[]>(`/api/workflows/${workflowId}/compensations`);
   },
 
   // --- Tool Capabilities & Executions ---

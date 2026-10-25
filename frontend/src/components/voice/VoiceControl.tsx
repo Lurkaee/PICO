@@ -68,12 +68,10 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
     } catch (err) {
       const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
       if (isNet) {
-        setErrorNotice('Outcome unknown: network interrupted while stopping audio session. Backend may still be processing.');
+        setErrorNotice('Outcome unknown: network interrupted while stopping audio session. Backend state is unconfirmed.');
       } else {
         setErrorNotice(err instanceof Error ? err.message : String(err));
       }
-      setIsRecording(false);
-      setActiveSessionId(null);
     } finally {
       setProcessing(false);
     }
@@ -82,15 +80,21 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
   const cancelSession = async () => {
     if (!activeSessionId) return;
     setProcessing(true);
+    setErrorNotice(null);
     try {
       await api.cancelAudioSession(activeSessionId);
-    } catch {
-      // Ignore cancellation error
-    } finally {
       setIsRecording(false);
       setActiveSessionId(null);
-      setProcessing(false);
       setErrorNotice('Audio capture session cancelled.');
+    } catch (err) {
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setErrorNotice('Outcome unknown: network interrupted while cancelling audio session. Backend session state is unconfirmed.');
+      } else {
+        setErrorNotice(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setProcessing(false);
     }
   };
 
