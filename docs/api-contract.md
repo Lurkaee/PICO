@@ -18,6 +18,20 @@
   ```
   Validation errors return HTTP 422 with field-level breakdown.
 
+### 1.1 Client Error Taxonomy & Resilience Contract (Milestone P10.2)
+
+The desktop client implements a structured error model mapping transport, timeout, and HTTP envelopes:
+- **`NetworkError`**: Transport-level failure (DNS resolution, connection refused, offline host). `is_offline = true`.
+- **`TimeoutError`**: Bounded client-side request timeout (15 seconds default via `AbortController`).
+- **`AuthenticationError`**: HTTP 401 Unauthorized or HTTP 403 Forbidden. Operator session expired, revoked, or missing.
+- **`ProviderUnavailableError`**: HTTP 503 with error codes `PROVIDER_CONNECTION_ERROR`, `PROVIDER_UNAVAILABLE`, or `SCHEDULER_QUEUE_FULL`. Indicates backend is healthy but inference runtime is unavailable.
+- **`ApiError`**: General HTTP errors (400, 404, 409, 422, 500) carrying parsed server error envelopes.
+
+#### Recovery & Ambiguity Rules:
+1. **Zero Blind Retries on Mutating Endpoints**: Requests to mutating endpoints (`POST`, `PUT`, `DELETE`) resulting in network timeout or transport interruption are classified as **"Outcome unknown"**. The client strictly never automatically replays these mutations.
+2. **Single-Flight Health Probing**: Health probes against `/health` are single-flighted, preventing redundant concurrent probes. Backoff begins at 3 seconds, scales by 1.5x, and caps at 30 seconds with jitter.
+3. **Session Revalidation**: When backend connectivity recovers, the client immediately probes `GET /api/operator/status` before re-enabling consequential approval controls.
+
 ---
 
 ## 2. Active Endpoints (Phase 1, Slice 1)

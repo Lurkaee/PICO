@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Mic, Square, XCircle, AlertCircle } from 'lucide-react';
 import { api } from '../../api/client';
 import { PerceptionStatus } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 
 interface VoiceControlProps {
   onTranscription: (text: string) => void;
@@ -9,6 +10,7 @@ interface VoiceControlProps {
 }
 
 export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, disabled }) => {
+  const { isBackendReachable } = useConnectivity();
   const [perceptionStatus, setPerceptionStatus] = useState<PerceptionStatus | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -32,6 +34,10 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
   }, []);
 
   const startSession = async () => {
+    if (!isBackendReachable) {
+      setErrorNotice('Voice capture unavailable while backend is offline.');
+      return;
+    }
     setErrorNotice(null);
     setProcessing(true);
     try {
@@ -60,7 +66,12 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
         setErrorNotice('No speech detected or adapter returned empty transcription.');
       }
     } catch (err) {
-      setErrorNotice(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setErrorNotice('Outcome unknown: network interrupted while stopping audio session. Backend may still be processing.');
+      } else {
+        setErrorNotice(err instanceof Error ? err.message : String(err));
+      }
       setIsRecording(false);
       setActiveSessionId(null);
     } finally {
@@ -92,9 +103,11 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
           type="button"
           className="ptt-button"
           onClick={startSession}
-          disabled={disabled || processing || !isPerceptionAvailable}
+          disabled={disabled || processing || !isPerceptionAvailable || !isBackendReachable}
           title={
-            !isPerceptionAvailable
+            !isBackendReachable
+              ? 'Voice capture unavailable while backend is offline'
+              : !isPerceptionAvailable
               ? 'Voice perception is disabled or unavailable on backend'
               : 'Push-to-talk: Explicit audio capture'
           }

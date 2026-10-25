@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, Cpu, Eye, Wrench, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import { Activity, Cpu, Eye, Wrench, RefreshCw, AlertCircle, CheckCircle, Clock } from 'lucide-react';
 import { api } from '../../api/client';
 import { PerceptionStatus, SchedulerMetrics, SystemHealth, ToolCapability } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 
 export const SystemStatus: React.FC = () => {
+  const { connectivity, isBackendReachable, inferenceDegraded } = useConnectivity();
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<{
     enabled: boolean;
@@ -16,6 +18,8 @@ export const SystemStatus: React.FC = () => {
   const [capabilities, setCapabilities] = useState<ToolCapability[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
+  const [isStale, setIsStale] = useState(false);
 
   const fetchDiagnostics = async () => {
     setLoading(true);
@@ -29,13 +33,38 @@ export const SystemStatus: React.FC = () => {
         api.listCapabilities(),
       ]);
 
-      if (h.status === 'fulfilled') setHealth(h.value);
-      if (sStatus.status === 'fulfilled') setSchedulerStatus(sStatus.value);
-      if (sMetrics.status === 'fulfilled') setSchedulerMetrics(sMetrics.value);
-      if (pStatus.status === 'fulfilled') setPerceptionStatus(pStatus.value);
-      if (caps.status === 'fulfilled') setCapabilities(caps.value);
+      let anySuccess = false;
+      if (h.status === 'fulfilled') {
+        setHealth(h.value);
+        anySuccess = true;
+      }
+      if (sStatus.status === 'fulfilled') {
+        setSchedulerStatus(sStatus.value);
+        anySuccess = true;
+      }
+      if (sMetrics.status === 'fulfilled') {
+        setSchedulerMetrics(sMetrics.value);
+        anySuccess = true;
+      }
+      if (pStatus.status === 'fulfilled') {
+        setPerceptionStatus(pStatus.value);
+        anySuccess = true;
+      }
+      if (caps.status === 'fulfilled') {
+        setCapabilities(caps.value);
+        anySuccess = true;
+      }
+
+      if (anySuccess) {
+        setLastSuccessfulFetch(new Date());
+        setIsStale(false);
+      } else {
+        setIsStale(true);
+      }
     } catch (err) {
       setErrorNotice(err instanceof Error ? err.message : String(err));
+      // Preserve existing in-memory values; do not substitute zeroes or clear state
+      setIsStale(true);
     } finally {
       setLoading(false);
     }
@@ -51,7 +80,14 @@ export const SystemStatus: React.FC = () => {
     <div className="panel-view">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>System Diagnostics & Subsystems</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>System Diagnostics & Subsystems</h2>
+            {isStale && lastSuccessfulFetch && (
+              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
+                <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             Real-time telemetry grounded in backend state across resource scheduling, perception, and registered tools.
           </p>
@@ -87,23 +123,24 @@ export const SystemStatus: React.FC = () => {
         <div className="card">
           <div className="card-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Activity style={{ color: 'var(--success)', width: 18, height: 18 }} />
+              <Activity style={{ color: isBackendReachable ? 'var(--success)' : 'var(--danger)', width: 18, height: 18 }} />
               <h3 style={{ fontSize: '0.95rem' }}>Core Engine Health</h3>
             </div>
-            {health?.status === 'ok' ? (
+            {isBackendReachable ? (
               <span style={{ color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
-                <CheckCircle style={{ width: 12, height: 12 }} /> Online
+                <CheckCircle style={{ width: 12, height: 12 }} /> Reachable ({connectivity})
               </span>
             ) : (
               <span style={{ color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
-                <AlertCircle style={{ width: 12, height: 12 }} /> Disconnected
+                <AlertCircle style={{ width: 12, height: 12 }} /> {connectivity === 'reconnecting' ? 'Reconnecting...' : 'Offline'}
               </span>
             )}
           </div>
           <div style={{ fontSize: '0.825rem', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--text-secondary)' }}>
             <div>Environment: <strong style={{ color: 'var(--text-primary)' }}>{health?.environment || 'unknown'}</strong></div>
             <div>Version: <strong style={{ color: 'var(--text-primary)' }}>{health?.version || 'unknown'}</strong></div>
-            <div>Timestamp: {health?.timestamp ? new Date(health.timestamp).toLocaleTimeString() : 'N/A'}</div>
+            <div>Inference Status: <strong style={{ color: inferenceDegraded ? 'var(--warning)' : 'var(--success)' }}>{inferenceDegraded ? 'Degraded / Provider Unavailable' : 'Ready'}</strong></div>
+            <div>Last Polled: {lastSuccessfulFetch ? lastSuccessfulFetch.toLocaleTimeString() : 'N/A'}</div>
           </div>
         </div>
 

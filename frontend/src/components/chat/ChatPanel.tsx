@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Square, AlertTriangle, Shield, Cpu, RefreshCw } from 'lucide-react';
+import { Send, Square, AlertTriangle, Shield, Cpu, RefreshCw, FileText, Trash2, Edit3, ArrowUpRight } from 'lucide-react';
 import { api } from '../../api/client';
 import { streamChat } from '../../api/sse';
 import { Conversation, DataClassification, Message, RoutingMetadata } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 import { VoiceControl } from '../voice/VoiceControl';
 
 interface ChatPanelProps {
@@ -18,6 +19,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   classification,
   onClassificationChange,
 }) => {
+  const { isBackendReachable, drafts, addDraft, removeDraft } = useConnectivity();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -25,6 +27,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [streamingContent, setStreamingContent] = useState('');
   const [currentRouting, setCurrentRouting] = useState<RoutingMetadata | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [ambiguousOutcome, setAmbiguousOutcome] = useState(false);
   const [isCancelled, setIsCancelled] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -32,6 +35,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
+  };
+
+  const refreshHistory = async () => {
+    if (!activeConversation) return;
+    setLoadingHistory(true);
+    setStreamError(null);
+    try {
+      const history = await api.getMessages(activeConversation.id, 50, 0);
+      const sorted = [...(history || [])].reverse();
+      setMessages(sorted);
+      setAmbiguousOutcome(false);
+    } catch (err) {
+      setStreamError(`Failed to refresh history: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setLoadingHistory(false);
+    }
   };
 
   // Load message history when active conversation changes
@@ -44,6 +63,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     let isMounted = true;
     setLoadingHistory(true);
     setStreamError(null);
+    setAmbiguousOutcome(false);
 
     api
       .getMessages(activeConversation.id, 50, 0)
@@ -83,9 +103,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     const trimmed = input.trim();
     if (!trimmed || streaming) return;
 
-    setInput('');
+    if (!isBackendReachable) {
+      // Backend offline: store in bounded, in-memory drafts (never auto-sent)
+      addDraft(trimmed, activeConversation?.id, classification);
+      setInput('');
+      setStreamError('Backend offline. Message preserved as an unsent in-memory draft.');
+      return;
+    }
+
     setStreamError(null);
     setIsCancelled(false);
+    setAmbiguousOutcome(false);
 
     let convId = activeConversation?.id;
 
@@ -97,10 +125,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         onConversationCreated(newConv);
         convId = newConv.id;
       } catch (err) {
-        setStreamError(err instanceof Error ? err.message : String(err));
+        // Do not clear the draft before the required conversation-creation request succeeds
+        setStreamError(`Failed to initialize session: ${err instanceof Error ? err.message : String(err)}. Message retained in input.`);
         return;
       }
     }
+
+    // Clear input now that conversation exists and request is submitted
+    setInput('');
 
     // Add user message to UI state immediately
     const userMessage: Message = {
@@ -168,11 +200,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           abortControllerRef.current = null;
         },
         onError: (err) => {
-          setStreamError(err.detail ? `${err.error}: ${err.detail}` : err.error);
           setStreaming(false);
           abortControllerRef.current = null;
+          const isNetworkInterruption =
+            err.error === 'NetworkError' ||
+            err.error === 'TimeoutError' ||
+            !isBackendReachable ||
+            (err.detail && err.detail.toLowerCase().includes('network'));
+
           if (accumulated && !completionSuccessful) {
-            // Keep the partial message labeled as interrupted
+            // Keep the partial message labeled as interrupted, never completed
             const interruptedMsg: Message = {
               id: `asst_interrupted_${Date.now()}`,
               conversation_id: convId!,
@@ -183,6 +220,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             };
             setMessages((prev) => [...prev, interruptedMsg]);
             setStreamingContent('');
+          }
+
+          if (isNetworkInterruption) {
+            setAmbiguousOutcome(true);
+            setStreamError(
+              'Stream connection lost. Outcome uncertain: check conversation history before resubmitting. Automatic retry is prevented to protect against duplicate actions.'
+            );
+          } else {
+            setStreamError(err.detail ? `${err.error}: ${err.detail}` : err.error);
           }
         },
       },
@@ -405,8 +451,119 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           </div>
         )}
 
+        {ambiguousOutcome && (
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-md)',
+              backgroundColor: 'var(--warning-subtle)',
+              border: '1px solid rgba(245, 158, 11, 0.4)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '0.85rem',
+              color: '#fcd34d',
+              margin: '6px 0',
+            }}
+            role="alert"
+          >
+            <span>Outcome uncertain: verify history before repeating your instruction.</span>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={refreshHistory}
+              disabled={loadingHistory || !isBackendReachable}
+              style={{ fontSize: '0.75rem', padding: '3px 8px' }}
+            >
+              <RefreshCw className={loadingHistory ? 'animate-spin' : ''} style={{ width: 12, height: 12, marginRight: 4 }} />
+              Inspect History
+            </button>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Bounded In-Memory Drafts Outbox */}
+      {drafts.length > 0 && (
+        <div
+          style={{
+            backgroundColor: 'var(--bg-surface-elevated)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 'var(--radius-md)',
+            padding: '10px 14px',
+            margin: '0 20px 10px 20px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              <FileText style={{ width: 14, height: 14, color: 'var(--info)' }} />
+              <span>In-Memory Drafts ({drafts.length}) — Not Transmitted</span>
+            </div>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Memory-only, never auto-sent</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 130, overflowY: 'auto' }}>
+            {drafts.map((d) => (
+              <div
+                key={d.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 10px',
+                  fontSize: '0.8rem',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65%' }}>
+                  {d.text}
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                    onClick={() => {
+                      setInput(d.text);
+                      removeDraft(d.id);
+                    }}
+                    title="Load draft into editor"
+                  >
+                    <Edit3 style={{ width: 12, height: 12, marginRight: 3 }} />
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ fontSize: '0.7rem', padding: '2px 8px' }}
+                    disabled={!isBackendReachable || streaming}
+                    onClick={() => {
+                      removeDraft(d.id);
+                      setInput(d.text);
+                    }}
+                    title={isBackendReachable ? 'Stage draft to send' : 'Backend offline — cannot send'}
+                  >
+                    <ArrowUpRight style={{ width: 12, height: 12, marginRight: 3 }} />
+                    Stage
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    style={{ color: 'var(--danger)', padding: 3 }}
+                    onClick={() => removeDraft(d.id)}
+                    title="Discard draft"
+                    aria-label="Discard draft"
+                  >
+                    <Trash2 style={{ width: 13, height: 13 }} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Input Area */}
       <div className="chat-input-area">
@@ -434,20 +591,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type your message or instruction to PICO..."
+            placeholder={
+              !isBackendReachable
+                ? 'Backend is offline — type message to save as local draft...'
+                : 'Type your message or instruction to PICO...'
+            }
             aria-label="Message input"
             disabled={streaming}
           />
 
           <button
             type="button"
-            className="btn btn-primary"
+            className={`btn ${!isBackendReachable ? 'btn-secondary' : 'btn-primary'}`}
             onClick={handleSendMessage}
             disabled={!input.trim() || streaming}
             style={{ padding: '8px 12px', minWidth: 40 }}
-            aria-label="Send message"
+            title={!isBackendReachable ? 'Backend offline: save as in-memory draft' : 'Send message'}
+            aria-label={!isBackendReachable ? 'Save as draft' : 'Send message'}
           >
-            <Send style={{ width: 16, height: 16 }} />
+            {!isBackendReachable ? <FileText style={{ width: 16, height: 16 }} /> : <Send style={{ width: 16, height: 16 }} />}
           </button>
         </div>
       </div>

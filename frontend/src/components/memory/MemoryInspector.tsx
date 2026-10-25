@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Trash2, RefreshCw, AlertCircle, CheckCircle, Info } from 'lucide-react';
+import { Search, Trash2, RefreshCw, AlertCircle, CheckCircle, Info, Clock } from 'lucide-react';
 import { api } from '../../api/client';
 import { ProceduralMemoryItem, SemanticFact, WorkingMemoryItem } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 
 export const MemoryInspector: React.FC = () => {
+  const { isBackendReachable } = useConnectivity();
   const [activeTab, setActiveTab] = useState<'semantic' | 'working' | 'procedural' | 'status'>('semantic');
   const [semanticFacts, setSemanticFacts] = useState<SemanticFact[]>([]);
   const [workingItems, setWorkingItems] = useState<WorkingMemoryItem[]>([]);
@@ -14,6 +16,8 @@ export const MemoryInspector: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [confirmForgetFactId, setConfirmForgetFactId] = useState<string | null>(null);
+  const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
+  const [isStale, setIsStale] = useState(false);
 
   const loadData = async () => {
     setLoading(true);
@@ -37,8 +41,12 @@ export const MemoryInspector: React.FC = () => {
         const s = await api.getMemoryStatus();
         setMemoryStatus(s);
       }
+      setLastSuccessfulFetch(new Date());
+      setIsStale(false);
     } catch (err) {
       setErrorNotice(err instanceof Error ? err.message : String(err));
+      // Retain in-memory records during transient failure
+      setIsStale(true);
     } finally {
       setLoading(false);
     }
@@ -54,6 +62,10 @@ export const MemoryInspector: React.FC = () => {
   };
 
   const handleForgetFact = async (factId: string) => {
+    if (!isBackendReachable) {
+      setErrorNotice('Cannot forget memory while offline. Deletion requests are not queued offline.');
+      return;
+    }
     setLoading(true);
     setErrorNotice(null);
     try {
@@ -65,7 +77,12 @@ export const MemoryInspector: React.FC = () => {
         setErrorNotice('Fact could not be forgotten or does not exist.');
       }
     } catch (err) {
-      setErrorNotice(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setErrorNotice('Outcome unknown: network interrupted during memory deletion. Please refresh state to inspect.');
+      } else {
+        setErrorNotice(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setLoading(false);
     }
@@ -75,7 +92,14 @@ export const MemoryInspector: React.FC = () => {
     <div className="panel-view">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Memory Subsystem Inspector</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Memory Subsystem Inspector</h2>
+            {isStale && lastSuccessfulFetch && (
+              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
+                <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             Inspect synthesized working, episodic, semantic, and procedural knowledge with provenance.
           </p>
@@ -231,6 +255,8 @@ export const MemoryInspector: React.FC = () => {
                         <button
                           className="btn btn-danger"
                           onClick={() => handleForgetFact(fact.id)}
+                          disabled={loading || !isBackendReachable}
+                          title={!isBackendReachable ? 'Controls locked: backend offline' : 'Forget fact'}
                           style={{ padding: '4px 8px', fontSize: '0.75rem' }}
                         >
                           Forget
@@ -247,9 +273,10 @@ export const MemoryInspector: React.FC = () => {
                       <button
                         className="btn-icon"
                         onClick={() => setConfirmForgetFactId(fact.id)}
-                        title="Forget this memory fact"
+                        disabled={loading || !isBackendReachable}
+                        title={!isBackendReachable ? 'Cannot delete facts while offline' : 'Forget this memory fact'}
                         aria-label="Forget fact"
-                        style={{ color: 'var(--text-muted)' }}
+                        style={{ color: !isBackendReachable ? 'var(--text-muted)' : 'var(--text-muted)', opacity: !isBackendReachable ? 0.5 : 1 }}
                       >
                         <Trash2 style={{ width: 16, height: 16 }} />
                       </button>

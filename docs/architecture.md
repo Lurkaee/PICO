@@ -533,5 +533,11 @@ Target Environment:
   - Local operator session service (`pico/services/operator_session.py`): loopback-only 6-digit CSPRNG pairing code, 300 s TTL, `HttpOnly; SameSite=Strict` cookie, timing-safe CSRF header validation. `APPROVAL_SECRET_TOKEN` never leaves the server.
   - Components: `ChatPanel` (streaming), `VoiceControl` (PTT, explicit consent), `WorkflowTimeline` (DAG + Stages A-D), `MemoryInspector` (FTS5 search + confirmed delete), `ApprovalInbox` (operator-gated), `SystemStatus`, `PairingModal`.
   - *Status*: **P10.1 VERIFIED**.
-- **P10.2 Offline Resilience**: Graceful degradation when inference or network is offline.
-  - *Status*: **PLANNED**.
+- **P10.2 Offline Resilience & Safe Recovery**:
+  - Typed connectivity management (`ConnectivityManager`) distinguishing `online`, `degraded`, `offline`, `reconnecting`, and `unknown` with single-flight health probes and bounded backoff.
+  - Offline application shell (`sw.js`) caching only static assets (`/`, `/index.html`, `/assets/*`). Strictly zero caching of `/api/*` data, private chat, memories, approvals, or tokens in persistent storage or SW cache.
+  - Network-only API transport: failed requests return genuine network errors; zero mutating request interception or replay (`POST`, `PUT`, `DELETE`).
+  - Ephemeral in-memory draft outbox: up to 25 drafts preserved during disconnections; zero automatic re-dispatch on reconnect.
+  - Ambiguous outcome integrity: interrupted chat streams tagged `[Response stream interrupted]`; mutations with dropped responses marked "Outcome unknown" with strictly zero blind retries.
+  - Operator session revalidation: immediate revalidation on reconnect before unlocking consequential approval controls.
+  - *Status*: **P10.2 VERIFIED**.

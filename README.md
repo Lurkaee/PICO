@@ -91,7 +91,7 @@ uvicorn pico.main:app --host 127.0.0.1 --port 8000
 
 ```powershell
 cd frontend
-pnpm run test           # Vitest — all 20 frontend tests
+pnpm run test           # Vitest — all 38 frontend tests
 pnpm run typecheck      # TypeScript strict type check
 ```
 
@@ -128,6 +128,39 @@ The PICO desktop interface accurately distinguishes six operator and action stat
 5. **Unauthorized Action**: A client or workflow step requested a privileged capability without possessing the required capability permissions; execution fails closed with zero side effects.
 6. **Authorized Pending Approval**: A consequential capability step is authorized to run once approved by the human operator, bound to the SHA-256 canonical input digest.
 
+### Offline Resilience & Safe Recovery (Phase 10.2)
+
+PICO features an offline-resilient desktop shell and safe recovery architecture engineered to withstand backend disconnections, inference/model failures, and interrupted streams without leaking private data or causing duplicate side effects.
+
+#### 1. Application Shell & Caching Architecture
+- **Offline Shell**: The service worker (`sw.js`) caches only the static application shell (`/`, `/index.html`) and immutable build bundles (`/assets/*`), allowing the UI to reopen when the backend is offline.
+- **Strict Data Exclusion**: In adherence to PICO's local-first privacy rules, the service worker and browser persistent storage (`localStorage`, `sessionStorage`, `IndexedDB`) strictly **never** cache:
+  - Private conversations, messages, or drafts
+  - Semantic/episodic memory records
+  - Tool execution inputs, logs, or results
+  - Operator pairing tokens, session cookies, or CSRF tokens
+  - Approval tickets or workflow state
+- **Network-Only API Transport**: All `/api/*` and dynamic endpoints bypass the service worker cache entirely. Failed API calls return genuine network errors rather than falling back to SPA HTML.
+- **Zero Mutating Interception**: The service worker never intercepts, queues, or replays `POST`, `PUT`, or `DELETE` requests.
+
+#### 2. In-Memory Draft Outbox (Zero Auto-Submit)
+- **Draft Outbox**: If a message cannot be dispatched due to backend unavailability or conversation creation failure, it is preserved in an in-memory draft queue (bounded to 25 items).
+- **Explicit Dispatch Only**: Drafts are **never automatically transmitted** upon reconnection. Users can review, edit, discard, or explicitly send pending drafts once connectivity is restored.
+- **Ephemeral Lifecycle**: Drafts reside strictly in active application memory; refreshing or closing the browser window discards them, preventing unencrypted persistence of sensitive drafts on disk.
+
+#### 3. Ambiguous Outcomes & Zero Auto-Replay
+- **Interrupted Chat Streams**: SSE streams cut short by network interruption or backend failure are visibly tagged as `[Response stream interrupted]` and marked with an ambiguous outcome notice. They are never marked as completed, and chat requests are never automatically retried.
+- **Consequential Mutations**: Approvals, tool execution submissions, workflow advances, compensations, memory forget requests, and audio session operations with ambiguous network outcomes are marked **"Outcome unknown"**. The UI never performs blind retries.
+- **Truthful Reconciliation**: Upon reconnection, users inspect actual server state and choose whether to re-dispatch or cancel.
+
+#### 4. Operator Session Revalidation on Reconnect
+- When the backend recovers from an offline state, the frontend immediately revalidates the operator session against `GET /api/operator/status`.
+- Consequential approval controls remain locked in `pairing_required` until the backend confirms that the session cookie and CSRF token remain valid.
+
+#### 5. Local Testing of Offline & Degraded Scenarios
+- **Backend Disconnection**: Stop the FastAPI backend (`Ctrl+C` in the backend terminal). The UI displays a calm offline banner with the time since the last successful check, retains current in-memory views labeled with a stale badge, preserves drafts, and locks consequential controls.
+- **Model/Provider Failure**: If Ollama is stopped or the model is missing while the backend is online, the UI enters a `Degraded` state. The system accurately reports backend reachability while flagging inference as unavailable, avoiding misleading full-system "offline" alerts.
+- **Frontend Test Suite**: Run `pnpm run test` in `frontend/` to execute all 38 unit and integration tests (including connectivity manager, context outbox, offline shell, and resilience tests).
 
 ---
 
@@ -355,10 +388,10 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
 
 Run the full automated test suite (offline, zero external network calls):
 ```powershell
-# Run backend pytest suite (467 tests across all subsystems)
+# Run backend pytest suite (470 tests across all subsystems)
 .\.venv\Scripts\pytest.exe
 
-# Run frontend test suite (20 tests: SSE parser, chat, voice, memory, workflows, approvals)
+# Run frontend test suite (38 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell)
 cd frontend
 pnpm run test
 pnpm run typecheck
