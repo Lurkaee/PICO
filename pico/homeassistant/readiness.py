@@ -772,6 +772,7 @@ class HomeAssistantSwitchReadinessChecker:
 
         # 8. Live switch readability (read-only)
         reported_state: str | None = None
+        state_readiness: str | None = None
         target_to_probe = target_entity_id or (sorted(list(allowlisted_set))[0] if allowlisted_set else None)
 
         if not check_live:
@@ -786,6 +787,7 @@ class HomeAssistantSwitchReadinessChecker:
             )
         else:
             if not integration_enabled or not access_token_present:
+                state_readiness = "state_unavailable"
                 checks.append(
                     ReadinessCheckItem(
                         name="live_switch_readability",
@@ -796,6 +798,7 @@ class HomeAssistantSwitchReadinessChecker:
                     )
                 )
             elif not transport_valid:
+                state_readiness = "state_unavailable"
                 checks.append(
                     ReadinessCheckItem(
                         name="live_switch_readability",
@@ -806,6 +809,7 @@ class HomeAssistantSwitchReadinessChecker:
                     )
                 )
             elif not target_to_probe:
+                state_readiness = "state_unavailable"
                 checks.append(
                     ReadinessCheckItem(
                         name="live_switch_readability",
@@ -819,17 +823,44 @@ class HomeAssistantSwitchReadinessChecker:
                 try:
                     svc = self._get_service()
                     entity_state = await svc.get_entity_state(target_to_probe)
-                    reported_state = entity_state.state
-                    checks.append(
-                        ReadinessCheckItem(
-                            name="live_switch_readability",
-                            status=ReadinessCheckStatus.PASS,
-                            error_category=None,
-                            message=f"Successfully retrieved reported state for '{target_to_probe}': current reported state is '{reported_state}'. (Zero mutations performed).",
-                            remediation=None,
+                    raw_st = str(entity_state.state).strip().lower()
+                    reported_state = raw_st
+                    if raw_st in ("on", "off"):
+                        state_readiness = "ready"
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_switch_readability",
+                                status=ReadinessCheckStatus.PASS,
+                                error_category=None,
+                                message=f"Successfully retrieved reported state for '{target_to_probe}': current reported state is '{reported_state}' (state_readiness: ready). (Zero mutations performed).",
+                                remediation=None,
+                            )
                         )
-                    )
+                    elif raw_st in ("unavailable", "unreachable"):
+                        state_readiness = "state_unavailable"
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_switch_readability",
+                                status=ReadinessCheckStatus.FAIL,
+                                error_category=ReadinessErrorCategory.STATE_UNAVAILABLE,
+                                message=f"[STATE_UNAVAILABLE] Target switch '{target_to_probe}' reported state '{reported_state}'. Reliable precondition cannot be established.",
+                                remediation="Verify that the physical switch/plug device is powered on, connected to the network, and accessible in Home Assistant.",
+                            )
+                        )
+                    else:
+                        state_readiness = "state_unknown"
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_switch_readability",
+                                status=ReadinessCheckStatus.FAIL,
+                                error_category=ReadinessErrorCategory.STATE_UNKNOWN,
+                                message=f"[STATE_UNKNOWN] Target switch '{target_to_probe}' reported indeterminate state '{reported_state}'. Reliable precondition cannot be established.",
+                                remediation="Verify that the switch integration in Home Assistant reports a valid 'on' or 'off' state.",
+                            )
+                        )
                 except EntityNotFoundError:
+                    reported_state = "unavailable"
+                    state_readiness = "state_unavailable"
                     checks.append(
                         ReadinessCheckItem(
                             name="live_switch_readability",
@@ -840,6 +871,8 @@ class HomeAssistantSwitchReadinessChecker:
                         )
                     )
                 except AuthorizationError:
+                    reported_state = "unavailable"
+                    state_readiness = "state_unavailable"
                     checks.append(
                         ReadinessCheckItem(
                             name="live_switch_readability",
@@ -850,6 +883,8 @@ class HomeAssistantSwitchReadinessChecker:
                         )
                     )
                 except (HomeAssistantConnectionError, Exception):
+                    reported_state = "unavailable"
+                    state_readiness = "state_unavailable"
                     checks.append(
                         ReadinessCheckItem(
                             name="live_switch_readability",
@@ -896,6 +931,7 @@ class HomeAssistantSwitchReadinessChecker:
             live_check_performed=check_live,
             live_passed=live_passed if check_live else None,
             reported_state=reported_state,
+            state_readiness=state_readiness,
             checks=checks,
             summary=summary,
         )

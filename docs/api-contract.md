@@ -1267,7 +1267,7 @@ Local-first desktop operator authentication and consequential action approval bo
 - **Description**: Inspect execution status, approval ticket, and independent verification proof for test light actuation.
 - **Response (200 OK)**: `ToolExecutionResponse` object.
 
-#### `POST /api/homeassistant/switch/plan` (Milestone P7.4.1 Stage C)
+#### `POST /api/homeassistant/switch/plan` (Milestones P7.4.1 & P7.4.1.2 Stage C)
 - **Description**: Structured, read-only preflight plan for an allowlisted switch entity. Never causes physical dispatch or state mutation.
 - **Request Body**:
   ```json
@@ -1276,7 +1276,17 @@ Local-first desktop operator authentication and consequential action approval bo
     "target_state": "on"
   }
   ```
-- **Response (200 OK)**: `SwitchActuationPlan` object (`is_mutation_needed`, `current_state`, `input_digest`, etc.).
+- **Response (200 OK)**: `SwitchActuationPlan` object:
+  - `target_entity_id` (string): Switch entity ID.
+  - `target_state` (string): Desired state (`on` or `off`).
+  - `current_state` (string): Current observed state (`on`, `off`, `unknown`, `unavailable`, etc.).
+  - `state_readiness` (string, P7.4.1.2): 4-way classification:
+    - `"ready"`: target is reachable and in opposite state; action is actionable (`is_mutation_needed=True`).
+    - `"already_satisfied"`: authoritative read confirms target is already in desired state (`is_mutation_needed=False`).
+    - `"state_unavailable"`: entity state could not be read or timed out (`is_mutation_needed=False`).
+    - `"state_unknown"`: entity state returned a value other than `on` or `off` (`is_mutation_needed=False`).
+  - `is_mutation_needed` (boolean): `true` only when `state_readiness == "ready"`. Clients must inspect `state_readiness` for actionable certainty.
+  - `input_digest` (string): SHA-256 canonical digest of target and state.
 
 #### `POST /api/homeassistant/switch/propose` (Milestone P7.4.1 Stage C)
 - **Description**: Propose switch physical actuation for an explicitly allowlisted switch entity. Creates execution in `awaiting_approval`.
@@ -1293,15 +1303,19 @@ Local-first desktop operator authentication and consequential action approval bo
 - **Response (400/422 Bad Request)**: Target entity not in `HOME_ASSISTANT_SWITCH_ALLOWLIST`, non-switch domain, or invalid state.
 - **Response (403 Forbidden)**: Missing or invalid `X-Pico-Approval-Token`.
 
-#### `GET /api/homeassistant/switch/readiness` (Milestone P7.4.1 Stage C)
+#### `GET /api/homeassistant/switch/readiness` (Milestones P7.4.1 & P7.4.1.2 Stage C)
 - **Description**: Stage C commissioning and readiness report. Inspects allowlist configuration, switch domain validity, and optional live reachability.
 - **Query Parameters**:
   - `check_live` (boolean, default: false)
   - `target_entity_id` (optional string)
-- **Response (200 OK)**: `SwitchActuationReadinessReport` object.
+- **Response (200 OK)**: `SwitchActuationReadinessReport` object:
+  - `all_checks_passed` (boolean)
+  - `state_readiness` (string | null, P7.4.1.2): `"ready"`, `"already_satisfied"`, `"state_unavailable"`, or `"state_unknown"` when `check_live=true`.
+  - `checks` (list of `ReadinessCheckItem`): If target switch reports `unknown` or `unavailable`, reports `FAIL` with `STATE_UNKNOWN` or `STATE_UNAVAILABLE` error category.
 
-#### `GET /api/homeassistant/switch/{execution_id}` (Milestone P7.4.1 Stage C)
+#### `GET /api/homeassistant/switch/{execution_id}` (Milestones P7.4.1 & P7.4.1.2 Stage C)
 - **Description**: Inspect execution status, approval ticket, and independent verification outcome for a switch actuation execution. Isolated to `homeassistant.allowlisted_switch_actuate`.
+- **Output Diagnostics**: When pre-dispatch validation fails, `output_data` preserves `dispatch_status="blocked_precondition"` and `verification_status="blocked"` with zero physical mutations.
 - **Response (200 OK)**: `ToolExecutionResponse` object.
 - **Response (404 Not Found)**: If execution does not exist or belongs to a different capability.
 

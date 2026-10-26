@@ -104,8 +104,15 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Read-after-write independent verification via read-only state query (`GET /api/states/{id}`). Never claims `physical_device_connectivity_claimed`. Zero automatic retries (`max_retries=0`).
   - REST API routes: `POST /api/homeassistant/switch/plan`, `POST /api/homeassistant/switch/propose`, `GET /api/homeassistant/switch/readiness`, and `GET /api/homeassistant/switch/{execution_id}` (strictly isolated to switch capability).
   - Preflight readiness inspection via CLI (`python -m pico.homeassistant.readiness --switch`), REST API (`GET /api/homeassistant/switch/readiness`), and tool capability (`homeassistant.switch_readiness`).
+- [x] **P7.4.1.2 Truthful State Preflight & Fail-Closed Switch Readiness**:
+  - Structured 4-way state readiness classification (`ready`, `already_satisfied`, `state_unavailable`, `state_unknown`) in `SwitchActuationPlan` and `SwitchActuationReadinessReport`.
+  - Honest planner behavior: read failures report `state_readiness="state_unavailable"`, `current_state="unavailable"`, and `is_mutation_needed=False` with truthful precondition descriptions rather than claiming no mutation is needed. Indeterminate states (`unknown`, empty, or non-on/off) report `state_readiness="state_unknown"`.
+  - Fail-closed pre-dispatch policy: `HomeAssistantSwitchActuationService.dispatch_actuation` executes an authoritative pre-dispatch read before physical mutation. Missing entity (404), network failure, timeout, or reported state `unknown`/`unavailable`/invalid returns structured `dispatch_status="blocked_precondition"` with zero physical mutations.
+  - Zero mutations on already-satisfied state: authoritative read matching requested state skips physical dispatch (`dispatch_status="already_satisfied"`) and verifies through independent read-after-write evidence.
+  - Fail-closed live commissioning readiness: `HomeAssistantSwitchReadinessChecker` marks `live_switch_readability` as `FAIL` with `STATE_UNAVAILABLE` or `STATE_UNKNOWN` error categories when target switch reports non-on/off states, preventing false commissioning clearance.
+  - Execution failure output preservation: `ToolExecutionEngine._handle_execution_failure` records structured output in the execution repository so blocked precondition diagnostics remain inspectable via `GET /api/homeassistant/switch/{execution_id}`.
 - [ ] **P7.4.2 Stage D Climate & Environmental Controls**: Planned.
-- **Status**: **STAGE A, STAGE B & STAGE C (P7.1, P7.2, P7.3, P7.4.1) COMPLETED & VERIFIED; P7.4.2 PLANNED**.
+- **Status**: **STAGE A, STAGE B & STAGE C (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2) COMPLETED & VERIFIED; P7.4.2 PLANNED**.
 
 
 ### Milestone P8: Computer Control & Engineering Workspace

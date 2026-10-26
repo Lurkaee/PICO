@@ -30,6 +30,7 @@ from pico.homeassistant.actuation import (
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.contracts import (
     HomeAssistantConnectionError,
+    ReadinessErrorCategory,
     SwitchActuationPlan,
     SwitchActuationReadinessReport,
 )
@@ -80,7 +81,7 @@ def make_mock_switch_transport(
     service_timeout: bool = False,
 ) -> tuple[httpx.MockTransport, dict[str, Any]]:
     """Create a mock httpx transport tracking calls and state changes for switches."""
-    current_states = dict(initial_states or {TEST_SWITCH_A: "off", TEST_SWITCH_B: "off"})
+    current_states = dict(initial_states if initial_states is not None else {TEST_SWITCH_A: "off", TEST_SWITCH_B: "off"})
     state_box = {
         "states": current_states,
         "mutation_calls": [],
@@ -707,3 +708,197 @@ def test_api_switch_readiness_live(monkeypatch: pytest.MonkeyPatch) -> None:
         assert data["reported_state"] == "off"
         assert len(state_box["read_calls"]) >= 1
         assert len(state_box["mutation_calls"]) == 0
+
+
+# =====================================================================
+# 5. P7.4.1.2 Truthful State Preflight & Fail-Closed Dispatch Tests
+# =====================================================================
+
+@pytest.mark.anyio
+async def test_failed_preflight_state_read_produces_explicit_unavailable_plan() -> None:
+    """Preflight read failure produces state_readiness='state_unavailable' and is_mutation_needed=False."""
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "Internal error"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(failing_handler)) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        service = HomeAssistantSwitchActuationService(readonly_client=ro_client, http_client=http_client)
+        plan = await service.create_plan(target_entity_id=TEST_SWITCH_A, target_state="on")
+
+        assert plan.entity_id == TEST_SWITCH_A
+        assert plan.requested_state == "on"
+        assert plan.current_state == "unavailable"
+        assert plan.state_readiness == "state_unavailable"
+        assert plan.is_mutation_needed is False
+        assert any("state_unavailable" in p for p in plan.preconditions)
+
+
+@pytest.mark.anyio
+async def test_unknown_state_never_classified_as_already_satisfied() -> None:
+    """An 'unknown' state reported by Home Assistant is classified as state_unknown, never already_satisfied."""
+    transport, _ = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "unknown"})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        service = HomeAssistantSwitchActuationService(readonly_client=ro_client, http_client=http_client)
+        plan = await service.create_plan(target_entity_id=TEST_SWITCH_A, target_state="on")
+
+        assert plan.current_state == "unknown"
+        assert plan.state_readiness == "state_unknown"
+        assert plan.is_mutation_needed is False
+        assert plan.state_readiness != "already_satisfied"
+
+
+@pytest.mark.anyio
+async def test_failed_pre_dispatch_read_produces_zero_physical_mutations() -> None:
+    """Pre-dispatch state read failure blocks execution and makes zero mutation requests."""
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.startswith("/api/states/"):
+            return httpx.Response(503, json={"message": "Service unavailable"})
+        if request.method == "POST":
+            pytest.fail("Mutation endpoint must NOT be called when pre-dispatch read fails!")
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(failing_handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        service = HomeAssistantSwitchActuationService(readonly_client=ro_client, http_client=http_client)
+        res = await service.dispatch_actuation(target_entity_id=TEST_SWITCH_A, target_state="on")
+
+        assert res["dispatched"] is False
+        assert res["dispatch_status"] == "blocked_precondition"
+        assert "Precondition could not be verified" in res["reason"]
+
+
+@pytest.mark.anyio
+async def test_missing_entity_or_invalid_reported_state_fails_closed_zero_mutations(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing entity (404) or invalid reported state fails closed with zero physical mutations."""
+    transport, state_box = make_mock_switch_transport(initial_states={})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_service = HomeAssistantSwitchActuationService(readonly_client=ro_client, http_client=http_client)
+        custom_cap = HomeAssistantSwitchActuationCapability(service=act_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_switch_actuate": custom_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        execution = engine.submit(
+            capability_id="homeassistant.allowlisted_switch_actuate",
+            input_data={"target_entity_id": TEST_SWITCH_A, "target_state": "on"},
+            caller_permissions={"homeassistant:actuate"},
+        )
+        engine.approve(execution.id, approver="operator@pico.local", approval_token=MOCK_APPROVAL_SECRET)
+
+        res = await engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+        assert res.status == "failed"
+        assert "blocked" in (res.error_message or "").lower()
+        assert len(state_box["mutation_calls"]) == 0
+        assert res.output_json is not None
+        assert res.output_json.get("dispatch_status") == "blocked_precondition"
+
+
+@pytest.mark.anyio
+async def test_unknown_reported_state_fails_closed_at_execution_boundary(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An 'unknown' state reported at pre-dispatch fails closed before physical mutation."""
+    transport, state_box = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "unknown"})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_service = HomeAssistantSwitchActuationService(readonly_client=ro_client, http_client=http_client)
+        custom_cap = HomeAssistantSwitchActuationCapability(service=act_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_switch_actuate": custom_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        execution = engine.submit(
+            capability_id="homeassistant.allowlisted_switch_actuate",
+            input_data={"target_entity_id": TEST_SWITCH_A, "target_state": "on"},
+            caller_permissions={"homeassistant:actuate"},
+        )
+        engine.approve(execution.id, approver="operator@pico.local", approval_token=MOCK_APPROVAL_SECRET)
+
+        res = await engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+        assert res.status == "failed"
+        assert len(state_box["mutation_calls"]) == 0
+        assert res.output_json.get("dispatch_status") == "blocked_precondition"
+
+
+def test_api_switch_plan_truthful_state_distinction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route-level POST /api/homeassistant/switch/plan returns accurate state_readiness."""
+    # 1. State 'off', requested 'on' -> ready, is_mutation_needed=True
+    transport_off, _ = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "off"})
+    c_off = httpx.AsyncClient(transport=transport_off)
+    monkeypatch.setattr(HomeAssistantClient, "_get_http_client", lambda self: asyncio.sleep(0, result=c_off))
+
+    with TestClient(app) as client:
+        r1 = client.post("/api/homeassistant/switch/plan", json={"target_entity_id": TEST_SWITCH_A, "target_state": "on"})
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["state_readiness"] == "ready"
+        assert d1["is_mutation_needed"] is True
+
+        # 2. State 'on', requested 'on' -> already_satisfied, is_mutation_needed=False
+        transport_on, _ = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "on"})
+        c_on = httpx.AsyncClient(transport=transport_on)
+        monkeypatch.setattr(HomeAssistantClient, "_get_http_client", lambda self: asyncio.sleep(0, result=c_on))
+
+        r2 = client.post("/api/homeassistant/switch/plan", json={"target_entity_id": TEST_SWITCH_A, "target_state": "on"})
+        assert r2.status_code == 200
+        d2 = r2.json()
+        assert d2["state_readiness"] == "already_satisfied"
+        assert d2["is_mutation_needed"] is False
+
+        # 3. State 'unknown', requested 'on' -> state_unknown, is_mutation_needed=False
+        transport_unk, _ = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "unknown"})
+        c_unk = httpx.AsyncClient(transport=transport_unk)
+        monkeypatch.setattr(HomeAssistantClient, "_get_http_client", lambda self: asyncio.sleep(0, result=c_unk))
+
+        r3 = client.post("/api/homeassistant/switch/plan", json={"target_entity_id": TEST_SWITCH_A, "target_state": "on"})
+        assert r3.status_code == 200
+        d3 = r3.json()
+        assert d3["state_readiness"] == "state_unknown"
+        assert d3["is_mutation_needed"] is False
+
+
+def test_api_switch_readiness_with_unknown_and_unavailable_states(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /api/homeassistant/switch/readiness marks unknown/unavailable states as FAIL during live checks."""
+    # 1. State 'unknown'
+    transport_unk, _ = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "unknown"})
+    c_unk = httpx.AsyncClient(transport=transport_unk)
+    monkeypatch.setattr(HomeAssistantClient, "_get_http_client", lambda self: asyncio.sleep(0, result=c_unk))
+
+    with TestClient(app) as client:
+        r_unk = client.get(f"/api/homeassistant/switch/readiness?check_live=true&target_entity_id={TEST_SWITCH_A}")
+        assert r_unk.status_code == 200
+        d_unk = r_unk.json()
+        assert d_unk["live_check_performed"] is True
+        assert d_unk["live_passed"] is False
+        assert d_unk["state_readiness"] == "state_unknown"
+        assert d_unk["ready_for_commissioning"] is False
+        check_unk = next(c for c in d_unk["checks"] if c["name"] == "live_switch_readability")
+        assert check_unk["status"] == "FAIL"
+        assert check_unk["error_category"] == "STATE_UNKNOWN"
+
+        # 2. State 'unavailable'
+        transport_unavail, _ = make_mock_switch_transport(initial_states={TEST_SWITCH_A: "unavailable"})
+        c_unavail = httpx.AsyncClient(transport=transport_unavail)
+        monkeypatch.setattr(HomeAssistantClient, "_get_http_client", lambda self: asyncio.sleep(0, result=c_unavail))
+
+        r_unavail = client.get(f"/api/homeassistant/switch/readiness?check_live=true&target_entity_id={TEST_SWITCH_A}")
+        assert r_unavail.status_code == 200
+        d_unavail = r_unavail.json()
+        assert d_unavail["live_check_performed"] is True
+        assert d_unavail["live_passed"] is False
+        assert d_unavail["state_readiness"] == "state_unavailable"
+        assert d_unavail["ready_for_commissioning"] is False
+        check_unavail = next(c for c in d_unavail["checks"] if c["name"] == "live_switch_readability")
+        assert check_unavail["status"] == "FAIL"
+        assert check_unavail["error_category"] == "STATE_UNAVAILABLE"

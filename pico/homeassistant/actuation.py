@@ -8,7 +8,7 @@ import httpx
 
 from pico.capabilities.base import VerificationResult
 from pico.core.config import settings
-from pico.core.errors import AuthorizationError, ValidationError
+from pico.core.errors import AuthorizationError, EntityNotFoundError, ValidationError
 from pico.homeassistant.client import (
     ENTITY_ID_REGEX,
     ConnectionError,
@@ -523,23 +523,64 @@ class HomeAssistantSwitchActuationService:
             operation=target_state,
         )
 
-        try:
-            raw_state = await self._readonly_client.get_state(valid_entity_id)
-            current_state = str(raw_state.get("state", "unknown")).lower()
-        except Exception as exc:
-            current_state = "unreachable"
-            logger.warning("Could not read current state of switch '%s': %s", valid_entity_id, exc)
-
         desired_state = target_state.strip().lower()
         service = f"turn_{desired_state}"
-        is_mutation_needed = (current_state != desired_state) and (current_state != "unreachable")
 
-        preconditions = [
-            f"Configured switch '{valid_entity_id}' is allowlisted and reachable",
-            f"Current state is '{current_state}'",
-            "Home Assistant Stage C switch actuation is explicitly enabled",
-            "Human operator approval is granted",
-        ]
+        try:
+            raw_state = await self._readonly_client.get_state(valid_entity_id)
+            raw_state_str = str(raw_state.get("state", "")).strip().lower()
+            if not raw_state_str or raw_state_str == "unknown":
+                current_state = "unknown"
+                state_readiness = "state_unknown"
+                is_mutation_needed = False
+            elif raw_state_str in ("unavailable", "unreachable"):
+                current_state = raw_state_str
+                state_readiness = "state_unavailable"
+                is_mutation_needed = False
+            elif raw_state_str not in ("on", "off"):
+                current_state = raw_state_str
+                state_readiness = "state_unknown"
+                is_mutation_needed = False
+            elif raw_state_str == desired_state:
+                current_state = raw_state_str
+                state_readiness = "already_satisfied"
+                is_mutation_needed = False
+            else:
+                current_state = raw_state_str
+                state_readiness = "ready"
+                is_mutation_needed = True
+        except Exception as exc:
+            current_state = "unavailable"
+            state_readiness = "state_unavailable"
+            is_mutation_needed = False
+            logger.warning("Could not read current state of switch '%s': %s", valid_entity_id, exc)
+
+        if state_readiness == "ready":
+            preconditions = [
+                f"Configured switch '{valid_entity_id}' is allowlisted and reachable",
+                f"Current state is confirmed '{current_state}' ({state_readiness})",
+                "Home Assistant Stage C switch actuation is explicitly enabled",
+                "Human operator approval is granted",
+            ]
+        elif state_readiness == "already_satisfied":
+            preconditions = [
+                f"Configured switch '{valid_entity_id}' is allowlisted and reachable",
+                f"Current state is already confirmed '{desired_state}'",
+                "No physical mutation is required",
+            ]
+        elif state_readiness == "state_unavailable":
+            preconditions = [
+                f"Configured switch '{valid_entity_id}' is allowlisted",
+                "Current state could not be read from Home Assistant (status: state_unavailable)",
+                "Physical dispatch will be blocked until state can be read",
+            ]
+        else:
+            preconditions = [
+                f"Configured switch '{valid_entity_id}' is allowlisted",
+                f"Current reported state is '{current_state}' (status: state_unknown, cannot be interpreted as on/off)",
+                "Physical dispatch will be blocked until reliable on/off state is reported",
+            ]
+
         expected_postconditions = [
             f"Reported state of '{valid_entity_id}' equals '{desired_state}'",
             "State verified via independent read-only read-back",
@@ -564,6 +605,7 @@ class HomeAssistantSwitchActuationService:
             requested_state=desired_state,
             current_state=current_state,
             service=service,
+            state_readiness=state_readiness,
             is_mutation_needed=is_mutation_needed,
             preconditions=preconditions,
             expected_postconditions=expected_postconditions,
@@ -599,22 +641,73 @@ class HomeAssistantSwitchActuationService:
         desired_state = target_state.strip().lower()
         service = f"turn_{desired_state}"
 
+        # Pre-dispatch authoritative state inspection
+        try:
+            raw_state = await self._readonly_client.get_state(valid_entity_id)
+            reported_raw = str(raw_state.get("state", "")).strip().lower()
+        except EntityNotFoundError as exc:
+            logger.warning("Pre-dispatch check: entity '%s' not found: %s", valid_entity_id, exc)
+            return {
+                "dispatched": False,
+                "service": service,
+                "entity_id": valid_entity_id,
+                "target_state": desired_state,
+                "http_status": None,
+                "dispatch_status": "blocked_precondition",
+                "reason": f"Target entity '{valid_entity_id}' not found in Home Assistant (HTTP 404). Precondition failed.",
+                "reported_state": "unavailable",
+            }
+        except Exception as exc:
+            logger.warning("Pre-dispatch check failed for switch '%s': %s", valid_entity_id, exc)
+            return {
+                "dispatched": False,
+                "service": service,
+                "entity_id": valid_entity_id,
+                "target_state": desired_state,
+                "http_status": None,
+                "dispatch_status": "blocked_precondition",
+                "reason": f"Pre-dispatch state read failed for '{valid_entity_id}' ({type(exc).__name__}). Precondition could not be verified.",
+                "reported_state": "unavailable",
+            }
+
+        # Validate reported state: must be reliably interpretable as on or off
+        if not reported_raw or reported_raw in ("unknown", "unavailable", "unreachable") or reported_raw not in ("on", "off"):
+            logger.warning(
+                "Pre-dispatch check: switch '%s' reported state '%s', which cannot be safely interpreted as on/off.",
+                valid_entity_id,
+                reported_raw,
+            )
+            return {
+                "dispatched": False,
+                "service": service,
+                "entity_id": valid_entity_id,
+                "target_state": desired_state,
+                "http_status": None,
+                "dispatch_status": "blocked_precondition",
+                "reason": (
+                    f"Target entity '{valid_entity_id}' reported state '{reported_raw or 'empty'}'. "
+                    f"Physical mutation blocked because reliable pre-actuation state could not be established."
+                ),
+                "reported_state": reported_raw or "unknown",
+            }
+
         # If already in requested state, avoid unnecessary physical mutation
-        if skip_if_already_in_state:
-            try:
-                raw_state = await self._readonly_client.get_state(valid_entity_id)
-                current_state = str(raw_state.get("state", "unknown")).lower()
-                if current_state == desired_state:
-                    return {
-                        "dispatched": False,
-                        "service": service,
-                        "entity_id": valid_entity_id,
-                        "target_state": desired_state,
-                        "http_status": None,
-                        "dispatch_status": "already_satisfied",
-                    }
-            except Exception as exc:
-                logger.warning("Could not pre-check state of switch '%s': %s", valid_entity_id, exc)
+        if skip_if_already_in_state and reported_raw == desired_state:
+            logger.info(
+                "Pre-dispatch check: switch '%s' is already in desired state '%s'. Mutation skipped.",
+                valid_entity_id,
+                desired_state,
+            )
+            return {
+                "dispatched": False,
+                "service": service,
+                "entity_id": valid_entity_id,
+                "target_state": desired_state,
+                "http_status": None,
+                "dispatch_status": "already_satisfied",
+                "reason": f"Target switch '{valid_entity_id}' is already in requested state '{desired_state}'.",
+                "reported_state": desired_state,
+            }
 
         url = f"{self._base_url}/api/services/switch/{service}"
         headers = self._get_headers()
@@ -635,6 +728,7 @@ class HomeAssistantSwitchActuationService:
                 "target_state": desired_state,
                 "http_status": resp.status_code,
                 "dispatch_status": "accepted",
+                "reported_state": reported_raw,
             }
         except httpx.TimeoutException:
             logger.warning("Actuation dispatch timed out after %ss for %s", self._timeout, valid_entity_id)
@@ -645,6 +739,7 @@ class HomeAssistantSwitchActuationService:
                 "target_state": desired_state,
                 "http_status": None,
                 "dispatch_status": "timeout_uncertain",
+                "reported_state": reported_raw,
             }
         except httpx.RequestError as exc:
             logger.error("Actuation dispatch failed: %s", type(exc).__name__)
