@@ -343,4 +343,315 @@ describe('ConnectivityContext & In-Memory Draft Outbox', () => {
     unmount();
     customManager.dispose();
   });
+
+  describe('Render-Safe ConnectivityManager Lifecycle & Resource Accounting', () => {
+    function trackBrowserResources() {
+      const listenerCounts = {
+        windowOnline: 0,
+        windowOffline: 0,
+        docVisibility: 0,
+      };
+
+      const originalWindowAdd = window.addEventListener;
+      const originalWindowRemove = window.removeEventListener;
+      const originalDocAdd = document.addEventListener;
+      const originalDocRemove = document.removeEventListener;
+
+      window.addEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type === 'online') listenerCounts.windowOnline++;
+        if (type === 'offline') listenerCounts.windowOffline++;
+        return originalWindowAdd.call(window, type, listener, options);
+      });
+      window.removeEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type === 'online') listenerCounts.windowOnline--;
+        if (type === 'offline') listenerCounts.windowOffline--;
+        return originalWindowRemove.call(window, type, listener, options);
+      });
+      document.addEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type === 'visibilitychange') listenerCounts.docVisibility++;
+        return originalDocAdd.call(document, type, listener, options);
+      });
+      document.removeEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type === 'visibilitychange') listenerCounts.docVisibility--;
+        return originalDocRemove.call(document, type, listener, options);
+      });
+
+      return {
+        getCounts: () => ({ ...listenerCounts }),
+        restore: () => {
+          window.addEventListener = originalWindowAdd;
+          window.removeEventListener = originalWindowRemove;
+          document.addEventListener = originalDocAdd;
+          document.removeEventListener = originalDocRemove;
+        },
+      };
+    }
+
+    it('1. construction of a manager alone adds no browser listeners and schedules no timer', () => {
+      const tracker = trackBrowserResources();
+      try {
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+
+        const manager = new ConnectivityManager();
+        // Manager construction is completely side-effect-free
+        expect(manager.started).toBe(false);
+        expect(manager.disposed).toBe(false);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+
+        // Explicit start initiates listeners and probe
+        manager.start();
+        expect(manager.started).toBe(true);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        // start() is idempotent
+        manager.start();
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        // dispose() removes all listeners
+        manager.dispose();
+        expect(manager.disposed).toBe(true);
+        expect(manager.started).toBe(false);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+
+        // Disposed manager cannot start
+        manager.start();
+        expect(manager.started).toBe(false);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('2 & 3. mounting inside React.StrictMode settles with exactly one live set of listeners and no orphaned resources', async () => {
+      const tracker = trackBrowserResources();
+      const disposeSpy = vi.spyOn(ConnectivityManager.prototype, 'dispose');
+      const startSpy = vi.spyOn(ConnectivityManager.prototype, 'start');
+
+      try {
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+
+        const { unmount } = render(
+          <React.StrictMode>
+            <ConnectivityProvider>
+              <div data-testid="strict-child">Strict Mode Content</div>
+            </ConnectivityProvider>
+          </React.StrictMode>
+        );
+
+        // StrictMode mounts, unmounts (cleanup 1), and remounts (effect 2)
+        // Cleanup 1 disposed the first instance
+        expect(disposeSpy).toHaveBeenCalled();
+        // Remount called start on the second viable instance
+        expect(startSpy).toHaveBeenCalled();
+
+        // Exactly one live set of browser listeners exists after settling
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        // Unmount clears the remaining live manager
+        unmount();
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+      } finally {
+        disposeSpy.mockRestore();
+        startSpy.mockRestore();
+        tracker.restore();
+      }
+    });
+
+    it('4. repeated parent rerenders and callback-identity changes do not increase live resource counts', () => {
+      const tracker = trackBrowserResources();
+      try {
+        const ParentComponent = () => {
+          const [count, setCount] = useState(0);
+          const dynamicCallback = () => {
+            console.log('rerender count', count);
+          };
+
+          return (
+            <div>
+              <button data-testid="rerender-btn" onClick={() => setCount((c) => c + 1)}>
+                Rerender
+              </button>
+              <ConnectivityProvider onReconnected={dynamicCallback}>
+                <span>Child {count}</span>
+              </ConnectivityProvider>
+            </div>
+          );
+        };
+
+        const { getByTestId, unmount } = render(<ParentComponent />);
+
+        // After mount
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        // Trigger 15 rapid rerenders with changing callback references
+        for (let i = 0; i < 15; i++) {
+          act(() => {
+            getByTestId('rerender-btn').click();
+          });
+        }
+
+        // Must still have exactly 1 set of listeners
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        unmount();
+        // 5. Unmount removes every listener
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('6. switching from internal manager to injected manager disposes internal manager at effect boundary', () => {
+      const tracker = trackBrowserResources();
+      const disposeSpy = vi.spyOn(ConnectivityManager.prototype, 'dispose');
+      const customManager = new ConnectivityManager();
+
+      try {
+        const SwitchableParent = () => {
+          const [hasCustom, setHasCustom] = useState(false);
+          return (
+            <div>
+              <button data-testid="inject-btn" onClick={() => setHasCustom(true)}>
+                Inject Custom
+              </button>
+              <ConnectivityProvider manager={hasCustom ? customManager : undefined}>
+                <span>Provider Content</span>
+              </ConnectivityProvider>
+            </div>
+          );
+        };
+
+        const { getByTestId, unmount } = render(<SwitchableParent />);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        const disposeCountBefore = disposeSpy.mock.calls.length;
+
+        // Switch to custom manager
+        act(() => {
+          getByTestId('inject-btn').click();
+        });
+
+        // The internally created manager was cleanly disposed at effect boundary
+        expect(disposeSpy.mock.calls.length).toBeGreaterThan(disposeCountBefore);
+        // Custom manager was started and is not disposed
+        expect(customManager.started).toBe(true);
+        expect(customManager.disposed).toBe(false);
+
+        // Exactly one live set of listeners remains
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        // 7. Unmount preserves external ownership of custom manager
+        unmount();
+        expect(customManager.disposed).toBe(false);
+
+        // Explicit caller disposal cleans up
+        customManager.dispose();
+        expect(customManager.disposed).toBe(true);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+      } finally {
+        disposeSpy.mockRestore();
+        tracker.restore();
+      }
+    });
+
+    it('8. switching back to internal ownership creates a fresh viable manager', () => {
+      const tracker = trackBrowserResources();
+      const customManager = new ConnectivityManager();
+
+      try {
+        const RevertParent = () => {
+          const [useCustom, setUseCustom] = useState(true);
+          return (
+            <div>
+              <button data-testid="revert-btn" onClick={() => setUseCustom(false)}>
+                Revert to Internal
+              </button>
+              <ConnectivityProvider manager={useCustom ? customManager : undefined}>
+                <span>Revert Content</span>
+              </ConnectivityProvider>
+            </div>
+          );
+        };
+
+        const { getByTestId, unmount } = render(<RevertParent />);
+        expect(customManager.started).toBe(true);
+        expect(customManager.disposed).toBe(false);
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        // Revert to internal
+        act(() => {
+          getByTestId('revert-btn').click();
+        });
+
+        // Custom manager is not disposed by provider
+        expect(customManager.disposed).toBe(false);
+
+        // A fresh internal manager was created and started
+        expect(tracker.getCounts()).toEqual({ windowOnline: 1, windowOffline: 1, docVisibility: 1 });
+
+        unmount();
+        // Unmounting provider cleans up internal manager
+        // Only custom manager's listeners would remain if customManager wasn't detached from window
+        // But customManager removeBrowserEvents ran during its effect cleanup
+        expect(tracker.getCounts()).toEqual({ windowOnline: 0, windowOffline: 0, docVisibility: 0 });
+
+        customManager.dispose();
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('9. connectivity recovery and operator-session revalidation work after StrictMode lifecycle replay', async () => {
+      const onReconnected = vi.fn();
+      let capturedContext: ReturnType<typeof useConnectivity> | null = null;
+
+      // Mock getHealth to succeed from initial render
+      const healthSpy = vi.spyOn(api, 'getHealth').mockResolvedValue({
+        status: 'healthy',
+        provider: 'local',
+        database: 'connected',
+      } as any);
+
+      const TestConsumer = () => {
+        capturedContext = useConnectivity();
+        return <div>{capturedContext.status}</div>;
+      };
+
+      const { unmount } = render(
+        <React.StrictMode>
+          <ConnectivityProvider onReconnected={onReconnected}>
+            <TestConsumer />
+          </ConnectivityProvider>
+        </React.StrictMode>
+      );
+
+      expect(capturedContext).not.toBeNull();
+
+      // Ensure initial health probe settles to online
+      await act(async () => {
+        await capturedContext!.checkNow();
+      });
+      expect(capturedContext!.status).toBe('online');
+      expect(onReconnected).toHaveBeenCalledTimes(1);
+
+      // Trigger offline transition via window event
+      act(() => {
+        window.dispatchEvent(new Event('offline'));
+      });
+      expect(capturedContext!.status).toBe('offline');
+      expect(onReconnected).toHaveBeenCalledTimes(1);
+
+      // Trigger online recovery via event and health check
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+        await capturedContext!.checkNow();
+      });
+
+      expect(capturedContext!.status).toBe('online');
+      expect(onReconnected).toHaveBeenCalledTimes(2);
+
+      healthSpy.mockRestore();
+      unmount();
+    });
+  });
 });
