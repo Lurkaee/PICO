@@ -602,6 +602,57 @@ The desktop client implements a structured error model mapping transport, timeou
   - **Security Invariant**: Never calls Home Assistant service endpoints, mutates device state, automatically enables actuation, exposes secrets, or claims physical connectivity unless explicitly observed via read-only check.
   - **Response (200 OK)**: `ActuationReadinessReport` (`ready_for_commissioning`, `target_entity_id`, `live_check_performed`, `live_passed`, `reported_state`, `actuation_enabled`, `checks`, `summary`).
 
+---
+
+### 2.9.1 Stage C Switch/Plug Control (Milestone P7.4.1 & P7.4.1.2)
+
+- **`POST /api/homeassistant/switch/plan`**
+  - **Description**: Create a structured action plan for an allowlisted switch without causing any physical action (strictly read-only).
+  - **Request Body**: `SwitchPlanRequest` (`target_state: Literal["on", "off"]`, `target_entity_id: str`).
+  - **Response (200 OK)**: `SwitchActuationPlan` (`plan_id`, `entity_id`, `requested_state`, `current_state`, `state_readiness`, `service`, `is_mutation_needed`, `input_digest`, `is_mutation_performed=false`).
+
+- **`POST /api/homeassistant/switch/propose`**
+  - **Description**: Propose an actuation execution for an allowlisted switch. Creates a `ToolExecution` in `awaiting_approval` status bound to SHA-256 digest. Fails closed without valid `X-Pico-Approval-Token`.
+  - **Request Body**: `SwitchProposeRequest` (`target_state: Literal["on", "off"]`, `target_entity_id: str`, optional `reason`).
+  - **Headers**: `X-Pico-Approval-Token` (mandatory).
+  - **Response (201 Created)**: `ToolExecutionResponse` (status: `awaiting_approval`).
+
+- **`GET /api/homeassistant/switch/readiness`**
+  - **Description**: Evaluate commissioning and physical action readiness for allowlisted switch entities without executing mutations.
+  - **Query Parameters**: `check_live: bool` (default: `false`), `target_entity_id: str | None` (optional).
+  - **Response (200 OK)**: `SwitchActuationReadinessReport`.
+
+- **`GET /api/homeassistant/switch/{execution_id}`**
+  - **Description**: Inspect approval state, execution status, and verification outcome of a switch actuation execution.
+  - **Response (200 OK)**: `ToolExecutionResponse`.
+
+---
+
+### 2.9.2 Stage D Read-Only Climate Awareness & Safe Setpoint Feasibility (Milestone P7.4.2.1)
+
+**Operational Invariants & Safety Constraints**:
+- **Strictly Read-Only Awareness & Planning**: Under no circumstances does Milestone P7.4.2.1 change thermostat setpoints, adjust HVAC modes, toggle fan modes, activate presets, or dispatch mutations. `is_mutation_performed=false` is guaranteed. Physical actuation remains strictly disabled.
+- **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_ENABLED=true` and `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true` (disabled by default). Does NOT enable physical actuation.
+- **Exact String Allowlist**: `HOME_ASSISTANT_CLIMATE_ALLOWLIST` must be a JSON array of exact `climate.*` entity IDs. Wildcards (`*`), prefixes, regex, empty allowlist, whitespace variations, and non-climate domains fail closed with `ValidationError`.
+- **Bounded Sanitized Attributes**: State payloads pass through `sanitize_entity_attributes` and expose only trustworthy bounded fields (`current_temperature`, `temperature`, `min_temp`, `max_temp`, `target_temp_step`, `temperature_unit`, `hvac_mode`, `hvac_modes`). Unvetted attributes, tokens, and GPS coordinates are dropped.
+- **Fail-Closed Feasibility Planning**: Requested target temperatures are evaluated against reported device limits. Missing, non-numeric, non-finite, contradictory, or missing-unit bounds report `state_unknown`, `unit_unknown`, or `target_out_of_range`. Operating limits and units are never fabricated.
+
+- **`POST /api/homeassistant/climate/plan`**
+  - **Description**: Evaluates the feasibility of a requested temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
+  - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str`).
+  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id`, `entity_id`, `requested_temperature`, `requested_unit`, `current_temperature`, `min_temp`, `max_temp`, `temperature_unit`, `is_feasible`, `feasibility_status`, `reasons`, `input_digest`, `is_mutation_performed=false`).
+
+- **`GET /api/homeassistant/climate/observe/{entity_id}`**
+  - **Description**: Inspects the current reported state and operating bounds of an allowlisted climate entity. Guaranteed read-only GET.
+  - **Path Parameters**: `entity_id: str` (must match exact allowlisted `climate.*` entity).
+  - **Response (200 OK)**: `ClimateObservation` (`entity_id`, `domain`, `state`, `current_temperature`, `target_temperature`, `min_temp`, `max_temp`, `target_temp_step`, `temperature_unit`, `hvac_mode`, `hvac_modes`, `state_readiness`, `reasons`, `attributes`, `is_mutation_performed=false`, `physical_device_connectivity_claimed=false`).
+
+- **`GET /api/homeassistant/climate/readiness`**
+  - **Description**: Evaluates Stage D climate awareness and observation readiness. Offline preflight performs zero network requests. Live read-only check (`check_live=true`) probes the target climate entity without mutations.
+  - **Query Parameters**: `check_live: bool` (default: `false`), `target_entity_id: str | None` (optional).
+  - **Response (200 OK)**: `ClimateReadinessReport` (`ready_for_observation`, `target_entity_id`, `allowlisted_entities`, `climate_awareness_enabled`, `actuation_enabled=false`, `live_check_performed`, `live_passed`, `state_readiness`, `observation`, `checks`, `summary`).
+
+---
 
 ### 2.10 OS & Desktop Application Automation Capabilities (Milestone P8.1)
 

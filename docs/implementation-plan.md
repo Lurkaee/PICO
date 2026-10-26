@@ -111,8 +111,17 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Zero mutations on already-satisfied state: authoritative read matching requested state skips physical dispatch (`dispatch_status="already_satisfied"`) and verifies through independent read-after-write evidence.
   - Fail-closed live commissioning readiness: `HomeAssistantSwitchReadinessChecker` marks `live_switch_readability` as `FAIL` with `STATE_UNAVAILABLE` or `STATE_UNKNOWN` error categories when target switch reports non-on/off states, preventing false commissioning clearance.
   - Execution failure output preservation: `ToolExecutionEngine._handle_execution_failure` records structured output in the execution repository so blocked precondition diagnostics remain inspectable via `GET /api/homeassistant/switch/{execution_id}`.
-- [ ] **P7.4.2 Stage D Climate & Environmental Controls**: Planned.
-- **Status**: **STAGE A, STAGE B & STAGE C (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2) COMPLETED & VERIFIED; P7.4.2 PLANNED**.
+- [x] **P7.4.2.1 Stage D Read-Only Climate Awareness & Safe Setpoint Feasibility (Preparatory Slice)**:
+  - Strictly read-only awareness and planning slice. Zero physical thermostat/HVAC changes or mutations (`is_mutation_performed=False`).
+  - Separately scoped Stage D configuration: `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED: bool = False` (disabled by default) and `HOME_ASSISTANT_CLIMATE_ALLOWLIST: str = "[]"` (exact JSON list of `climate.*` entity IDs).
+  - Exact string allowlist validation: rejects wildcards, regex, prefixes, empty list, whitespace variations, and non-climate domains before issuing any Home Assistant requests.
+  - Typed climate contracts (`ClimateObservation`, `ClimateSetpointPlan`, `ClimateReadinessReport`) with bounded sanitized attributes.
+  - Deterministic setpoint feasibility planning: evaluates requested setpoints against reported `min_temp` and `max_temp` without inventing operating limits or converting ambiguous units. Structured status classifications (`ready`, `target_out_of_range`, `state_unavailable`, `state_unknown`, `unit_unknown`, `not_allowlisted`, `disabled`).
+  - Read-only readiness inspection: CLI (`python -m pico.homeassistant.readiness --climate`), REST API (`GET /api/homeassistant/climate/readiness`), and tool capability (`homeassistant.climate_readiness`).
+  - REST API endpoints: `POST /api/homeassistant/climate/plan`, `GET /api/homeassistant/climate/observe/{entity_id}`, and `GET /api/homeassistant/climate/readiness`.
+  - Zero climate mutation or generic service capabilities: WebSocket allowlist unchanged, zero POST/PUT/PATCH/DELETE calls issued for climate planning/observation.
+- [ ] **P7.4.2 Stage D Climate & Environmental Controls (Full Physical Actuation)**: Planned. Physical climate actuation remains strictly unsupported.
+- **Status**: **STAGE A, STAGE B, STAGE C, & STAGE D PREPARATORY (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1) COMPLETED & VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
 
 
 ### Milestone P8: Computer Control & Engineering Workspace

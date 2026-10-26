@@ -10,8 +10,14 @@ from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError, ValidationError
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.actuation import validate_switch_allowlist
+from pico.homeassistant.climate import (
+    HomeAssistantClimateService,
+    validate_climate_allowlist,
+)
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
+    ClimateObservation,
+    ClimateReadinessReport,
     HomeAssistantConnectionError,
     ReadinessCheckItem,
     ReadinessCheckStatus,
@@ -950,6 +956,434 @@ async def evaluate_switch_actuation_readiness(
     )
 
 
+class HomeAssistantClimateReadinessChecker:
+    """Read-only preflight and commissioning readiness checker for Stage D climate awareness.
+
+    Invariants:
+    1. NEVER calls a Home Assistant service endpoint or dispatches a mutation.
+    2. NEVER operates a thermostat or changes entity state.
+    3. NEVER approves, claims, queues, or executes an actuation capability.
+    4. NEVER leaks secret tokens, credentials, query parameters, or raw exception strings.
+    5. Offline preflight performs strictly ZERO network requests.
+    6. Live read-only check requires an explicit operator opt-in (check_live=True).
+    7. Structured error categories provide actionable diagnostics safely.
+    """
+
+    def __init__(
+        self,
+        service: HomeAssistantService | None = None,
+        readonly_client: HomeAssistantClient | None = None,
+    ) -> None:
+        self._service = service
+        self._readonly_client = readonly_client
+        self._climate_service = HomeAssistantClimateService(
+            service=service,
+            readonly_client=readonly_client,
+        )
+
+    async def evaluate_readiness(
+        self,
+        target_entity_id: str | None = None,
+        check_live: bool = False,
+    ) -> ClimateReadinessReport:
+        checks: list[ReadinessCheckItem] = []
+
+        # 1. Integration configuration & enablement
+        integration_enabled = settings.HOME_ASSISTANT_ENABLED
+        access_token_present = bool(
+            settings.HOME_ASSISTANT_ACCESS_TOKEN and settings.HOME_ASSISTANT_ACCESS_TOKEN.strip()
+        )
+
+        if not integration_enabled and not access_token_present:
+            checks.append(
+                ReadinessCheckItem(
+                    name="integration_configuration",
+                    status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                    message="Home Assistant integration is disabled and access token is unset.",
+                    remediation="Set HOME_ASSISTANT_ENABLED=true and configure HOME_ASSISTANT_ACCESS_TOKEN in secure environment configuration.",
+                )
+            )
+        elif not integration_enabled:
+            checks.append(
+                ReadinessCheckItem(
+                    name="integration_configuration",
+                    status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                    message="Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).",
+                    remediation="Set HOME_ASSISTANT_ENABLED=true to enable integration awareness.",
+                )
+            )
+        elif not access_token_present:
+            checks.append(
+                ReadinessCheckItem(
+                    name="integration_configuration",
+                    status=ReadinessCheckStatus.NOT_CONFIGURED,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                    message="Home Assistant access token is missing or empty.",
+                    remediation="Configure HOME_ASSISTANT_ACCESS_TOKEN with a valid Home Assistant Long-Lived Access Token.",
+                )
+            )
+        else:
+            checks.append(
+                ReadinessCheckItem(
+                    name="integration_configuration",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message="Home Assistant integration is enabled with configured access token (token value withheld).",
+                    remediation=None,
+                )
+            )
+
+        # 2. Stage D Climate Awareness enablement
+        climate_awareness_enabled = bool(getattr(settings, "HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED", False))
+        if not climate_awareness_enabled:
+            checks.append(
+                ReadinessCheckItem(
+                    name="climate_awareness_configuration",
+                    status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                    message="Stage D climate awareness is disabled by configuration (HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=false).",
+                    remediation="Set HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true to enable climate awareness and setpoint feasibility planning.",
+                )
+            )
+        else:
+            checks.append(
+                ReadinessCheckItem(
+                    name="climate_awareness_configuration",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message="Stage D climate awareness is enabled by configuration.",
+                    remediation=None,
+                )
+            )
+
+        # 3. Climate allowlist validation
+        allowlisted_set: set[str] = set()
+        allowlist_valid = False
+        try:
+            allowlisted_set = validate_climate_allowlist()
+            allowlist_valid = True
+            checks.append(
+                ReadinessCheckItem(
+                    name="climate_allowlist",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message=f"Stage D climate allowlist is valid with {len(allowlisted_set)} configured climate entities: {sorted(list(allowlisted_set))}.",
+                    remediation=None,
+                )
+            )
+        except ValidationError as exc:
+            err_msg = str(exc)
+            if "empty" in err_msg.lower() or "unconfigured" in err_msg.lower():
+                checks.append(
+                    ReadinessCheckItem(
+                        name="climate_allowlist",
+                        status=ReadinessCheckStatus.NOT_CONFIGURED,
+                        error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                        message="Stage D climate allowlist is empty or unconfigured (HOME_ASSISTANT_CLIMATE_ALLOWLIST).",
+                        remediation="Configure HOME_ASSISTANT_CLIMATE_ALLOWLIST with a JSON list of climate.* entity IDs.",
+                    )
+                )
+            else:
+                checks.append(
+                    ReadinessCheckItem(
+                        name="climate_allowlist",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.INVALID_ENTITY,
+                        message=f"Stage D climate allowlist is invalid: {err_msg}",
+                        remediation="Ensure HOME_ASSISTANT_CLIMATE_ALLOWLIST contains only valid, exact climate.* entity IDs without wildcards.",
+                    )
+                )
+
+        # 4. Target entity membership check
+        target_to_probe: str | None = None
+        if target_entity_id:
+            clean_target = target_entity_id.strip()
+            if not clean_target.startswith("climate."):
+                checks.append(
+                    ReadinessCheckItem(
+                        name="target_climate_entity_membership",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.INVALID_ENTITY,
+                        message=f"Target entity '{clean_target}' is not in the 'climate' domain.",
+                        remediation="Ensure target entity ID begins with 'climate.'.",
+                    )
+                )
+            elif not allowlist_valid or clean_target not in allowlisted_set:
+                checks.append(
+                    ReadinessCheckItem(
+                        name="target_climate_entity_membership",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.NOT_ALLOWLISTED,
+                        message=f"Target entity '{clean_target}' is not in HOME_ASSISTANT_CLIMATE_ALLOWLIST: {sorted(list(allowlisted_set))}.",
+                        remediation="Add target entity to HOME_ASSISTANT_CLIMATE_ALLOWLIST before attempting observation.",
+                    )
+                )
+            else:
+                target_to_probe = clean_target
+                checks.append(
+                    ReadinessCheckItem(
+                        name="target_climate_entity_membership",
+                        status=ReadinessCheckStatus.PASS,
+                        error_category=None,
+                        message=f"Target entity '{clean_target}' is explicitly present in HOME_ASSISTANT_CLIMATE_ALLOWLIST.",
+                        remediation=None,
+                    )
+                )
+        else:
+            if allowlist_valid and allowlisted_set:
+                target_to_probe = sorted(list(allowlisted_set))[0]
+                checks.append(
+                    ReadinessCheckItem(
+                        name="target_climate_entity_membership",
+                        status=ReadinessCheckStatus.PASS,
+                        error_category=None,
+                        message=f"No specific target entity specified. Defaulting to first allowlisted entity: '{target_to_probe}'.",
+                        remediation=None,
+                    )
+                )
+            else:
+                checks.append(
+                    ReadinessCheckItem(
+                        name="target_climate_entity_membership",
+                        status=ReadinessCheckStatus.NOT_CONFIGURED,
+                        error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                        message="Cannot evaluate target entity membership because allowlist is invalid or empty.",
+                        remediation="Configure HOME_ASSISTANT_CLIMATE_ALLOWLIST with at least one climate.* entity.",
+                    )
+                )
+
+        # 5. Actuation boundary check
+        checks.append(
+            ReadinessCheckItem(
+                name="actuation_boundary",
+                status=ReadinessCheckStatus.PASS,
+                error_category=None,
+                message="Climate physical actuation is disabled by policy (strictly read-only awareness milestone).",
+                remediation=None,
+            )
+        )
+
+        # 6. Transport security check
+        base_url = settings.HOME_ASSISTANT_BASE_URL
+        allow_insecure = settings.HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT
+        try:
+            parsed_url = urlparse(base_url)
+            scheme = (parsed_url.scheme or "").lower()
+            host = parsed_url.hostname or ""
+            if scheme not in ("http", "https"):
+                checks.append(
+                    ReadinessCheckItem(
+                        name="transport_security",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.INVALID_URL,
+                        message=f"Invalid base URL scheme '{scheme}'. Must be http or https.",
+                        remediation="Configure HOME_ASSISTANT_BASE_URL starting with http:// or https://.",
+                    )
+                )
+            elif scheme == "http" and host not in ("127.0.0.1", "localhost", "::1") and not allow_insecure:
+                checks.append(
+                    ReadinessCheckItem(
+                        name="transport_security",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.INSECURE_TRANSPORT,
+                        message=f"Insecure transport ('http://') to non-loopback host '{host}' is prohibited.",
+                        remediation="Use 'https://' or set HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT=true for non-loopback connections.",
+                    )
+                )
+            else:
+                checks.append(
+                    ReadinessCheckItem(
+                        name="transport_security",
+                        status=ReadinessCheckStatus.PASS,
+                        error_category=None,
+                        message=f"Transport configuration is valid and satisfies security policy ({scheme}://{host}).",
+                        remediation=None,
+                    )
+                )
+        except Exception as exc:
+            checks.append(
+                ReadinessCheckItem(
+                    name="transport_security",
+                    status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.INVALID_URL,
+                    message=f"Failed to parse HOME_ASSISTANT_BASE_URL: {exc}",
+                    remediation="Configure HOME_ASSISTANT_BASE_URL as a valid RFC-compliant URL.",
+                )
+            )
+
+        # 7. Live Read-Only Connectivity Check
+        live_passed: bool | None = None
+        reported_state: str | None = None
+        state_readiness: str | None = None
+        observation: ClimateObservation | None = None
+
+        if not check_live:
+            checks.append(
+                ReadinessCheckItem(
+                    name="live_climate_readability",
+                    status=ReadinessCheckStatus.NOT_CHECKED,
+                    error_category=None,
+                    message="Live read-only connectivity check not performed (offline preflight). Pass check_live=True to probe.",
+                    remediation=None,
+                )
+            )
+        else:
+            if not target_to_probe:
+                live_passed = False
+                checks.append(
+                    ReadinessCheckItem(
+                        name="live_climate_readability",
+                        status=ReadinessCheckStatus.FAIL,
+                        error_category=ReadinessErrorCategory.MISSING_CONFIGURATION,
+                        message="Live read-only check skipped: no valid allowlisted target entity available to probe.",
+                        remediation="Configure HOME_ASSISTANT_CLIMATE_ALLOWLIST with at least one climate.* entity.",
+                    )
+                )
+            else:
+                try:
+                    obs = await self._climate_service.get_climate_observation(target_to_probe)
+                    observation = obs
+                    reported_state = obs.state
+                    state_readiness = obs.state_readiness
+
+                    if obs.state_readiness == "state_unavailable":
+                        live_passed = False
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_climate_readability",
+                                status=ReadinessCheckStatus.FAIL,
+                                error_category=ReadinessErrorCategory.STATE_UNAVAILABLE,
+                                message=f"Live climate readability failed: entity '{target_to_probe}' is unreachable or unavailable.",
+                                remediation="Verify Home Assistant server is running and climate entity is online.",
+                            )
+                        )
+                    elif obs.state_readiness == "state_unknown":
+                        live_passed = False
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_climate_readability",
+                                status=ReadinessCheckStatus.FAIL,
+                                error_category=ReadinessErrorCategory.STATE_UNKNOWN,
+                                message=f"Live climate readability failed: reported state or bounds for '{target_to_probe}' are unknown or invalid ({obs.reasons}).",
+                                remediation="Ensure climate device reports valid finite operating temperature bounds.",
+                            )
+                        )
+                    elif obs.state_readiness == "unit_unknown":
+                        live_passed = False
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_climate_readability",
+                                status=ReadinessCheckStatus.FAIL,
+                                error_category=ReadinessErrorCategory.UNIT_UNKNOWN,
+                                message=f"Live climate readability failed: temperature unit for '{target_to_probe}' cannot be established.",
+                                remediation="Ensure climate device reports a trustworthy unit_of_measurement (°C or °F).",
+                            )
+                        )
+                    else:
+                        live_passed = True
+                        checks.append(
+                            ReadinessCheckItem(
+                                name="live_climate_readability",
+                                status=ReadinessCheckStatus.PASS,
+                                error_category=None,
+                                message=f"Live read-only inspection succeeded for '{target_to_probe}': mode={obs.state}, temp={obs.current_temperature}{obs.temperature_unit or ''}, bounds=[{obs.min_temp}, {obs.max_temp}].",
+                                remediation=None,
+                            )
+                        )
+                except EntityNotFoundError:
+                    live_passed = False
+                    checks.append(
+                        ReadinessCheckItem(
+                            name="live_climate_readability",
+                            status=ReadinessCheckStatus.FAIL,
+                            error_category=ReadinessErrorCategory.ENTITY_NOT_FOUND,
+                            message=f"Live read-only inspection failed: entity '{target_to_probe}' was not found in Home Assistant.",
+                            remediation="Verify entity exists in Home Assistant under Developer Tools -> States.",
+                        )
+                    )
+                except AuthorizationError:
+                    live_passed = False
+                    checks.append(
+                        ReadinessCheckItem(
+                            name="live_climate_readability",
+                            status=ReadinessCheckStatus.FAIL,
+                            error_category=ReadinessErrorCategory.AUTHENTICATION_REJECTED,
+                            message="Live read-only inspection failed: Home Assistant rejected the access token (401 Unauthorized).",
+                            remediation="Generate a new Long-Lived Access Token in Home Assistant and configure HOME_ASSISTANT_ACCESS_TOKEN.",
+                        )
+                    )
+                except (ConnectionError, HomeAssistantConnectionError) as exc:
+                    live_passed = False
+                    checks.append(
+                        ReadinessCheckItem(
+                            name="live_climate_readability",
+                            status=ReadinessCheckStatus.FAIL,
+                            error_category=ReadinessErrorCategory.CONNECTION_FAILED,
+                            message=f"Live read-only inspection failed: could not connect to Home Assistant at '{base_url}'.",
+                            remediation="Verify Home Assistant server is running and reachable from PICO.",
+                        )
+                    )
+                except Exception as exc:
+                    live_passed = False
+                    checks.append(
+                        ReadinessCheckItem(
+                            name="live_climate_readability",
+                            status=ReadinessCheckStatus.FAIL,
+                            error_category=ReadinessErrorCategory.CONNECTION_FAILED,
+                            message=f"Live read-only inspection failed: {type(exc).__name__}",
+                            remediation="Check Home Assistant logs and network reachability.",
+                        )
+                    )
+
+        ready_for_observation = all(
+            c.status == ReadinessCheckStatus.PASS
+            for c in checks
+            if c.status != ReadinessCheckStatus.NOT_CHECKED
+        )
+
+        if ready_for_observation:
+            summary = (
+                f"READY: Stage D climate awareness preflight passed for '{target_to_probe}'. "
+                f"Climate awareness is ready (physical actuation strictly disabled)."
+            )
+        else:
+            failed_checks = [
+                c.name
+                for c in checks
+                if c.status in (ReadinessCheckStatus.FAIL, ReadinessCheckStatus.NOT_CONFIGURED)
+            ]
+            summary = f"NOT READY: Stage D climate awareness preflight incomplete or failed on: {', '.join(failed_checks)}."
+
+        return ClimateReadinessReport(
+            ready_for_observation=ready_for_observation,
+            target_entity_id=target_to_probe,
+            allowlisted_entities=sorted(list(allowlisted_set)),
+            climate_awareness_enabled=climate_awareness_enabled,
+            actuation_enabled=False,
+            live_check_performed=check_live,
+            live_passed=live_passed if check_live else None,
+            state_readiness=state_readiness,
+            observation=observation,
+            checks=checks,
+            summary=summary,
+        )
+
+
+async def evaluate_climate_readiness(
+    target_entity_id: str | None = None,
+    check_live: bool = False,
+    readonly_client: HomeAssistantClient | None = None,
+) -> ClimateReadinessReport:
+    """Convenience helper to evaluate Stage D climate awareness readiness."""
+    checker = HomeAssistantClimateReadinessChecker(readonly_client=readonly_client)
+    return await checker.evaluate_readiness(
+        target_entity_id=target_entity_id,
+        check_live=check_live,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint for offline and live readiness preflight."""
     parser = argparse.ArgumentParser(
@@ -962,10 +1396,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Evaluate Stage C switch actuation readiness instead of P7.3 test light.",
     )
     parser.add_argument(
+        "--climate",
+        action="store_true",
+        default=False,
+        help="Evaluate Stage D climate awareness and readiness.",
+    )
+    parser.add_argument(
         "--entity",
         type=str,
         default=None,
-        help="Specific target switch entity ID to check (for Stage C).",
+        help="Specific target entity ID to check (for Stage C switch or Stage D climate).",
     )
     parser.add_argument(
         "--live",
@@ -981,7 +1421,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.switch:
+    if args.climate:
+        report = asyncio.run(
+            evaluate_climate_readiness(
+                target_entity_id=args.entity,
+                check_live=args.live,
+            )
+        )
+        title = "PICO P7.4.2 Stage D Climate Awareness & Readiness Report"
+    elif args.switch:
         report = asyncio.run(
             evaluate_switch_actuation_readiness(
                 target_entity_id=args.entity,
@@ -1001,12 +1449,14 @@ def main(argv: list[str] | None = None) -> int:
         print("=" * 70)
         print(f"Target Entity ID : {report.target_entity_id or 'NOT SPECIFIED'}")
         print(f"Actuation Enabled: {report.actuation_enabled}")
+        if hasattr(report, "climate_awareness_enabled"):
+            print(f"Climate Enabled  : {report.climate_awareness_enabled}")
         if hasattr(report, "stage_c_enabled"):
             print(f"Stage C Enabled  : {report.stage_c_enabled}")
         if hasattr(report, "allowlisted_entities"):
             print(f"Allowlisted      : {report.allowlisted_entities}")
         print(f"Live Check Run   : {report.live_check_performed}")
-        if report.reported_state:
+        if getattr(report, "reported_state", None):
             print(f"Reported State   : {report.reported_state}")
         print("-" * 70)
         print("Checks:")
@@ -1016,11 +1466,13 @@ def main(argv: list[str] | None = None) -> int:
             if check.remediation:
                 print(f"                 Remediation: {check.remediation}")
         print("-" * 70)
-        print(f"Verdict: {'READY' if report.ready_for_commissioning else 'NOT READY'}")
+        verdict = getattr(report, "ready_for_observation", getattr(report, "ready_for_commissioning", False))
+        print(f"Verdict: {'READY' if verdict else 'NOT READY'}")
         print(f"Summary: {report.summary}")
         print("=" * 70)
 
-    return 0 if report.ready_for_commissioning else 1
+    verdict = getattr(report, "ready_for_observation", getattr(report, "ready_for_commissioning", False))
+    return 0 if verdict else 1
 
 
 if __name__ == "__main__":

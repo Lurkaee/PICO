@@ -495,8 +495,23 @@ Target Environment:
   - Single-Use Replay Protection: Approval ticket is marked consumed upon transition to running; replay/duplicate attempts fail closed.
   - Bounded Execution & Independent Verification: Narrow REST mutation path followed by independent read-only state polling. Zero automatic mutation retries on error or timeout.
   - Audit Trail: Immutable event ledger recording of intent, execution, authorization, dispatch, and verification outcomes without credential leaks.
-- **P7.4 Stage C/D Everyday Appliances**: Authorized switches, plugs, and climate controls.
-- *Status*: **STAGE A (P7.1/P7.2) & STAGE B (P7.3) VERIFIED; P7.4 PLANNED**.
+- **P7.4.1 Stage C Switch/Plug Control (First Stage C Capability)**:
+  - Narrow, separately registered Stage C capability: `homeassistant.allowlisted_switch_actuate`.
+  - Triple enablement gate: requires `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, and `HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED=true`.
+  - Explicit entity allowlist (`HOME_ASSISTANT_SWITCH_ALLOWLIST`): exact JSON list of `switch.*` domain entities. Rejects wildcards, regex, prefixes, empty list, non-switch domains, and unlisted entities.
+  - Operations strictly limited to `switch.turn_on` and `switch.turn_off`. Zero generic service calls.
+  - Truthful state preflight (P7.4.1.2): 4-way state readiness classification (`ready`, `already_satisfied`, `state_unavailable`, `state_unknown`), fail-closed pre-dispatch verification, zero mutations on already satisfied states, and honest commissioning readiness reporting.
+- **P7.4.2.1 Stage D Read-Only Climate Awareness & Safe Setpoint Feasibility (Preparatory Slice)**:
+  - Strictly read-only climate inspection and setpoint feasibility assessment. Zero physical thermostat/HVAC state mutations (`is_mutation_performed=False`).
+  - Separately scoped Stage D configuration: `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED: bool = False` (disabled by default) and `HOME_ASSISTANT_CLIMATE_ALLOWLIST: str = "[]"` (exact JSON list of `climate.*` entity IDs).
+  - Exact string allowlist validation: rejects wildcards, regex, prefixes, empty list, whitespace variations, and non-climate domains before issuing any Home Assistant requests.
+  - Typed climate observation (`ClimateObservation`) and feasibility planning (`ClimateSetpointPlan`) contracts with bounded sanitized attributes.
+  - Deterministic setpoint feasibility planning: evaluates requested setpoints against reported `min_temp` and `max_temp` without inventing operating limits or converting ambiguous units. Structured status classifications (`ready`, `target_out_of_range`, `state_unavailable`, `state_unknown`, `unit_unknown`, `not_allowlisted`, `disabled`).
+  - Read-only readiness inspection: CLI (`python -m pico.homeassistant.readiness --climate`), REST API (`GET /api/homeassistant/climate/readiness`), and tool capability (`homeassistant.climate_readiness`).
+  - REST API routes: `POST /api/homeassistant/climate/plan`, `GET /api/homeassistant/climate/observe/{entity_id}`, and `GET /api/homeassistant/climate/readiness`.
+  - Zero climate mutation or generic service capabilities: WebSocket allowlist unchanged, zero POST/PUT/PATCH/DELETE calls issued for climate planning/observation.
+- **P7.4.2 Stage D Climate & Environmental Controls (Full Physical Actuation)**: Planned. Physical climate actuation remains strictly unsupported.
+- *Status*: **STAGE A (P7.1/P7.2), STAGE B (P7.3), STAGE C (P7.4.1/P7.4.1.2), & STAGE D PREPARATORY (P7.4.2.1) VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
 
 ### Milestone P8: Computer Control & Engineering Workspace
 - Sandboxed desktop application and window inspection (P8.1).

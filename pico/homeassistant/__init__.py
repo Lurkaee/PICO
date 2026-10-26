@@ -10,8 +10,15 @@ from pico.homeassistant.actuation import (
     validate_switch_actuation_preconditions,
     validate_switch_allowlist,
 )
+from pico.homeassistant.climate import (
+    HomeAssistantClimateService,
+    validate_climate_allowlist,
+)
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
+    ClimateObservation,
+    ClimateReadinessReport,
+    ClimateSetpointPlan,
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
@@ -22,6 +29,10 @@ from pico.homeassistant.contracts import (
     SwitchActuationResult,
     TestLightActuationPlan,
     TestLightActuationResult,
+)
+from pico.homeassistant.readiness import (
+    HomeAssistantClimateReadinessChecker,
+    evaluate_climate_readiness,
 )
 from pico.homeassistant.service import HomeAssistantService
 from pico.homeassistant.ws_client import (
@@ -36,9 +47,11 @@ __all__ = [
     "HomeAssistantService",
     "HomeAssistantActuationService",
     "HomeAssistantSwitchActuationService",
+    "HomeAssistantClimateService",
     "validate_actuation_preconditions",
     "validate_switch_actuation_preconditions",
     "validate_switch_allowlist",
+    "validate_climate_allowlist",
     "HomeAssistantWebSocketClient",
     "BaseWebSocketTransport",
     "AsyncioWebSocketTransport",
@@ -54,6 +67,11 @@ __all__ = [
     "SwitchActuationPlan",
     "SwitchActuationResult",
     "SwitchActuationReadinessReport",
+    "ClimateObservation",
+    "ClimateSetpointPlan",
+    "ClimateReadinessReport",
+    "HomeAssistantClimateReadinessChecker",
+    "evaluate_climate_readiness",
     "compute_trusted_ha_classification",
     "format_homeassistant_context_items",
 ]

@@ -29,6 +29,7 @@ from pico.capabilities.homeassistant.ha_actuation import (
 )
 from pico.capabilities.homeassistant.ha_readiness import (
     HomeAssistantActuationReadinessCapability,
+    HomeAssistantClimateReadinessCapability,
     HomeAssistantSwitchActuationReadinessCapability,
 )
 from pico.capabilities.browser import OpenPageCapability
@@ -75,6 +76,7 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(HomeAssistantActuationReadinessCapability())
     reg.register(HomeAssistantSwitchActuationCapability())
     reg.register(HomeAssistantSwitchActuationReadinessCapability())
+    reg.register(HomeAssistantClimateReadinessCapability())
     reg.register(InspectWindowsCapability())
     reg.register(LaunchApplicationCapability())
     reg.register(StageDiffCapability())
