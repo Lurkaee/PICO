@@ -653,5 +653,87 @@ describe('ConnectivityContext & In-Memory Draft Outbox', () => {
       healthSpy.mockRestore();
       unmount();
     });
+
+    it('10. provider detaches from an externally owned manager without disposing it, and manager remains idle after pending probes settle', async () => {
+      let deferredResolve: (val: any) => void;
+      const pendingPromise = new Promise((res) => {
+        deferredResolve = res;
+      });
+      const healthSpy = vi.spyOn(api, 'getHealth').mockImplementation(() => pendingPromise as any);
+
+      const customManager = new ConnectivityManager({ baseIntervalMs: 3000 });
+      const { unmount } = render(
+        <ConnectivityProvider manager={customManager}>
+          <div>Injected Consumer</div>
+        </ConnectivityProvider>
+      );
+
+      expect(customManager.started).toBe(true);
+      expect(customManager.disposed).toBe(false);
+      expect(healthSpy).toHaveBeenCalledTimes(1);
+
+      // Unmount provider while probe is in flight
+      unmount();
+
+      // Manager is stopped, but NOT disposed
+      expect(customManager.started).toBe(false);
+      expect(customManager.disposed).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Settle the pending probe
+      await act(async () => {
+        deferredResolve({ status: 'ok', environment: 'dev', version: '0.1.0', timestamp: new Date().toISOString() });
+      });
+
+      // Manager must remain completely idle: zero timers, no new probe requests
+      expect(vi.getTimerCount()).toBe(0);
+      act(() => {
+        vi.advanceTimersByTime(30000);
+      });
+      expect(healthSpy).toHaveBeenCalledTimes(1); // No new probes scheduled
+
+      healthSpy.mockRestore();
+      customManager.dispose();
+    });
+
+    it('11. a deliberately restarted externally owned manager resumes normal polling and cleans up correctly when stopped again', async () => {
+      const healthSpy = vi.spyOn(api, 'getHealth').mockResolvedValue({ status: 'ok' } as any);
+      const customManager = new ConnectivityManager({ baseIntervalMs: 2000 });
+
+      // Mount and unmount provider to stop manager
+      const { unmount } = render(
+        <ConnectivityProvider manager={customManager}>
+          <div>Injected Consumer</div>
+        </ConnectivityProvider>
+      );
+      unmount();
+      expect(customManager.started).toBe(false);
+      expect(customManager.disposed).toBe(false);
+
+      // Deliberately restart manager externally
+      customManager.start();
+      expect(customManager.started).toBe(true);
+      expect(customManager.disposed).toBe(false);
+
+      // Timer should be scheduled for normal polling
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(vi.getTimerCount()).toBe(1);
+
+      // Advance timer to trigger polling probe
+      await act(async () => {
+        vi.advanceTimersByTime(2500);
+      });
+      expect(healthSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      // Stop manager again: cleans up timers and listeners completely
+      customManager.stop();
+      expect(customManager.started).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      healthSpy.mockRestore();
+      customManager.dispose();
+    });
   });
 });

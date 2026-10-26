@@ -559,3 +559,7 @@ Target Environment:
   - Static resource Content-Type validation: `sw.js` validates that fetched responses beneath `/assets/` not only match allowed file extensions and single-level directory structure, but also carry compatible MIME `Content-Type` headers. HTML or JSON fallback error pages are rejected from Cache Storage.
   - Bounded cache budget enforcement: Enforces a deterministic 50-entry cap (`MAX_CACHE_ENTRIES = 50`) in `sw.js` via `enforceCacheBudget()`. Evicts oldest non-shell entries while preserving essential offline application shell precache assets (`/`, `/index.html`, `/favicon.ico`).
   - *Status*: **P10.2.3 VERIFIED**.
+- **P10.2.4 Stop-Safe Probes & Lifecycle Finality**:
+  - In-flight probe invalidation: `ConnectivityManager` enforces monotonic lifecycle tokens (`lifecycleGeneration`). Asynchronous probes capture generation on launch; if `stop()` or `dispose()` occurs during transport, the probe response is discarded without mutating state, notifying subscribers, or scheduling follow-up timers.
+  - Safe re-startability & permanent disposal: `stop()` cleanly cancels timers, drops in-flight references, and removes DOM event listeners while preserving non-disposed viability. `start()` cleanly restarts normal polling on stopped managers without duplicate listeners. `dispose()` remains permanent; once disposed, `start()` is prohibited.
+  - *Status*: **P10.2.4 VERIFIED**.
