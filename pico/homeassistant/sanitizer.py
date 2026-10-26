@@ -45,6 +45,12 @@ APPROVED_ATTRIBUTE_KEYS = {
     "current_position",
     "preset_mode",
     "mode",
+    "min_temp",
+    "max_temp",
+    "target_temp_step",
+    "target_temp_high",
+    "target_temp_low",
+    "temperature_unit",
 }
 
 

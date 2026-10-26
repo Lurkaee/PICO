@@ -109,6 +109,10 @@ class ReadinessErrorCategory(str, Enum):
     ACTUATION_ENABLED = "ACTUATION_ENABLED"
     STATE_UNAVAILABLE = "STATE_UNAVAILABLE"
     STATE_UNKNOWN = "STATE_UNKNOWN"
+    OUT_OF_RANGE = "OUT_OF_RANGE"
+    UNIT_UNKNOWN = "UNIT_UNKNOWN"
+    NOT_ALLOWLISTED = "NOT_ALLOWLISTED"
+    METADATA_INVALID = "METADATA_INVALID"
 
 
 class ReadinessCheckItem(BaseModel):
@@ -169,5 +173,67 @@ class SwitchActuationReadinessReport(BaseModel):
     live_passed: bool | None = None
     reported_state: str | None = None
     state_readiness: str | None = None
+    checks: list[ReadinessCheckItem] = Field(default_factory=list)
+    summary: str
+
+
+class ClimateObservation(BaseModel):
+    """Bounded, typed climate observation for read-only awareness."""
+    entity_id: str
+    domain: str = "climate"
+    state: str
+    current_temperature: float | None = None
+    target_temperature: float | None = None
+    min_temp: float | None = None
+    max_temp: float | None = None
+    target_temp_step: float | None = None
+    temperature_unit: str | None = None
+    hvac_mode: str | None = None
+    hvac_modes: list[str] = Field(default_factory=list)
+    state_readiness: str = "ready"
+    reasons: list[str] = Field(default_factory=list)
+    data_classification: str = "INTERNAL"
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    is_mutation_performed: bool = False
+    physical_device_connectivity_claimed: bool = False
+
+
+class ClimateSetpointPlan(BaseModel):
+    """Read-only feasibility assessment for a requested temperature setpoint.
+
+    This plan is an assessment only. It is not an approval ticket, executable command,
+    or authorization to actuate or alter physical climate state.
+    """
+    __test__ = False
+    plan_id: str
+    entity_id: str
+    requested_temperature: float
+    requested_unit: str | None = None
+    current_temperature: float | None = None
+    target_temperature: float | None = None
+    min_temp: float | None = None
+    max_temp: float | None = None
+    temperature_unit: str | None = None
+    hvac_mode: str | None = None
+    hvac_modes: list[str] = Field(default_factory=list)
+    is_feasible: bool = False
+    feasibility_status: str
+    reasons: list[str] = Field(default_factory=list)
+    is_mutation_performed: bool = False
+    input_digest: str
+    data_classification: str = "INTERNAL"
+
+
+class ClimateReadinessReport(BaseModel):
+    """Commissioning and awareness readiness report for Stage D climate inspection."""
+    ready_for_observation: bool = False
+    target_entity_id: str | None = None
+    allowlisted_entities: list[str] = Field(default_factory=list)
+    climate_awareness_enabled: bool = False
+    actuation_enabled: bool = False
+    live_check_performed: bool = False
+    live_passed: bool | None = None
+    state_readiness: str | None = None
+    observation: ClimateObservation | None = None
     checks: list[ReadinessCheckItem] = Field(default_factory=list)
     summary: str

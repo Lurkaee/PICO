@@ -12,8 +12,12 @@ from pico.homeassistant.actuation import (
     HomeAssistantActuationService,
     HomeAssistantSwitchActuationService,
 )
+from pico.homeassistant.climate import HomeAssistantClimateService
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
+    ClimateObservation,
+    ClimateReadinessReport,
+    ClimateSetpointPlan,
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
@@ -24,6 +28,7 @@ from pico.homeassistant.contracts import (
 )
 from pico.homeassistant.readiness import (
     evaluate_actuation_readiness,
+    evaluate_climate_readiness,
     evaluate_switch_actuation_readiness,
 )
 from pico.homeassistant.service import HomeAssistantService
@@ -346,3 +351,81 @@ def get_switch_actuation_status(
     if not execution or execution.capability_id != "homeassistant.allowlisted_switch_actuate":
         raise EntityNotFoundError("SwitchActuationExecution", execution_id)
     return ToolExecutionResponse.model_validate(execution)
+
+
+# --- Milestone P7.4.2.1 Stage D Read-Only Climate Awareness & Planning Operations ---
+
+class ClimatePlanRequest(BaseModel):
+    target_entity_id: str = Field(
+        description="Exact climate entity ID. Must belong to the Stage D allowlist.",
+    )
+    target_temperature: float = Field(
+        description="Explicit requested target temperature setpoint.",
+    )
+    target_unit: str | None = Field(
+        default=None,
+        description="Optional explicit temperature unit (e.g. '°C', '°F').",
+    )
+
+
+@router.post(
+    "/climate/plan",
+    response_model=ClimateSetpointPlan,
+    summary="Assess feasibility of a requested climate temperature setpoint (read-only, no mutation)",
+)
+async def plan_climate_setpoint(
+    payload: ClimatePlanRequest,
+) -> ClimateSetpointPlan:
+    """Create a structured feasibility assessment plan for an allowlisted climate entity.
+
+    Performs read-only inspection of the current entity state and temperature bounds.
+    NEVER causes physical action, service dispatch, or state mutation.
+    """
+    service = HomeAssistantClimateService()
+    return await service.assess_setpoint_feasibility(
+        target_entity_id=payload.target_entity_id,
+        requested_temperature=payload.target_temperature,
+        requested_unit=payload.target_unit,
+    )
+
+
+@router.get(
+    "/climate/observe/{entity_id}",
+    response_model=ClimateObservation,
+    summary="Inspect climate entity state and temperature bounds (read-only, no mutation)",
+)
+async def get_climate_observation(
+    entity_id: str,
+) -> ClimateObservation:
+    """Retrieve bounded, typed climate observation for an allowlisted climate entity.
+
+    Performs read-only inspection of the current entity state.
+    NEVER causes physical action, service dispatch, or state mutation.
+    """
+    service = HomeAssistantClimateService()
+    return await service.get_climate_observation(entity_id=entity_id)
+
+
+@router.get(
+    "/climate/readiness",
+    response_model=ClimateReadinessReport,
+    summary="Evaluate Stage D climate awareness and readiness (strictly read-only)",
+)
+async def get_climate_readiness(
+    check_live: bool = Query(
+        default=False,
+        description="Whether to perform an explicit live read-only connectivity check. Offline preflight is performed when False.",
+    ),
+    target_entity_id: str | None = Query(
+        default=None,
+        description="Optional specific climate entity ID to check against Stage D allowlist.",
+    ),
+) -> ClimateReadinessReport:
+    """Evaluate configuration, allowlist validity, and observation readiness for climate entities.
+
+    This endpoint NEVER dispatches a mutation request, executes actions, or enables actuation.
+    """
+    return await evaluate_climate_readiness(
+        check_live=check_live,
+        target_entity_id=target_entity_id,
+    )
