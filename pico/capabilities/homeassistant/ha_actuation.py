@@ -11,9 +11,14 @@ from pico.capabilities.base import (
 )
 from pico.homeassistant.actuation import (
     HomeAssistantActuationService,
+    HomeAssistantSwitchActuationService,
     validate_actuation_preconditions,
+    validate_switch_actuation_preconditions,
 )
-from pico.homeassistant.contracts import TestLightActuationResult
+from pico.homeassistant.contracts import (
+    SwitchActuationResult,
+    TestLightActuationResult,
+)
 
 
 class HomeAssistantTestLightActuationInput(BaseModel):
@@ -180,6 +185,188 @@ class HomeAssistantTestLightActuationCapability(BaseCapability):
                 f"Test light '{output_data['entity_id']}' verified in state '{target_state}'."
                 if ver_res.passed
                 else f"Test light '{output_data['entity_id']}' actuation verification failed: {ver_res.reason}"
+            )
+
+            if not ver_res.passed:
+                return VerificationResult(
+                    passed=False,
+                    reason=ver_res.reason,
+                    details=ver_res.details,
+                )
+
+            return VerificationResult(
+                passed=True,
+                details=ver_res.details,
+            )
+        except Exception as exc:
+            return VerificationResult(
+                passed=False,
+                reason=f"Independent verifier failed schema or semantic check: {str(exc)}",
+                details={"error": str(exc)},
+            )
+
+
+class HomeAssistantSwitchActuationInput(BaseModel):
+    target_entity_id: str = Field(
+        description="Exact allowlisted switch entity ID (e.g. 'switch.living_room_plug')."
+    )
+    target_state: Literal["on", "off"] = Field(
+        description="Explicit target state: 'on' or 'off'. Toggle is strictly prohibited."
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Optional human-readable reason for actuation.",
+    )
+
+    @model_validator(mode="after")
+    def validate_target_entity(self) -> "HomeAssistantSwitchActuationInput":
+        validate_switch_actuation_preconditions(
+            target_entity_id=self.target_entity_id,
+            operation=self.target_state,
+        )
+        return self
+
+
+class HomeAssistantSwitchActuationOutput(BaseModel):
+    success: bool
+    entity_id: str
+    requested_state: str
+    reported_state: str
+    dispatch_status: str
+    verification_status: str
+    verification_details: dict[str, Any] = Field(default_factory=dict)
+    message: str
+    physical_device_connectivity_claimed: bool = False
+
+
+class HomeAssistantSwitchActuationCapability(BaseCapability):
+    """Milestone P7.4.1: Actuate an explicitly allowlisted Home Assistant switch entity.
+
+    Consequential action: Requires explicit human operator approval bound to SHA-256 digest.
+    Risk Tier: HIGH.
+    Retries: Strictly 0.
+    Target: Strictly an exact entity ID in HOME_ASSISTANT_SWITCH_ALLOWLIST.
+    """
+
+    metadata = CapabilityMetadata(
+        capability_id="homeassistant.allowlisted_switch_actuate",
+        version="1.0.0",
+        name="Home Assistant Allowlisted Switch Actuation",
+        description=(
+            "Actuate an explicitly configured and allowlisted Home Assistant switch to 'on' or 'off'. "
+            "Requires explicit human approval, strictly bounds target entity to configuration, "
+            "and requires independent read-after-write state verification."
+        ),
+        risk_tier=RiskTier.HIGH,
+        required_permission="homeassistant:actuate",
+        required_classification="INTERNAL",
+        timeout_seconds=15.0,
+        max_output_bytes=4096,
+        idempotent=False,
+        max_retries=0,
+        consequential=True,
+        preconditions=[
+            "Home Assistant integration, physical actuation, and Stage C switch actuation are explicitly enabled",
+            "Target entity is explicitly present in HOME_ASSISTANT_SWITCH_ALLOWLIST",
+            "Human operator approval ticket is valid and matches input digest",
+        ],
+        expected_effects=[
+            "Dispatches at most one service call (turn_on or turn_off)",
+            "Independent read-only state check verifies target state",
+        ],
+    )
+    input_model = HomeAssistantSwitchActuationInput
+    output_model = HomeAssistantSwitchActuationOutput
+
+    def __init__(self, service: HomeAssistantSwitchActuationService | None = None) -> None:
+        self._service = service
+
+    def _get_service(self) -> HomeAssistantSwitchActuationService:
+        if self._service:
+            return self._service
+        return HomeAssistantSwitchActuationService()
+
+    async def execute(
+        self, input_data: dict[str, Any], context: ExecutionContext
+    ) -> ExecutionResult:
+        target_state: Literal["on", "off"] = input_data.get("target_state")  # type: ignore[assignment]
+        target_entity_id = input_data.get("target_entity_id", "")
+
+        service = self._get_service()
+        validated_id = validate_switch_actuation_preconditions(
+            target_entity_id=target_entity_id,
+            operation=target_state,
+        )
+
+        try:
+            dispatch_res = await service.dispatch_actuation(
+                target_entity_id=validated_id,
+                target_state=target_state,
+                execution_id=context.execution_id,
+            )
+        except Exception as exc:
+            return ExecutionResult(
+                success=False,
+                error_message=f"Actuation dispatch rejected or failed: {str(exc)}",
+                evidence={"dispatch_attempted": True, "error": str(exc)},
+            )
+
+        dispatch_status = dispatch_res.get("dispatch_status", "unknown")
+
+        output = HomeAssistantSwitchActuationOutput(
+            success=True,
+            entity_id=validated_id,
+            requested_state=target_state,
+            reported_state="pending_verification",
+            dispatch_status=dispatch_status,
+            verification_status="pending",
+            verification_details={},
+            message=f"Switch '{validated_id}' service dispatch '{dispatch_status}'. Pending independent verification.",
+            physical_device_connectivity_claimed=False,
+        )
+
+        return ExecutionResult(
+            success=True,
+            output_data=output.model_dump(),
+            evidence={
+                "dispatch": dispatch_res,
+            },
+        )
+
+    async def verify(
+        self,
+        input_data: dict[str, Any],
+        output_data: dict[str, Any],
+        evidence: dict[str, Any],
+        context: ExecutionContext,
+    ) -> VerificationResult:
+        try:
+            self.output_model.model_validate(output_data)
+
+            # Invariant: Never claim physical device connectivity
+            if output_data.get("physical_device_connectivity_claimed") is True:
+                return VerificationResult(
+                    passed=False,
+                    reason="Capability erroneously claimed physical device connectivity.",
+                )
+
+            service = self._get_service()
+            target_state = input_data.get("target_state")
+            target_entity_id = input_data.get("target_entity_id")
+
+            ver_res = await service.verify_state(
+                target_entity_id=target_entity_id,
+                expected_state=target_state,
+            )
+
+            output_data["verification_status"] = "verified" if ver_res.passed else "failed"
+            output_data["reported_state"] = ver_res.details.get("reported_state", "unknown")
+            output_data["verification_details"] = ver_res.details
+            output_data["success"] = ver_res.passed
+            output_data["message"] = (
+                f"Switch '{output_data['entity_id']}' verified in state '{target_state}'."
+                if ver_res.passed
+                else f"Switch '{output_data['entity_id']}' actuation verification failed: {ver_res.reason}"
             )
 
             if not ver_res.passed:

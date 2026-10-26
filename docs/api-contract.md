@@ -1229,6 +1229,84 @@ Local-first desktop operator authentication and consequential action approval bo
 
 ---
 
+### 2.19 Home Assistant Integration & Physical Actuation Endpoints (Milestones P7.1–P7.4.1)
+
+#### `GET /api/homeassistant/status`
+- **Description**: Inspects Home Assistant hub integration connection state and configuration.
+- **Response (200 OK)**: `HomeAssistantStatus` object.
+
+#### `GET /api/homeassistant/entities`
+- **Description**: Read-only discovery of available smart-home entities with optional domain filter.
+- **Query Parameters**: `domain` (optional string, e.g. `switch`, `light`, `sensor`).
+- **Response (200 OK)**: `EntityListOutput` object.
+
+#### `GET /api/homeassistant/entities/{entity_id}`
+- **Description**: Read current reported state and attributes of a specific entity.
+- **Response (200 OK)**: `EntityState` object.
+
+#### `GET /api/homeassistant/overview`
+- **Description**: Bounded overview of smart-home state suitable for situational awareness.
+- **Response (200 OK)**: `EntityOverviewOutput` object.
+
+#### `POST /api/homeassistant/actuation/plan`
+- **Description**: Structured, read-only preflight plan for configured P7.3 test light.
+- **Request Body**: `{"target_state": "on"|"off", "target_entity_id": "light.test_light"}`.
+- **Response (200 OK)**: `TestLightActuationPlan` object.
+
+#### `POST /api/homeassistant/actuation/propose`
+- **Description**: Propose physical actuation for the single configured test light. Creates execution in `awaiting_approval`.
+- **Headers**: `X-Pico-Approval-Token` matching server-side `APPROVAL_SECRET_TOKEN`.
+- **Response (201 Created)**: `ToolExecutionResponse` object.
+
+#### `GET /api/homeassistant/actuation/readiness`
+- **Description**: Commissioning and readiness report for P7.3 test light. Strictly read-only; offline by default.
+- **Query Parameters**: `check_live` (boolean, default: false).
+- **Response (200 OK)**: `ActuationReadinessReport` object.
+
+#### `GET /api/homeassistant/actuation/{execution_id}`
+- **Description**: Inspect execution status, approval ticket, and independent verification proof for test light actuation.
+- **Response (200 OK)**: `ToolExecutionResponse` object.
+
+#### `POST /api/homeassistant/switch/plan` (Milestone P7.4.1 Stage C)
+- **Description**: Structured, read-only preflight plan for an allowlisted switch entity. Never causes physical dispatch or state mutation.
+- **Request Body**:
+  ```json
+  {
+    "target_entity_id": "switch.desk_lamp_plug",
+    "target_state": "on"
+  }
+  ```
+- **Response (200 OK)**: `SwitchActuationPlan` object (`is_mutation_needed`, `current_state`, `input_digest`, etc.).
+
+#### `POST /api/homeassistant/switch/propose` (Milestone P7.4.1 Stage C)
+- **Description**: Propose switch physical actuation for an explicitly allowlisted switch entity. Creates execution in `awaiting_approval`.
+- **Headers**: `X-Pico-Approval-Token` matching server-side `APPROVAL_SECRET_TOKEN`.
+- **Request Body**:
+  ```json
+  {
+    "target_entity_id": "switch.desk_lamp_plug",
+    "target_state": "on",
+    "reason": "Operator testing plug power control"
+  }
+  ```
+- **Response (201 Created)**: `ToolExecutionResponse` in `awaiting_approval` status.
+- **Response (400/422 Bad Request)**: Target entity not in `HOME_ASSISTANT_SWITCH_ALLOWLIST`, non-switch domain, or invalid state.
+- **Response (403 Forbidden)**: Missing or invalid `X-Pico-Approval-Token`.
+
+#### `GET /api/homeassistant/switch/readiness` (Milestone P7.4.1 Stage C)
+- **Description**: Stage C commissioning and readiness report. Inspects allowlist configuration, switch domain validity, and optional live reachability.
+- **Query Parameters**:
+  - `check_live` (boolean, default: false)
+  - `target_entity_id` (optional string)
+- **Response (200 OK)**: `SwitchActuationReadinessReport` object.
+
+#### `GET /api/homeassistant/switch/{execution_id}` (Milestone P7.4.1 Stage C)
+- **Description**: Inspect execution status, approval ticket, and independent verification outcome for a switch actuation execution. Isolated to `homeassistant.allowlisted_switch_actuate`.
+- **Response (200 OK)**: `ToolExecutionResponse` object.
+- **Response (404 Not Found)**: If execution does not exist or belongs to a different capability.
+
+---
+
 ## 3. Planned Endpoints (Future Phases)
 
 The following endpoints are strictly planned and not active:

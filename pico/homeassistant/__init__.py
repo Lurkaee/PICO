@@ -5,14 +5,21 @@ from pico.homeassistant.classification import (
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.actuation import (
     HomeAssistantActuationService,
+    HomeAssistantSwitchActuationService,
     validate_actuation_preconditions,
+    validate_switch_actuation_preconditions,
+    validate_switch_allowlist,
 )
 from pico.homeassistant.contracts import (
+    ActuationReadinessReport,
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
     HomeAssistantConnectionState,
     HomeAssistantStatus,
+    SwitchActuationPlan,
+    SwitchActuationReadinessReport,
+    SwitchActuationResult,
     TestLightActuationPlan,
     TestLightActuationResult,
 )
@@ -28,7 +35,10 @@ __all__ = [
     "HomeAssistantClient",
     "HomeAssistantService",
     "HomeAssistantActuationService",
+    "HomeAssistantSwitchActuationService",
     "validate_actuation_preconditions",
+    "validate_switch_actuation_preconditions",
+    "validate_switch_allowlist",
     "HomeAssistantWebSocketClient",
     "BaseWebSocketTransport",
     "AsyncioWebSocketTransport",
@@ -40,6 +50,10 @@ __all__ = [
     "EntityOverviewOutput",
     "TestLightActuationPlan",
     "TestLightActuationResult",
+    "ActuationReadinessReport",
+    "SwitchActuationPlan",
+    "SwitchActuationResult",
+    "SwitchActuationReadinessReport",
     "compute_trusted_ha_classification",
     "format_homeassistant_context_items",
 ]

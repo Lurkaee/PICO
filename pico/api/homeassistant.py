@@ -1,3 +1,4 @@
+import secrets
 from typing import Literal
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel, Field
@@ -7,16 +8,24 @@ from pico.capabilities.registry import registry
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError
 from pico.db.session import get_db
-from pico.homeassistant.actuation import HomeAssistantActuationService
+from pico.homeassistant.actuation import (
+    HomeAssistantActuationService,
+    HomeAssistantSwitchActuationService,
+)
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
     HomeAssistantStatus,
+    SwitchActuationPlan,
+    SwitchActuationReadinessReport,
     TestLightActuationPlan,
 )
-from pico.homeassistant.readiness import evaluate_actuation_readiness
+from pico.homeassistant.readiness import (
+    evaluate_actuation_readiness,
+    evaluate_switch_actuation_readiness,
+)
 from pico.homeassistant.service import HomeAssistantService
 from pico.homeassistant.ws_client import is_loopback_host
 from pico.repositories.tool_execution_repo import ToolExecutionRepository
@@ -44,7 +53,11 @@ def verify_household_access(
         return
 
     # Fail closed for remote clients unless verified via established APPROVAL_SECRET_TOKEN
-    if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+    if (
+        not settings.APPROVAL_SECRET_TOKEN
+        or not x_approval_token
+        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
+    ):
         raise AuthorizationError(
             "Access to household endpoints from remote host is restricted. "
             "Valid X-Pico-Approval-Token required."
@@ -90,7 +103,7 @@ async def get_homeassistant_overview(
     return await service.get_overview(domains=domains)
 
 
-# --- Milestone P7.3 Physical Actuation Operations ---
+# --- Milestone P7.3 Physical Actuation Operations (Single Configured Light) ---
 
 class TestLightPlanRequest(BaseModel):
     target_state: Literal["on", "off"] = Field(
@@ -152,7 +165,11 @@ def propose_test_light_actuation(
     Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
     Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
     """
-    if not settings.APPROVAL_SECRET_TOKEN or not x_approval_token or x_approval_token != settings.APPROVAL_SECRET_TOKEN:
+    if (
+        not settings.APPROVAL_SECRET_TOKEN
+        or not x_approval_token
+        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
+    ):
         raise AuthorizationError(
             "Physical actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
         )
@@ -193,7 +210,7 @@ async def get_actuation_readiness(
 @router.get(
     "/actuation/{execution_id}",
     response_model=ToolExecutionResponse,
-    summary="Inspect approval and verification status of an actuation execution",
+    summary="Inspect approval and verification status of a test light actuation execution",
 )
 def get_actuation_status(
     execution_id: str,
@@ -204,4 +221,128 @@ def get_actuation_status(
     execution = repo.get_by_id(execution_id)
     if not execution or execution.capability_id != "homeassistant.test_light_actuate":
         raise EntityNotFoundError("ActuationExecution", execution_id)
+    return ToolExecutionResponse.model_validate(execution)
+
+
+# --- Milestone P7.4.1 Stage C Switch Physical Actuation Operations ---
+
+class SwitchPlanRequest(BaseModel):
+    target_entity_id: str = Field(
+        description="Exact switch entity ID. Must belong to the Stage C allowlist.",
+    )
+    target_state: Literal["on", "off"] = Field(
+        description="Explicit target state: 'on' or 'off'. Toggle is strictly prohibited."
+    )
+
+
+class SwitchProposeRequest(BaseModel):
+    target_entity_id: str = Field(
+        description="Exact switch entity ID. Must belong to the Stage C allowlist.",
+    )
+    target_state: Literal["on", "off"] = Field(
+        description="Explicit target state: 'on' or 'off'. Toggle is strictly prohibited."
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Optional human-readable reason for the switch actuation proposal.",
+    )
+
+
+@router.post(
+    "/switch/plan",
+    response_model=SwitchActuationPlan,
+    summary="Create a structured switch action plan (read-only, no mutation)",
+)
+async def plan_switch_actuation(
+    payload: SwitchPlanRequest,
+) -> SwitchActuationPlan:
+    """Create a structured action plan for an allowlisted switch entity.
+
+    Performs read-only inspection of the current entity state.
+    NEVER causes physical action, service dispatch, or state mutation.
+    """
+    service = HomeAssistantSwitchActuationService()
+    return await service.create_plan(
+        target_entity_id=payload.target_entity_id,
+        target_state=payload.target_state,
+    )
+
+
+@router.post(
+    "/switch/propose",
+    response_model=ToolExecutionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Propose a switch actuation execution (created in awaiting_approval status)",
+)
+def propose_switch_actuation(
+    payload: SwitchProposeRequest,
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Propose an actuation of an allowlisted switch.
+
+    Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
+    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    """
+    if (
+        not settings.APPROVAL_SECRET_TOKEN
+        or not x_approval_token
+        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
+    ):
+        raise AuthorizationError(
+            "Physical switch actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
+        )
+
+    engine = ToolExecutionEngine(db, registry)
+    execution = engine.submit(
+        capability_id="homeassistant.allowlisted_switch_actuate",
+        input_data={
+            "target_entity_id": payload.target_entity_id,
+            "target_state": payload.target_state,
+            "reason": payload.reason,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+    return ToolExecutionResponse.model_validate(execution)
+
+
+@router.get(
+    "/switch/readiness",
+    response_model=SwitchActuationReadinessReport,
+    summary="Evaluate Stage C switch commissioning and physical action readiness (strictly read-only)",
+)
+async def get_switch_actuation_readiness(
+    check_live: bool = Query(
+        default=False,
+        description="Whether to perform an explicit live read-only connectivity check. Offline preflight is performed when False.",
+    ),
+    target_entity_id: str | None = Query(
+        default=None,
+        description="Optional specific switch entity ID to check against Stage C allowlist.",
+    ),
+) -> SwitchActuationReadinessReport:
+    """Evaluate commissioning, allowlist validity, and physical action readiness for switches.
+
+    This endpoint NEVER dispatches a mutation request, executes actions, or enables actuation.
+    """
+    return await evaluate_switch_actuation_readiness(
+        check_live=check_live,
+        target_entity_id=target_entity_id,
+    )
+
+
+@router.get(
+    "/switch/{execution_id}",
+    response_model=ToolExecutionResponse,
+    summary="Inspect approval and verification status of a switch actuation execution",
+)
+def get_switch_actuation_status(
+    execution_id: str,
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Inspect the execution record, human approval ticket, and independent verification outcome for a switch actuation."""
+    repo = ToolExecutionRepository(db)
+    execution = repo.get_by_id(execution_id)
+    if not execution or execution.capability_id != "homeassistant.allowlisted_switch_actuate":
+        raise EntityNotFoundError("SwitchActuationExecution", execution_id)
     return ToolExecutionResponse.model_validate(execution)

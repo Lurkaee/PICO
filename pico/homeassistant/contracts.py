@@ -126,3 +126,44 @@ class ActuationReadinessReport(BaseModel):
     actuation_enabled: bool = False
     checks: list[ReadinessCheckItem] = Field(default_factory=list)
     summary: str
+
+
+class SwitchActuationPlan(BaseModel):
+    __test__ = False
+    plan_id: str
+    entity_id: str
+    requested_state: str
+    current_state: str
+    service: str
+    is_mutation_needed: bool
+    preconditions: list[str]
+    expected_postconditions: list[str]
+    input_digest: str
+    expires_at: str
+    data_classification: str = "INTERNAL"
+
+
+class SwitchActuationResult(BaseModel):
+    __test__ = False
+    success: bool
+    entity_id: str
+    requested_state: str
+    reported_state: str
+    dispatch_status: str
+    verification_status: str
+    verification_details: dict[str, Any] = Field(default_factory=dict)
+    message: str
+    physical_device_connectivity_claimed: bool = False
+
+
+class SwitchActuationReadinessReport(BaseModel):
+    ready_for_commissioning: bool = False
+    target_entity_id: str | None = None
+    allowlisted_entities: list[str] = Field(default_factory=list)
+    stage_c_enabled: bool = False
+    actuation_enabled: bool = False
+    live_check_performed: bool = False
+    live_passed: bool | None = None
+    reported_state: str | None = None
+    checks: list[ReadinessCheckItem] = Field(default_factory=list)
+    summary: str
