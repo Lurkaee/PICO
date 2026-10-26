@@ -107,6 +107,8 @@ class ReadinessErrorCategory(str, Enum):
     INVALID_ENTITY = "INVALID_ENTITY"
     AUTHORIZATION_UNAVAILABLE = "AUTHORIZATION_UNAVAILABLE"
     ACTUATION_ENABLED = "ACTUATION_ENABLED"
+    STATE_UNAVAILABLE = "STATE_UNAVAILABLE"
+    STATE_UNKNOWN = "STATE_UNKNOWN"
 
 
 class ReadinessCheckItem(BaseModel):
@@ -135,6 +137,7 @@ class SwitchActuationPlan(BaseModel):
     requested_state: str
     current_state: str
     service: str
+    state_readiness: str = "ready"
     is_mutation_needed: bool
     preconditions: list[str]
     expected_postconditions: list[str]
@@ -165,5 +168,6 @@ class SwitchActuationReadinessReport(BaseModel):
     live_check_performed: bool = False
     live_passed: bool | None = None
     reported_state: str | None = None
+    state_readiness: str | None = None
     checks: list[ReadinessCheckItem] = Field(default_factory=list)
     summary: str

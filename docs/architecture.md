@@ -366,15 +366,17 @@ sequenceDiagram
     - **Read-Only Capabilities**: Registered in `CapabilityRegistry` under `RiskTier.READ_ONLY` (`homeassistant.status`, `homeassistant.list_entities`, `homeassistant.get_entity_state`, `homeassistant.overview`). Verifier rejects any false claim of physical device connectivity.
     - **Absolute Read-Only Boundary**: Zero actuation, service calls (`call_service`), or state mutation paths exist.
   - **Stage B (First End-to-End Control — Verified in Milestone P7.3)**: Harmless single light toggle through the complete loop (Intent -> Context -> Plan -> Approval -> Act -> State Verification -> Event Ledger).
-  - **Stage C (Allowlisted Switches & Plugs — Verified in Milestone P7.4.1)**:
+  - **Stage C (Allowlisted Switches & Plugs — Verified in Milestones P7.4.1 & P7.4.1.2)**:
     - Dedicated capability: `homeassistant.allowlisted_switch_actuate`.
     - Triple enablement required (`HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED=true`).
     - Explicit server configuration allowlist (`HOME_ASSISTANT_SWITCH_ALLOWLIST`): exact JSON list of `switch.*` entities only.
     - Consequential risk tier (`RiskTier.HIGH`), `homeassistant:actuate` permission, `INTERNAL` data classification, zero retries (`max_retries=0`).
     - Exact operations: `switch.turn_on` and `switch.turn_off`. `toggle` and generic service calls (`call_service`) are prohibited.
-    - Redundant dispatch avoidance: skips mutation if current state matches target state (`dispatch_status='already_satisfied'`).
+    - Truthful state preflight & 4-way classification: `SwitchActuationPlan` and `SwitchActuationReadinessReport` explicitly categorize state readiness into `ready` (`is_mutation_needed=True`), `already_satisfied` (`is_mutation_needed=False`), `state_unavailable` (`is_mutation_needed=False`), and `state_unknown` (`is_mutation_needed=False`). Unknown or unavailable states are never presented as proofs of satisfaction.
+    - Fail-closed pre-dispatch policy: Authoritative pre-dispatch state read verifies that the switch is in the known opposite valid state before issuing mutation requests. Missing entities (404), network errors, timeouts, or invalid/empty/`unknown`/`unavailable` states fail closed with `dispatch_status='blocked_precondition'`, resulting in zero physical mutation requests.
+    - Redundant dispatch avoidance: skips mutation if authoritative read confirms current state already matches target state (`dispatch_status='already_satisfied'`).
     - Independent verification: post-dispatch verification via read-only state inspection (`GET /api/states/{id}`). Never claims physical device connectivity.
-    - Read-only preflight readiness inspection via CLI, REST API (`/api/homeassistant/switch/readiness`), and capability (`homeassistant.switch_readiness`).
+    - Read-only preflight readiness inspection via CLI, REST API (`/api/homeassistant/switch/readiness`), and capability (`homeassistant.switch_readiness`). Non-on/off live states fail commissioning with `STATE_UNAVAILABLE` or `STATE_UNKNOWN`.
   - **Stage D (Complex Household Control — Planned)**: Scenes, thermostats, climate controls with physical consequence modeling.
 - Security-sensitive actuators (door locks, security systems) remain **NOTIFY-ONLY** / blocked under current policy.
 

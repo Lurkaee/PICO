@@ -774,7 +774,7 @@ class ToolExecutionEngine:
 
         if not result.success:
             return await self._handle_execution_failure(
-                execution, capability, result.error_message or "Handler reported failure.", correlation_id, caller_permissions=effective_perms
+                execution, capability, result.error_message or "Handler reported failure.", correlation_id, caller_permissions=effective_perms, output_json=result.output_data
             )
 
         # Transition to verifying
@@ -849,6 +849,7 @@ class ToolExecutionEngine:
         error_msg: str,
         correlation_id: str | None,
         caller_permissions: set[str] | None = None,
+        output_json: dict[str, Any] | None = None,
     ) -> ToolExecution:
         # Check retry eligibility: capability must be idempotent and retry limit not reached
         can_retry = capability.metadata.idempotent and execution.retry_count < execution.max_retries
@@ -885,6 +886,7 @@ class ToolExecutionEngine:
                 execution.id,
                 status="failed",
                 error_message=error_msg,
+                output_json=output_json,
             )
 
     def cancel(

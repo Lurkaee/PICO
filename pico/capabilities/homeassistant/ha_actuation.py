@@ -313,6 +313,44 @@ class HomeAssistantSwitchActuationCapability(BaseCapability):
 
         dispatch_status = dispatch_res.get("dispatch_status", "unknown")
 
+        if dispatch_status == "blocked_precondition":
+            reason = dispatch_res.get("reason", "Precondition could not be established.")
+            output = HomeAssistantSwitchActuationOutput(
+                success=False,
+                entity_id=validated_id,
+                requested_state=target_state,
+                reported_state=dispatch_res.get("reported_state", "unknown"),
+                dispatch_status="blocked_precondition",
+                verification_status="blocked",
+                verification_details={"reason": reason, "dispatch": dispatch_res},
+                message=f"Switch '{validated_id}' actuation blocked: {reason}",
+                physical_device_connectivity_claimed=False,
+            )
+            return ExecutionResult(
+                success=False,
+                output_data=output.model_dump(),
+                error_message=f"Actuation dispatch blocked: {reason}",
+                evidence={"dispatch": dispatch_res},
+            )
+
+        if dispatch_status == "already_satisfied":
+            output = HomeAssistantSwitchActuationOutput(
+                success=True,
+                entity_id=validated_id,
+                requested_state=target_state,
+                reported_state=target_state,
+                dispatch_status="already_satisfied",
+                verification_status="pending",
+                verification_details={},
+                message=f"Switch '{validated_id}' already in requested state '{target_state}'. Pending independent verification.",
+                physical_device_connectivity_claimed=False,
+            )
+            return ExecutionResult(
+                success=True,
+                output_data=output.model_dump(),
+                evidence={"dispatch": dispatch_res},
+            )
+
         output = HomeAssistantSwitchActuationOutput(
             success=True,
             entity_id=validated_id,
@@ -348,6 +386,13 @@ class HomeAssistantSwitchActuationCapability(BaseCapability):
                 return VerificationResult(
                     passed=False,
                     reason="Capability erroneously claimed physical device connectivity.",
+                )
+
+            if output_data.get("dispatch_status") == "blocked_precondition":
+                return VerificationResult(
+                    passed=False,
+                    reason="Capability dispatch was blocked at precondition check.",
+                    details=output_data.get("verification_details", {}),
                 )
 
             service = self._get_service()
