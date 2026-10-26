@@ -54,6 +54,7 @@ export class ConnectivityManager {
   private inFlightProbe: Promise<boolean> | null = null;
   private isDisposed = false;
   private isStarted = false;
+  private lifecycleGeneration = 0;
   private listeners: Set<(state: ConnectivityState) => void> = new Set();
 
   private windowOnlineHandler: (() => void) | null = null;
@@ -115,6 +116,10 @@ export class ConnectivityManager {
     return this.isStarted;
   }
 
+  public get generation(): number {
+    return this.lifecycleGeneration;
+  }
+
   public isBackendReachable(): boolean {
     return this.status === 'online' || this.status === 'degraded';
   }
@@ -122,22 +127,34 @@ export class ConnectivityManager {
   public start(): void {
     if (this.isDisposed || this.isStarted) return;
     this.isStarted = true;
+    this.lifecycleGeneration++;
     this.setupBrowserEvents();
     this.probeHealth();
   }
 
   public stop(): void {
+    if (this.isDisposed) return;
     this.isStarted = false;
+    this.lifecycleGeneration++;
     if (this.activeTimer) {
       clearTimeout(this.activeTimer);
       this.activeTimer = null;
     }
+    this.inFlightProbe = null;
     this.removeBrowserEvents();
   }
 
   public dispose(): void {
+    if (this.isDisposed) return;
     this.isDisposed = true;
-    this.stop();
+    this.isStarted = false;
+    this.lifecycleGeneration++;
+    if (this.activeTimer) {
+      clearTimeout(this.activeTimer);
+      this.activeTimer = null;
+    }
+    this.inFlightProbe = null;
+    this.removeBrowserEvents();
     this.listeners.clear();
   }
 
@@ -163,15 +180,19 @@ export class ConnectivityManager {
       return this.inFlightProbe;
     }
 
-    this.inFlightProbe = this.executeProbe()
+    const currentPromise = this.executeProbe()
       .finally(() => {
-        this.inFlightProbe = null;
+        if (this.inFlightProbe === currentPromise) {
+          this.inFlightProbe = null;
+        }
       });
 
-    return this.inFlightProbe;
+    this.inFlightProbe = currentPromise;
+    return currentPromise;
   }
 
   private async executeProbe(): Promise<boolean> {
+    const probeGeneration = this.lifecycleGeneration;
     this.lastCheckAttempt = new Date();
 
     // If currently offline, transition to 'reconnecting' during probe
@@ -182,7 +203,11 @@ export class ConnectivityManager {
 
     try {
       const health = await api.getHealth();
-      if (this.isDisposed) return false;
+      // If disposed or if lifecycle generation changed while probe was in flight (e.g. stopped, restarted),
+      // discard this response completely to prevent race conditions or stale state updates.
+      if (this.isDisposed || this.lifecycleGeneration !== probeGeneration) {
+        return false;
+      }
 
       this.lastSuccessfulCheck = new Date();
       this.errorMessage = null;
@@ -197,10 +222,12 @@ export class ConnectivityManager {
       // Reset exponential backoff on successful contact
       this.currentIntervalMs = this.baseIntervalMs;
       this.notify();
-      this.scheduleNextProbe(this.baseIntervalMs);
+      this.scheduleNextProbe(this.baseIntervalMs, probeGeneration);
       return true;
     } catch (err: unknown) {
-      if (this.isDisposed) return false;
+      if (this.isDisposed || this.lifecycleGeneration !== probeGeneration) {
+        return false;
+      }
 
       const isNetwork = isNetworkError(err) || isTimeoutError(err);
       this.errorMessage = err instanceof Error ? err.message : String(err);
@@ -215,7 +242,7 @@ export class ConnectivityManager {
       // Calculate next backoff with jitter
       const nextDelay = this.calculateNextBackoff();
       this.notify();
-      this.scheduleNextProbe(nextDelay);
+      this.scheduleNextProbe(nextDelay, probeGeneration);
       return false;
     }
   }
@@ -228,12 +255,20 @@ export class ConnectivityManager {
     return Math.max(1000, Math.round(raw + jitter));
   }
 
-  private scheduleNextProbe(delayMs: number): void {
+  private scheduleNextProbe(delayMs: number, probeGeneration?: number): void {
     if (this.isDisposed || !this.isStarted) return;
+    if (probeGeneration !== undefined && probeGeneration !== this.lifecycleGeneration) return;
+
     if (this.activeTimer) {
       clearTimeout(this.activeTimer);
+      this.activeTimer = null;
     }
+    const timerGeneration = this.lifecycleGeneration;
     this.activeTimer = setTimeout(() => {
+      this.activeTimer = null;
+      if (this.isDisposed || !this.isStarted || this.lifecycleGeneration !== timerGeneration) {
+        return;
+      }
       this.probeHealth();
     }, delayMs);
   }
@@ -264,6 +299,7 @@ export class ConnectivityManager {
     if (this.windowOnlineHandler) return; // Already registered
 
     this.windowOnlineHandler = () => {
+      if (this.isDisposed || !this.isStarted) return;
       // Browser reports network link up -> probe immediately with short delay
       if (this.status === 'offline') {
         this.status = 'reconnecting';
@@ -273,6 +309,7 @@ export class ConnectivityManager {
     };
 
     this.windowOfflineHandler = () => {
+      if (this.isDisposed || !this.isStarted) return;
       // Browser reports offline hint -> mark offline immediately
       this.status = 'offline';
       this.errorMessage = 'Browser network connection is offline';
@@ -280,6 +317,7 @@ export class ConnectivityManager {
     };
 
     this.visibilityHandler = () => {
+      if (this.isDisposed || !this.isStarted) return;
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         // Tab restored / became visible -> fresh probe
         this.probeHealth();

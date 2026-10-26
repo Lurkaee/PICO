@@ -127,4 +127,289 @@ describe('ConnectivityManager', () => {
     const manager = new ConnectivityManager({ baseIntervalMs: 1000 });
     expect(() => manager.dispose()).not.toThrow();
   });
+
+  describe('In-Flight Probe Race & Stop-Safety Lifecycle', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function trackBrowserListeners() {
+      const counts = { online: 0, offline: 0, visibilitychange: 0 };
+      const origWinAdd = window.addEventListener;
+      const origWinRemove = window.removeEventListener;
+      const origDocAdd = document.addEventListener;
+      const origDocRemove = document.removeEventListener;
+
+      window.addEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type in counts) (counts as any)[type]++;
+        return origWinAdd.call(window, type, listener, options);
+      });
+      window.removeEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type in counts) (counts as any)[type]--;
+        return origWinRemove.call(window, type, listener, options);
+      });
+      document.addEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type in counts) (counts as any)[type]++;
+        return origDocAdd.call(document, type, listener, options);
+      });
+      document.removeEventListener = vi.fn((type: string, listener: any, options?: any) => {
+        if (type in counts) (counts as any)[type]--;
+        return origDocRemove.call(document, type, listener, options);
+      });
+
+      return {
+        counts,
+        restore: () => {
+          window.addEventListener = origWinAdd;
+          window.removeEventListener = origWinRemove;
+          document.addEventListener = origDocAdd;
+          document.removeEventListener = origDocRemove;
+        },
+      };
+    }
+
+    function createDeferred<T>() {
+      let resolve!: (val: T) => void;
+      let reject!: (err: any) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    it('constructing a manager does not attach listeners, start a timer, or initiate network activity', () => {
+      const tracker = trackBrowserListeners();
+      try {
+        const manager = new ConnectivityManager();
+        expect(manager.started).toBe(false);
+        expect(manager.disposed).toBe(false);
+        expect(manager.generation).toBe(0);
+        expect(api.getHealth).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+        expect(tracker.counts).toEqual({ online: 0, offline: 0, visibilitychange: 0 });
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('start() initiates the intended probe and listeners exactly once', () => {
+      const tracker = trackBrowserListeners();
+      vi.mocked(api.getHealth).mockResolvedValue({ status: 'ok' } as any);
+
+      try {
+        const manager = new ConnectivityManager();
+        manager.start();
+        expect(manager.started).toBe(true);
+        expect(api.getHealth).toHaveBeenCalledTimes(1);
+        expect(tracker.counts).toEqual({ online: 1, offline: 1, visibilitychange: 1 });
+
+        // Idempotent: second start call is a no-op
+        manager.start();
+        expect(api.getHealth).toHaveBeenCalledTimes(1);
+        expect(tracker.counts).toEqual({ online: 1, offline: 1, visibilitychange: 1 });
+
+        manager.dispose();
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('calling stop() twice leaves zero owned timers and zero attached browser listeners', () => {
+      const tracker = trackBrowserListeners();
+      vi.mocked(api.getHealth).mockResolvedValue({ status: 'ok' } as any);
+
+      try {
+        const manager = new ConnectivityManager();
+        manager.start();
+        expect(tracker.counts).toEqual({ online: 1, offline: 1, visibilitychange: 1 });
+
+        // First stop
+        manager.stop();
+        expect(manager.started).toBe(false);
+        expect(manager.disposed).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(tracker.counts).toEqual({ online: 0, offline: 0, visibilitychange: 0 });
+
+        // Second stop (idempotent)
+        manager.stop();
+        expect(manager.started).toBe(false);
+        expect(manager.disposed).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(tracker.counts).toEqual({ online: 0, offline: 0, visibilitychange: 0 });
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('if a successful health response resolves after stop(), it cannot schedule another polling timer or probe', async () => {
+      const deferred = createDeferred<any>();
+      vi.mocked(api.getHealth).mockImplementationOnce(() => deferred.promise);
+
+      const manager = new ConnectivityManager({ baseIntervalMs: 3000 });
+      manager.start();
+      expect(api.getHealth).toHaveBeenCalledTimes(1);
+      expect(manager.started).toBe(true);
+
+      // Stop while probe is in flight
+      manager.stop();
+      expect(manager.started).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Probe resolves with healthy response AFTER stop
+      deferred.resolve({ status: 'ok', environment: 'dev', version: '0.1.0', timestamp: new Date().toISOString() });
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(0));
+
+      // Observable invariant: zero timers scheduled
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advancing time must NOT trigger another probe
+      vi.advanceTimersByTime(30000);
+      expect(api.getHealth).toHaveBeenCalledTimes(1);
+    });
+
+    it('if a failed health response resolves after stop(), it cannot schedule a retry timer', async () => {
+      const deferred = createDeferred<any>();
+      vi.mocked(api.getHealth).mockImplementationOnce(() => deferred.promise);
+
+      const manager = new ConnectivityManager({ baseIntervalMs: 3000 });
+      manager.start();
+      expect(api.getHealth).toHaveBeenCalledTimes(1);
+
+      // Stop while probe is in flight
+      manager.stop();
+      expect(manager.started).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Probe rejects with network failure AFTER stop
+      deferred.reject(new NetworkError('Backend connection lost'));
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(0));
+
+      // Observable invariant: zero retry timers scheduled
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Advancing time must NOT trigger another probe
+      vi.advanceTimersByTime(30000);
+      expect(api.getHealth).toHaveBeenCalledTimes(1);
+    });
+
+    it('a stale probe from a previous lifecycle cannot overwrite state or interfere with subsequently restarted lifecycle', async () => {
+      const probe1 = createDeferred<any>();
+      const probe2 = createDeferred<any>();
+
+      vi.mocked(api.getHealth)
+        .mockImplementationOnce(() => probe1.promise)
+        .mockImplementationOnce(() => probe2.promise);
+
+      const manager = new ConnectivityManager();
+
+      // Lifecycle 1: start probe 1
+      manager.start();
+      expect(api.getHealth).toHaveBeenCalledTimes(1);
+
+      // Stop Lifecycle 1
+      manager.stop();
+      expect(manager.started).toBe(false);
+
+      // Lifecycle 2: restart manager and trigger probe 2
+      manager.start();
+      expect(api.getHealth).toHaveBeenCalledTimes(2);
+
+      // Now probe 1 (stale, from Lifecycle 1) resolves with 'online'
+      probe1.resolve({ status: 'ok' });
+      await Promise.resolve();
+
+      // State must NOT be overwritten by stale probe 1
+      expect(manager.getState().status).toBe('unknown');
+
+      // Now probe 2 (current, from Lifecycle 2) rejects with network error
+      probe2.reject(new NetworkError('Down'));
+      await vi.waitFor(() => expect(manager.getState().status).toBe('offline'));
+
+      // State truthfully reflects Lifecycle 2 outcome (offline), not stale probe 1
+      expect(manager.getState().status).toBe('offline');
+
+      manager.dispose();
+    });
+
+    it('start() after stop() works on the same non-disposed manager without duplicating listeners', async () => {
+      const tracker = trackBrowserListeners();
+      vi.mocked(api.getHealth).mockResolvedValue({ status: 'ok' } as any);
+
+      try {
+        const manager = new ConnectivityManager({ baseIntervalMs: 2000 });
+
+        // Start 1
+        manager.start();
+        expect(tracker.counts).toEqual({ online: 1, offline: 1, visibilitychange: 1 });
+        await vi.waitFor(() => expect(manager.getState().status).toBe('online'));
+
+        // Stop 1
+        manager.stop();
+        expect(tracker.counts).toEqual({ online: 0, offline: 0, visibilitychange: 0 });
+        expect(vi.getTimerCount()).toBe(0);
+
+        // Start 2 (restarting the same manager)
+        manager.start();
+        expect(manager.started).toBe(true);
+        expect(tracker.counts).toEqual({ online: 1, offline: 1, visibilitychange: 1 }); // Not duplicated (1, not 2)
+
+        // Advance timer to verify automatic polling resumed
+        vi.advanceTimersByTime(2500);
+        expect(api.getHealth).toHaveBeenCalledTimes(2);
+
+        manager.dispose();
+        expect(tracker.counts).toEqual({ online: 0, offline: 0, visibilitychange: 0 });
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('dispose() during an in-flight probe prevents all future automatic work and later start() remains ineffective', async () => {
+      const deferred = createDeferred<any>();
+      vi.mocked(api.getHealth).mockImplementationOnce(() => deferred.promise);
+
+      const manager = new ConnectivityManager({ baseIntervalMs: 2000 });
+      manager.start();
+      expect(api.getHealth).toHaveBeenCalledTimes(1);
+
+      // Dispose while probe is in flight
+      manager.dispose();
+      expect(manager.disposed).toBe(true);
+      expect(manager.started).toBe(false);
+
+      // Resolve probe after disposal
+      deferred.resolve({ status: 'ok' });
+      await Promise.resolve();
+
+      // Zero timers scheduled
+      expect(vi.getTimerCount()).toBe(0);
+
+      // Calling start() on disposed manager must be completely ineffective
+      manager.start();
+      expect(manager.started).toBe(false);
+      expect(api.getHealth).toHaveBeenCalledTimes(1); // No new probe
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('a stopped manager retains no timer or listener loop and can be cleanly garbage-collected', () => {
+      const tracker = trackBrowserListeners();
+      try {
+        const manager = new ConnectivityManager();
+        manager.start();
+        expect(tracker.counts).toEqual({ online: 1, offline: 1, visibilitychange: 1 });
+
+        manager.stop();
+        // Fully idle: zero timers, zero DOM event listeners
+        expect(vi.getTimerCount()).toBe(0);
+        expect(tracker.counts).toEqual({ online: 0, offline: 0, visibilitychange: 0 });
+      } finally {
+        tracker.restore();
+      }
+    });
+  });
 });
