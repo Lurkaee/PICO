@@ -60,12 +60,10 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
   // Track the internally owned manager (lazy initialization to avoid orphaned instances on rerender).
   const internalManagerRef = useRef<ConnectivityManager | null>(null);
 
-  if (customManager) {
-    if (internalManagerRef.current) {
-      internalManagerRef.current.dispose();
-      internalManagerRef.current = null;
-    }
-  } else {
+  // If no customManager is passed, ensure we have an internal manager instance.
+  // Note: ConnectivityManager constructor is completely side-effect-free (no listeners, no timers, no probes).
+  // Disposal of any prior internal manager when customManager is passed is strictly deferred to useEffect.
+  if (!customManager) {
     if (!internalManagerRef.current || internalManagerRef.current.disposed) {
       internalManagerRef.current = new ConnectivityManager();
     }
@@ -82,14 +80,23 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
   );
 
   useEffect(() => {
-    // If the internally owned manager was disposed (e.g. StrictMode effect replay)
-    // and no customManager was passed, create a fresh viable manager.
-    let currentManager = customManager;
-    if (!currentManager) {
+    let currentManager: ConnectivityManager;
+    let isInternal = false;
+
+    if (customManager) {
+      // If a customManager was provided and we previously held an internal manager,
+      // dispose the internal manager cleanly at the effect boundary, NOT during render.
+      if (internalManagerRef.current) {
+        internalManagerRef.current.dispose();
+        internalManagerRef.current = null;
+      }
+      currentManager = customManager;
+    } else {
       if (!internalManagerRef.current || internalManagerRef.current.disposed) {
         internalManagerRef.current = new ConnectivityManager();
       }
       currentManager = internalManagerRef.current;
+      isInternal = true;
     }
 
     activeManagerRef.current = currentManager;
@@ -114,8 +121,15 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
     return () => {
       unsubscribe();
       // Only dispose if we created the manager internally and it's our internal manager
-      if (!customManager && internalManagerRef.current === currentManager) {
+      if (isInternal) {
         currentManager.dispose();
+        if (internalManagerRef.current === currentManager) {
+          internalManagerRef.current = null;
+        }
+      } else {
+        // An injected manager is externally owned, but the provider stops its listeners
+        // and owned timers when replaced or unmounted, without disposing the manager.
+        currentManager.stop();
       }
     };
   }, [customManager]);

@@ -241,4 +241,139 @@ describe('Offline Application Shell Service Worker Real Policy Module', () => {
       expect(deletedCaches).not.toContain('shared-origin-app');
     });
   });
+
+  describe('Static Resource Content-Type Validation & Response Eligibility', () => {
+    const sw = (globalThis as any).__PICO_SW__;
+    const isCompatibleContentType = sw.isCompatibleContentType;
+    const canCacheResponse = sw.canCacheResponse;
+
+    it('validates compatible Content-Type headers for static assets and HTML shell', () => {
+      // JavaScript
+      expect(isCompatibleContentType('/assets/index-D7h4sK.js', 'application/javascript')).toBe(true);
+      expect(isCompatibleContentType('/assets/index-D7h4sK.js', 'text/javascript; charset=utf-8')).toBe(true);
+
+      // CSS
+      expect(isCompatibleContentType('/assets/index-C8g2oL.css', 'text/css; charset=utf-8')).toBe(true);
+
+      // Images and Fonts
+      expect(isCompatibleContentType('/assets/logo.svg', 'image/svg+xml')).toBe(true);
+      expect(isCompatibleContentType('/assets/banner.png', 'image/png')).toBe(true);
+      expect(isCompatibleContentType('/assets/font.woff2', 'font/woff2')).toBe(true);
+      expect(isCompatibleContentType('/assets/icon.ico', 'image/x-icon')).toBe(true);
+
+      // HTML Shell
+      expect(isCompatibleContentType('/', 'text/html; charset=utf-8')).toBe(true);
+      expect(isCompatibleContentType('/index.html', 'text/html')).toBe(true);
+      expect(isCompatibleContentType('/manifest.json', 'application/json')).toBe(true);
+    });
+
+    it('rejects HTML or JSON error/fallback responses returned for static assets', () => {
+      // SPA index.html returned with 200 for missing script
+      expect(isCompatibleContentType('/assets/missing.js', 'text/html; charset=utf-8')).toBe(false);
+
+      // JSON error payload returned with 200 for stylesheet
+      expect(isCompatibleContentType('/assets/theme.css', 'application/json')).toBe(false);
+
+      // HTML returned for font or image
+      expect(isCompatibleContentType('/assets/font.woff2', 'text/html')).toBe(false);
+      expect(isCompatibleContentType('/assets/image.png', 'text/html')).toBe(false);
+
+      // Missing or invalid content-type
+      expect(isCompatibleContentType('/assets/bundle.js', '')).toBe(false);
+      expect(isCompatibleContentType('/assets/bundle.js', null)).toBe(false);
+      expect(isCompatibleContentType('/assets/bundle.js', 'application/octet-stream')).toBe(false);
+    });
+
+    it('enforces that only successful basic responses with compatible content-type are eligible for caching', () => {
+      // Eligible response
+      expect(canCacheResponse('/assets/index.js', 200, 'basic', 'application/javascript')).toBe(true);
+      expect(canCacheResponse('/assets/theme.css', 200, 'basic', 'text/css')).toBe(true);
+
+      // Non-200 responses are never cached
+      expect(canCacheResponse('/assets/index.js', 404, 'basic', 'application/javascript')).toBe(false);
+      expect(canCacheResponse('/assets/index.js', 500, 'basic', 'application/javascript')).toBe(false);
+      expect(canCacheResponse('/assets/index.js', 304, 'basic', 'application/javascript')).toBe(false);
+
+      // Non-basic responses (opaque, cors) are never cached
+      expect(canCacheResponse('/assets/index.js', 200, 'opaque', 'application/javascript')).toBe(false);
+      expect(canCacheResponse('/assets/index.js', 200, 'cors', 'application/javascript')).toBe(false);
+
+      // 200 basic response with incompatible fallback Content-Type is never cached
+      expect(canCacheResponse('/assets/index.js', 200, 'basic', 'text/html; charset=utf-8')).toBe(false);
+      expect(canCacheResponse('/assets/theme.css', 200, 'basic', 'application/json')).toBe(false);
+    });
+
+    it('rejects nested or arbitrary subdirectory paths beneath /assets/', () => {
+      // Direct file in /assets/ is allowed
+      expect(sw.isAllowedStaticAsset('/assets/index-123.js')).toBe(true);
+      expect(sw.isAllowedStaticAsset('/assets/style.css')).toBe(true);
+
+      // Subdirectory nesting beneath /assets/ is forbidden
+      expect(sw.isAllowedStaticAsset('/assets/sub/deep.js')).toBe(false);
+      expect(sw.isAllowedStaticAsset('/assets/api/data.js')).toBe(false);
+      expect(sw.isAllowedStaticAsset('/assets/../evil.js')).toBe(false);
+    });
+  });
+
+  describe('Bounded Cache Budget Enforcement', () => {
+    const sw = (globalThis as any).__PICO_SW__;
+    const enforceCacheBudget = sw.enforceCacheBudget;
+
+    it('enforces maximum cache entry cap by evicting oldest non-shell entries while preserving shell assets', async () => {
+      const shellUrls = ['/', '/index.html', '/favicon.ico'];
+      const dynamicAssetUrls: string[] = [];
+      for (let i = 1; i <= 60; i++) {
+        dynamicAssetUrls.push(`/assets/chunk-${i}.js`);
+      }
+
+      // Initial cache store has 3 shell assets + 60 dynamic assets = 63 entries
+      const cacheStore = new Map<string, any>();
+      for (const u of [...shellUrls, ...dynamicAssetUrls]) {
+        cacheStore.set(`http://localhost:5173${u}`, { url: `http://localhost:5173${u}` });
+      }
+
+      const mockCache = {
+        keys: async () => Array.from(cacheStore.values()).map((v) => ({ url: v.url })),
+        delete: async (req: { url: string }) => {
+          return cacheStore.delete(req.url);
+        },
+      };
+
+      // Cap at 50 entries
+      await enforceCacheBudget(mockCache, 50);
+
+      // Total remaining entries must be <= 50
+      expect(cacheStore.size).toBe(50);
+
+      // Critical Invariant: Shell assets must NEVER be evicted!
+      for (const s of shellUrls) {
+        expect(cacheStore.has(`http://localhost:5173${s}`)).toBe(true);
+      }
+
+      // 13 oldest dynamic assets (chunk-1 through chunk-13) were evicted
+      for (let i = 1; i <= 13; i++) {
+        expect(cacheStore.has(`http://localhost:5173/assets/chunk-${i}.js`)).toBe(false);
+      }
+
+      // Newer assets remain in cache
+      for (let i = 14; i <= 60; i++) {
+        expect(cacheStore.has(`http://localhost:5173/assets/chunk-${i}.js`)).toBe(true);
+      }
+    });
+
+    it('takes no eviction action when cache entries are below maximum limit', async () => {
+      const cacheStore = new Map<string, any>();
+      cacheStore.set('http://localhost:5173/', { url: 'http://localhost:5173/' });
+      cacheStore.set('http://localhost:5173/index.html', { url: 'http://localhost:5173/index.html' });
+      cacheStore.set('http://localhost:5173/assets/app.js', { url: 'http://localhost:5173/assets/app.js' });
+
+      const mockCache = {
+        keys: async () => Array.from(cacheStore.values()).map((v) => ({ url: v.url })),
+        delete: async (req: { url: string }) => cacheStore.delete(req.url),
+      };
+
+      await enforceCacheBudget(mockCache, 50);
+      expect(cacheStore.size).toBe(3);
+    });
+  });
 });

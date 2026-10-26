@@ -53,6 +53,7 @@ export class ConnectivityManager {
   private activeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlightProbe: Promise<boolean> | null = null;
   private isDisposed = false;
+  private isStarted = false;
   private listeners: Set<(state: ConnectivityState) => void> = new Set();
 
   private windowOnlineHandler: (() => void) | null = null;
@@ -69,8 +70,6 @@ export class ConnectivityManager {
     if (options.onStateChange) {
       this.listeners.add(options.onStateChange);
     }
-
-    this.setupBrowserEvents();
   }
 
   public getState(): ConnectivityState {
@@ -112,22 +111,33 @@ export class ConnectivityManager {
     return this.isDisposed;
   }
 
+  public get started(): boolean {
+    return this.isStarted;
+  }
+
   public isBackendReachable(): boolean {
     return this.status === 'online' || this.status === 'degraded';
   }
 
   public start(): void {
-    if (this.isDisposed) return;
+    if (this.isDisposed || this.isStarted) return;
+    this.isStarted = true;
+    this.setupBrowserEvents();
     this.probeHealth();
   }
 
-  public dispose(): void {
-    this.isDisposed = true;
+  public stop(): void {
+    this.isStarted = false;
     if (this.activeTimer) {
       clearTimeout(this.activeTimer);
       this.activeTimer = null;
     }
     this.removeBrowserEvents();
+  }
+
+  public dispose(): void {
+    this.isDisposed = true;
+    this.stop();
     this.listeners.clear();
   }
 
@@ -219,7 +229,7 @@ export class ConnectivityManager {
   }
 
   private scheduleNextProbe(delayMs: number): void {
-    if (this.isDisposed) return;
+    if (this.isDisposed || !this.isStarted) return;
     if (this.activeTimer) {
       clearTimeout(this.activeTimer);
     }
@@ -251,6 +261,7 @@ export class ConnectivityManager {
 
   private setupBrowserEvents(): void {
     if (typeof window === 'undefined') return;
+    if (this.windowOnlineHandler) return; // Already registered
 
     this.windowOnlineHandler = () => {
       // Browser reports network link up -> probe immediately with short delay
@@ -286,12 +297,15 @@ export class ConnectivityManager {
     if (typeof window === 'undefined') return;
     if (this.windowOnlineHandler) {
       window.removeEventListener('online', this.windowOnlineHandler);
+      this.windowOnlineHandler = null;
     }
     if (this.windowOfflineHandler) {
       window.removeEventListener('offline', this.windowOfflineHandler);
+      this.windowOfflineHandler = null;
     }
     if (typeof document !== 'undefined' && this.visibilityHandler) {
       document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
     }
   }
 }
