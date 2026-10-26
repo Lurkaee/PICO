@@ -139,6 +139,15 @@ class AudioSessionStopResponse(BaseModel):
     provenance: str
 
 
+class AudioSessionStatusResponse(BaseModel):
+    session_id: str
+    state: AudioCaptureState
+    started_at: datetime
+    completed_at: datetime | None = None
+    microphone_active: bool = False
+    source_device: str
+
+
 class AudioSynthesisRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4096)
     voice_id: str | None = None

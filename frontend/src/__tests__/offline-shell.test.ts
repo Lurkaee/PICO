@@ -149,4 +149,96 @@ describe('Offline Application Shell Service Worker Real Policy Module', () => {
       reason: 'unknown-path-cache-bypass',
     });
   });
+
+  it('limits /assets/ caching to legitimate built static assets with allowed extensions', () => {
+    // Valid static assets under /assets/
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/vendor.js')).toEqual({
+      handled: true,
+      strategy: 'cache-first-static-asset',
+    });
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/theme.css')).toEqual({
+      handled: true,
+      strategy: 'cache-first-static-asset',
+    });
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/logo.webp')).toEqual({
+      handled: true,
+      strategy: 'cache-first-static-asset',
+    });
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/font.woff2')).toEqual({
+      handled: true,
+      strategy: 'cache-first-static-asset',
+    });
+
+    // Arbitrary responses or non-static files beneath /assets/ are bypassed
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/payload.bin')).toEqual({
+      handled: false,
+      reason: 'unknown-path-cache-bypass',
+    });
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/secret.txt')).toEqual({
+      handled: false,
+      reason: 'unknown-path-cache-bypass',
+    });
+    expect(evaluateFetchPolicy('GET', 'http://localhost:5173/assets/noextension')).toEqual({
+      handled: false,
+      reason: 'unknown-path-cache-bypass',
+    });
+  });
+
+  describe('Service Worker Activation Cache Cleanup', () => {
+    const sw = (globalThis as any).__PICO_SW__;
+    const shouldDeleteCache = sw.shouldDeleteCache;
+    const shellCacheName = sw.SHELL_CACHE_NAME;
+
+    it('identifies only obsolete PICO-owned caches for deletion and preserves current and third-party caches', () => {
+      // Obsolete PICO caches: must delete
+      expect(shouldDeleteCache('pico-shell-v1', shellCacheName)).toBe(true);
+      expect(shouldDeleteCache('pico-shell-v1.1', shellCacheName)).toBe(true);
+      expect(shouldDeleteCache('pico-shell-legacy', shellCacheName)).toBe(true);
+
+      // Current active PICO cache: must NOT delete
+      expect(shouldDeleteCache(shellCacheName, shellCacheName)).toBe(false);
+
+      // Third-party or unrelated application caches sharing the same origin: must NOT delete
+      expect(shouldDeleteCache('workbox-precache-v1', shellCacheName)).toBe(false);
+      expect(shouldDeleteCache('unrelated-app-cache', shellCacheName)).toBe(false);
+      expect(shouldDeleteCache('analytics-offline-v1', shellCacheName)).toBe(false);
+      expect(shouldDeleteCache('pico_other_data', shellCacheName)).toBe(false); // wrong delimiter/namespace
+    });
+
+    it('cleans up only obsolete PICO caches during activation against simulated Cache Storage', async () => {
+      const existingCaches = [
+        shellCacheName,
+        'pico-shell-v1',
+        'pico-shell-v1.2',
+        'third-party-cache-v1',
+        'shared-origin-app',
+      ];
+      const deletedCaches: string[] = [];
+
+      const fakeCacheStorage = {
+        keys: async () => existingCaches,
+        delete: async (name: string) => {
+          deletedCaches.push(name);
+          return true;
+        },
+      };
+
+      const keys = await fakeCacheStorage.keys();
+      await Promise.all(
+        keys.map((cacheName) => {
+          if (shouldDeleteCache(cacheName, shellCacheName)) {
+            return fakeCacheStorage.delete(cacheName);
+          }
+        })
+      );
+
+      // Only obsolete PICO caches were removed
+      expect(deletedCaches).toEqual(['pico-shell-v1', 'pico-shell-v1.2']);
+
+      // Current cache and unrelated caches were preserved
+      expect(deletedCaches).not.toContain(shellCacheName);
+      expect(deletedCaches).not.toContain('third-party-cache-v1');
+      expect(deletedCaches).not.toContain('shared-origin-app');
+    });
+  });
 });

@@ -8,6 +8,7 @@ from pico.perception.audio.adapter import AudioSessionManager
 from pico.perception.contracts import (
     AudioSessionStartRequest,
     AudioSessionStartResponse,
+    AudioSessionStatusResponse,
     AudioSessionStopRequest,
     AudioSessionStopResponse,
     AudioSynthesisRequest,
@@ -99,6 +100,19 @@ class PerceptionPipeline:
 
     def cancel_audio_session(self, session_id: str) -> AudioSessionStartResponse:
         return self.audio_manager.cancel_session(session_id)
+
+    def get_audio_session_status(self, session_id: str) -> AudioSessionStatusResponse:
+        session = self.audio_manager.get_session(session_id)
+        if not session:
+            raise EntityNotFoundError("AudioSession", session_id)
+        return AudioSessionStatusResponse(
+            session_id=session.session_id,
+            state=session.state,
+            started_at=session.started_at,
+            completed_at=session.completed_at,
+            microphone_active=False,
+            source_device=session.source_device,
+        )
 
     async def synthesize_speech(self, request: AudioSynthesisRequest) -> AudioSynthesisResponse:
         return await self.audio_manager.synthesize_speech(

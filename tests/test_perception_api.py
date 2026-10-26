@@ -45,7 +45,45 @@ def test_api_audio_push_to_talk_and_synthesis(client: TestClient) -> None:
     assert cancel_res.status_code == 200
     assert cancel_res.json()["state"] == "cancelled"
 
-    # 4. Synthesize speech
+    # 4. Read-only session status queries (Safe reconciliation without audio leakage)
+    # 4a. Check active session status
+    s3 = client.post("/api/perception/audio/session/start", json={"user_consent": True}).json()
+    status_active = client.get(f"/api/perception/audio/session/{s3['session_id']}")
+    assert status_active.status_code == 200
+    active_data = status_active.json()
+    assert active_data["session_id"] == s3["session_id"]
+    assert active_data["state"] == "capturing"
+    assert active_data["microphone_active"] is False
+    # Crucial security assertion: NO audio or transcription leaks!
+    assert "audio_base64" not in active_data
+    assert "audio_bytes" not in active_data
+    assert "transcription" not in active_data
+
+    # 4b. Check completed session status
+    status_completed = client.get(f"/api/perception/audio/session/{session_id}")
+    assert status_completed.status_code == 200
+    comp_data = status_completed.json()
+    assert comp_data["session_id"] == session_id
+    assert comp_data["state"] == "completed"
+    assert comp_data["microphone_active"] is False
+    assert comp_data["completed_at"] is not None
+    assert "audio_base64" not in comp_data
+    assert "transcription" not in comp_data
+
+    # 4c. Check cancelled session status
+    status_cancelled = client.get(f"/api/perception/audio/session/{s2['session_id']}")
+    assert status_cancelled.status_code == 200
+    canc_data = status_cancelled.json()
+    assert canc_data["session_id"] == s2["session_id"]
+    assert canc_data["state"] == "cancelled"
+    assert canc_data["microphone_active"] is False
+
+    # 4d. Non-existent session returns 404 (does NOT fabricate certainty)
+    missing_res = client.get("/api/perception/audio/session/audio_sess_missing_999")
+    assert missing_res.status_code == 404
+    assert "does not exist" in missing_res.json()["detail"].lower()
+
+    # 5. Synthesize speech
     synth_res = client.post(
         "/api/perception/audio/synthesize",
         json={"text": "Acknowledged. Command logged."},

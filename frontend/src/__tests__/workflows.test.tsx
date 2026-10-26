@@ -6,9 +6,12 @@ import { api } from '../api/client';
 vi.mock('../api/client', () => ({
   api: {
     listWorkflows: vi.fn(),
+    getWorkflow: vi.fn(),
     getWorkflowVerifications: vi.fn(),
     advanceWorkflow: vi.fn(),
     cancelWorkflow: vi.fn(),
+    compensateWorkflow: vi.fn(),
+    getWorkflowCompensations: vi.fn(),
   },
 }));
 
@@ -161,6 +164,243 @@ describe('WorkflowTimeline Component', () => {
       expect(screen.getByText('stage_compile')).toBeInTheDocument();
       expect(screen.getByText('PASSED (Evidence Accepted)')).toBeInTheDocument();
       expect(screen.getByText('Stage A: Compilation Gate')).toBeInTheDocument();
+    });
+  });
+
+  describe('Action-Specific Workflow Reconciliation', () => {
+    const baseRunningWf = {
+      id: 'wf_ambig_test',
+      name: 'Resilient Pipeline',
+      status: 'running',
+      completed_steps: 1,
+      total_steps: 3,
+      steps: [
+        {
+          step_key: 'step_1',
+          capability_id: 'tool.fetch',
+          capability_version: '1.0.0',
+          status: 'succeeded',
+          dependencies: [],
+        },
+        {
+          step_key: 'step_2',
+          capability_id: 'tool.process',
+          capability_version: '1.0.0',
+          status: 'ready',
+          dependencies: ['step_1'],
+        },
+        {
+          step_key: 'step_3',
+          capability_id: 'tool.publish',
+          capability_version: '1.0.0',
+          status: 'pending',
+          dependencies: ['step_2'],
+        },
+      ],
+      created_at: '2026-10-22T09:00:00Z',
+      updated_at: '2026-10-22T09:00:00Z',
+    };
+
+    it('keeps advance lock active when GET succeeds but workflow shows no progress, and unlocks when transition is confirmed', async () => {
+      vi.mocked(api.listWorkflows).mockResolvedValue([baseRunningWf]);
+      vi.mocked(api.getWorkflowVerifications).mockResolvedValue([]);
+
+      const netErr = new Error('Network error during advance');
+      netErr.name = 'NetworkError';
+      vi.mocked(api.advanceWorkflow).mockRejectedValueOnce(netErr);
+
+      render(<WorkflowTimeline />);
+
+      const advanceBtn = await screen.findByRole('button', { name: /advance step/i });
+      fireEvent.click(advanceBtn);
+
+      // Outcome unknown appears and controls lock
+      await waitFor(() => {
+        expect(screen.getAllByText(/Outcome unknown/i).length).toBeGreaterThan(0);
+      });
+
+      expect(screen.getByRole('button', { name: /advance step/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
+
+      const reconcileBtn = screen.getByRole('button', { name: /reconcile/i });
+
+      // 1. Backend GET returns identical running state with NO transition or completed_steps change
+      vi.mocked(api.getWorkflow).mockResolvedValueOnce({ ...baseRunningWf });
+
+      fireEvent.click(reconcileBtn);
+
+      // Inconclusive! Must remain locked
+      await waitFor(() => {
+        expect(screen.getByText(/Reconciliation inconclusive/i)).toBeInTheDocument();
+        expect(screen.getByText(/without step transition/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /advance step/i })).toBeDisabled();
+
+      // 2. Backend GET returns confirmed transition: step_2 succeeded, completed_steps = 2
+      vi.mocked(api.getWorkflow).mockResolvedValueOnce({
+        ...baseRunningWf,
+        completed_steps: 2,
+        steps: [
+          baseRunningWf.steps[0],
+          { ...baseRunningWf.steps[1], status: 'succeeded' },
+          { ...baseRunningWf.steps[2], status: 'ready' },
+        ],
+      });
+
+      fireEvent.click(reconcileBtn);
+
+      // Successfully resolved and unlocked
+      await waitFor(() => {
+        expect(screen.getByText(/advancement confirmed/i)).toBeInTheDocument();
+        expect(screen.queryAllByText(/Outcome unknown/i)).toHaveLength(0);
+      });
+      expect(screen.getByRole('button', { name: /advance step/i })).not.toBeDisabled();
+    });
+
+    it('keeps cancel lock active when workflow is still running, and unlocks when cancelled', async () => {
+      vi.mocked(api.listWorkflows).mockResolvedValue([baseRunningWf]);
+      vi.mocked(api.getWorkflowVerifications).mockResolvedValue([]);
+
+      const netErr = new Error('Timeout on cancel');
+      netErr.name = 'TimeoutError';
+      vi.mocked(api.cancelWorkflow).mockRejectedValueOnce(netErr);
+
+      render(<WorkflowTimeline />);
+
+      const cancelBtn = await screen.findByRole('button', { name: /cancel/i });
+      fireEvent.click(cancelBtn);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(/Outcome unknown/i).length).toBeGreaterThan(0);
+      });
+
+      const reconcileBtn = screen.getByRole('button', { name: /reconcile/i });
+
+      // 1. GET returns still running
+      vi.mocked(api.getWorkflow).mockResolvedValueOnce({ ...baseRunningWf });
+
+      fireEvent.click(reconcileBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Reconciliation inconclusive/i)).toBeInTheDocument();
+        expect(screen.getByText(/cancellation unconfirmed/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
+
+      // 2. GET returns cancelled
+      vi.mocked(api.getWorkflow).mockResolvedValueOnce({
+        ...baseRunningWf,
+        status: 'cancelled',
+      });
+
+      fireEvent.click(reconcileBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/cancellation confirmed/i)).toBeInTheDocument();
+        expect(screen.queryAllByText(/Outcome unknown/i)).toHaveLength(0);
+      });
+    });
+
+    it('reconciles compensation by inspecting authoritative compensation records', async () => {
+      const completedWf = {
+        ...baseRunningWf,
+        status: 'completed',
+      };
+      vi.mocked(api.listWorkflows).mockResolvedValue([completedWf]);
+      vi.mocked(api.getWorkflowVerifications).mockResolvedValue([]);
+
+      const netErr = new Error('Interrupted during compensate');
+      netErr.name = 'NetworkError';
+      vi.mocked(api.compensateWorkflow).mockRejectedValueOnce(netErr);
+
+      render(<WorkflowTimeline />);
+
+      const compBtn = await screen.findByRole('button', { name: /compensate/i });
+      fireEvent.click(compBtn);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(/Outcome unknown/i).length).toBeGreaterThan(0);
+      });
+
+      const reconcileBtn = screen.getByRole('button', { name: /reconcile/i });
+
+      // 1. Compensation records still in 'registered' status (not executed)
+      vi.mocked(api.getWorkflow).mockResolvedValueOnce({ ...completedWf });
+      vi.mocked(api.getWorkflowCompensations).mockResolvedValueOnce([
+        {
+          id: 'comp_1',
+          workflow_run_id: completedWf.id,
+          workflow_step_id: 'step_1',
+          compensation_capability_id: 'tool.fetch_rollback',
+          compensation_capability_version: '1.0.0',
+          status: 'registered',
+          input_digest: 'digest_1',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+
+      fireEvent.click(reconcileBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Reconciliation inconclusive/i)).toBeInTheDocument();
+        expect(screen.getByText(/remain in 'registered' status/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /compensate/i })).toBeDisabled();
+
+      // 2. Compensation records verified as 'succeeded'
+      vi.mocked(api.getWorkflow).mockResolvedValueOnce({ ...completedWf });
+      vi.mocked(api.getWorkflowCompensations).mockResolvedValueOnce([
+        {
+          id: 'comp_1',
+          workflow_run_id: completedWf.id,
+          workflow_step_id: 'step_1',
+          compensation_capability_id: 'tool.fetch_rollback',
+          compensation_capability_version: '1.0.0',
+          status: 'succeeded',
+          input_digest: 'digest_1',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+
+      fireEvent.click(reconcileBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/compensation records verified on backend/i)).toBeInTheDocument();
+        expect(screen.queryAllByText(/Outcome unknown/i)).toHaveLength(0);
+      });
+      expect(screen.getByRole('button', { name: /compensate/i })).not.toBeDisabled();
+    });
+
+    it('keeps controls locked when reconciliation GET fails with network error', async () => {
+      vi.mocked(api.listWorkflows).mockResolvedValue([baseRunningWf]);
+      vi.mocked(api.getWorkflowVerifications).mockResolvedValue([]);
+
+      const netErr = new Error('Advance network drop');
+      netErr.name = 'NetworkError';
+      vi.mocked(api.advanceWorkflow).mockRejectedValueOnce(netErr);
+
+      render(<WorkflowTimeline />);
+
+      const advanceBtn = await screen.findByRole('button', { name: /advance step/i });
+      fireEvent.click(advanceBtn);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(/Outcome unknown/i).length).toBeGreaterThan(0);
+      });
+
+      const reconcileBtn = screen.getByRole('button', { name: /reconcile/i });
+
+      // GET fails
+      vi.mocked(api.getWorkflow).mockRejectedValueOnce(new Error('Connection refused'));
+
+      fireEvent.click(reconcileBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Reconciliation inconclusive: could not verify workflow state/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('button', { name: /advance step/i })).toBeDisabled();
     });
   });
 });
