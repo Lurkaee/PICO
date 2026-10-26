@@ -214,4 +214,133 @@ describe('ConnectivityContext & In-Memory Draft Outbox', () => {
 
     manager.dispose();
   });
+
+  it('bounds manager construction and event listeners across repeated parent rerenders without leaks', async () => {
+    // Track window and document listener registrations
+    const listeners: Record<string, number> = {
+      online: 0,
+      offline: 0,
+      visibilitychange: 0,
+    };
+
+    const originalWindowAdd = window.addEventListener;
+    const originalWindowRemove = window.removeEventListener;
+    const originalDocAdd = document.addEventListener;
+    const originalDocRemove = document.removeEventListener;
+
+    window.addEventListener = vi.fn((type: string, listener: any, options?: any) => {
+      if (type in listeners) listeners[type]++;
+      return originalWindowAdd.call(window, type, listener, options);
+    });
+    window.removeEventListener = vi.fn((type: string, listener: any, options?: any) => {
+      if (type in listeners) listeners[type]--;
+      return originalWindowRemove.call(window, type, listener, options);
+    });
+    document.addEventListener = vi.fn((type: string, listener: any, options?: any) => {
+      if (type in listeners) listeners[type]++;
+      return originalDocAdd.call(document, type, listener, options);
+    });
+    document.removeEventListener = vi.fn((type: string, listener: any, options?: any) => {
+      if (type in listeners) listeners[type]--;
+      return originalDocRemove.call(document, type, listener, options);
+    });
+
+    const TestRerenderParent = () => {
+      const [count, setCount] = useState(0);
+      return (
+        <div>
+          <button data-testid="rerender-btn" onClick={() => setCount((c) => c + 1)}>
+            Rerender {count}
+          </button>
+          <ConnectivityProvider>
+            <div data-testid="child">Count {count}</div>
+          </ConnectivityProvider>
+        </div>
+      );
+    };
+
+    const { getByTestId, unmount } = render(<TestRerenderParent />);
+
+    // Initial mount attaches exactly 1 of each listener
+    expect(listeners.online).toBe(1);
+    expect(listeners.offline).toBe(1);
+    expect(listeners.visibilitychange).toBe(1);
+
+    // Trigger 10 parent rerenders
+    for (let i = 0; i < 10; i++) {
+      act(() => {
+        getByTestId('rerender-btn').click();
+      });
+    }
+
+    // CRITICAL INVARIANT: Rerenders MUST NOT evaluate new ConnectivityManager() or accumulate listeners!
+    expect(listeners.online).toBe(1);
+    expect(listeners.offline).toBe(1);
+    expect(listeners.visibilitychange).toBe(1);
+
+    // Unmount must clean up all listeners
+    unmount();
+    expect(listeners.online).toBe(0);
+    expect(listeners.offline).toBe(0);
+    expect(listeners.visibilitychange).toBe(0);
+
+    // Restore original methods
+    window.addEventListener = originalWindowAdd;
+    window.removeEventListener = originalWindowRemove;
+    document.addEventListener = originalDocAdd;
+    document.removeEventListener = originalDocRemove;
+  });
+
+  it('preserves external ownership of custom manager without disposing it on unmount', () => {
+    const customManager = new ConnectivityManager();
+    expect(customManager.disposed).toBe(false);
+
+    const { unmount } = render(
+      <ConnectivityProvider manager={customManager}>
+        <div>Active Consumer</div>
+      </ConnectivityProvider>
+    );
+
+    expect(customManager.disposed).toBe(false);
+
+    // Provider unmounts: external manager must NOT be disposed by the provider!
+    unmount();
+    expect(customManager.disposed).toBe(false);
+
+    // External owner explicitly cleans it up
+    customManager.dispose();
+    expect(customManager.disposed).toBe(true);
+  });
+
+  it('cleanly transitions when switching from custom manager to default internal manager', () => {
+    const customManager = new ConnectivityManager();
+
+    const DynamicProvider = () => {
+      const [useCustom, setUseCustom] = useState(true);
+      return (
+        <div>
+          <button data-testid="switch-btn" onClick={() => setUseCustom(false)}>
+            Switch to Internal
+          </button>
+          <ConnectivityProvider manager={useCustom ? customManager : undefined}>
+            <div>Dynamic Child</div>
+          </ConnectivityProvider>
+        </div>
+      );
+    };
+
+    const { getByTestId, unmount } = render(<DynamicProvider />);
+    expect(customManager.disposed).toBe(false);
+
+    // Switch to internal
+    act(() => {
+      getByTestId('switch-btn').click();
+    });
+
+    // Custom manager remains owned by caller
+    expect(customManager.disposed).toBe(false);
+
+    unmount();
+    customManager.dispose();
+  });
 });

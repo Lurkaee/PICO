@@ -211,6 +211,17 @@ export const api = {
     return request(`/api/perception/audio/session/${sessionId}/cancel`, { method: 'POST' });
   },
 
+  async getAudioSessionStatus(sessionId: string): Promise<{
+    session_id: string;
+    state: 'capturing' | 'processing' | 'completed' | 'cancelled' | 'failed' | string;
+    started_at: string;
+    completed_at: string | null;
+    microphone_active: boolean;
+    source_device: string;
+  }> {
+    return request(`/api/perception/audio/session/${sessionId}`);
+  },
+
   // --- Memory Subsystem ---
   async getMemoryStatus(): Promise<Record<string, unknown>> {
     return request('/api/memory/status');

@@ -11,6 +11,7 @@
  * 5. Zero automatic mutation replay: POST/PUT/DELETE requests are NEVER queued or replayed.
  */
 
+const PICO_CACHE_PREFIX = 'pico-shell-';
 const SHELL_CACHE_NAME = 'pico-shell-v2';
 
 // Minimal static shell assets to pre-cache on install
@@ -29,6 +30,22 @@ const STATIC_EXPLICIT_ALLOWLIST = new Set([
   '/vite.svg',
 ]);
 
+const STATIC_ASSET_EXTENSIONS = new Set([
+  '.js',
+  '.css',
+  '.svg',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.eot',
+  '.ico',
+]);
+
 function normalizePath(pathname) {
   // Normalize consecutive slashes and convert to lowercase
   return pathname.replace(/\/+/g, '/').toLowerCase();
@@ -44,8 +61,22 @@ function isApiOrOperationalPath(pathname) {
 
 function isAllowedStaticAsset(pathname) {
   const norm = normalizePath(pathname);
-  if (norm.startsWith('/assets/')) return true;
-  return STATIC_EXPLICIT_ALLOWLIST.has(norm);
+  if (STATIC_EXPLICIT_ALLOWLIST.has(norm)) return true;
+  if (norm.startsWith('/assets/')) {
+    const dotIndex = norm.lastIndexOf('.');
+    if (dotIndex !== -1) {
+      const ext = norm.slice(dotIndex);
+      return STATIC_ASSET_EXTENSIONS.has(ext);
+    }
+    return false;
+  }
+  return false;
+}
+
+function shouldDeleteCache(cacheName, currentCacheName = SHELL_CACHE_NAME) {
+  return typeof cacheName === 'string' &&
+    cacheName.startsWith(PICO_CACHE_PREFIX) &&
+    cacheName !== currentCacheName;
 }
 
 function evaluateFetchPolicy(method, urlString, mode = 'cors', swOrigin = (typeof self !== 'undefined' && self.location ? self.location.origin : 'http://localhost:5173')) {
@@ -103,7 +134,7 @@ if (typeof self !== 'undefined' && 'addEventListener' in self) {
       caches.keys().then((cacheNames) => {
         return Promise.all(
           cacheNames.map((cacheName) => {
-            if (cacheName !== SHELL_CACHE_NAME) {
+            if (shouldDeleteCache(cacheName, SHELL_CACHE_NAME)) {
               return caches.delete(cacheName);
             }
           })
@@ -171,12 +202,15 @@ if (typeof self !== 'undefined' && 'addEventListener' in self) {
 // Export for Node/Vitest testing environments
 if (typeof globalThis !== 'undefined') {
   globalThis.__PICO_SW__ = {
+    PICO_CACHE_PREFIX,
     SHELL_CACHE_NAME,
     SHELL_PRECACHE_ASSETS,
     STATIC_EXPLICIT_ALLOWLIST,
+    STATIC_ASSET_EXTENSIONS,
     normalizePath,
     isApiOrOperationalPath,
     isAllowedStaticAsset,
+    shouldDeleteCache,
     evaluateFetchPolicy,
   };
 }

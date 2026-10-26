@@ -5,6 +5,7 @@ from pico.db.session import get_db
 from pico.perception.contracts import (
     AudioSessionStartRequest,
     AudioSessionStartResponse,
+    AudioSessionStatusResponse,
     AudioSessionStopRequest,
     AudioSessionStopResponse,
     AudioSynthesisRequest,
@@ -77,6 +78,19 @@ def cancel_audio_session(
 ) -> AudioSessionStartResponse:
     pipeline = PerceptionPipeline(db=db)
     return pipeline.cancel_audio_session(session_id)
+
+
+@router.get(
+    "/audio/session/{session_id}",
+    response_model=AudioSessionStatusResponse,
+    summary="Get audio session lifecycle status (read-only)",
+)
+def get_audio_session_status(
+    session_id: str,
+    db: Session = Depends(get_db),
+) -> AudioSessionStatusResponse:
+    pipeline = PerceptionPipeline(db=db)
+    return pipeline.get_audio_session_status(session_id)
 
 
 @router.post(

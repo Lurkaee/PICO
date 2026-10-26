@@ -499,6 +499,11 @@ The desktop client implements a structured error model mapping transport, timeou
   - **Description**: Cooperatively aborts an active audio recording session, immediately releasing all transient audio buffers.
   - **Response (200 OK)**: `AudioSessionStartResponse`
 
+- **`GET /api/perception/audio/session/{session_id}`**
+  - **Description**: Read-only status query for an audio capture session. Exposes only essential session metadata (`session_id`, `state`, `started_at`, `completed_at`, `microphone_active`, `source_device`) without leaking raw audio samples, PCM buffers, or speech transcriptions. Enables authoritative client reconciliation following ambiguous network failures without compromising privacy.
+  - **Response (200 OK)**: `AudioSessionStatusResponse`
+  - **Response (404 Not Found)**: If `session_id` does not exist or has expired.
+
 - **`POST /api/perception/audio/synthesize`**
   - **Description**: Local text-to-speech synthesis through provider-neutral TTS adapter.
   - **Request Body**: `AudioSynthesisRequest` (`text`, optional `voice_id`, `speed`).

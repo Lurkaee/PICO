@@ -181,6 +181,9 @@ class AudioSessionManager:
         )
         self._active_sessions: dict[str, AudioSession] = {}
 
+    def get_session(self, session_id: str) -> AudioSession | None:
+        return self._active_sessions.get(session_id)
+
     def get_status(self) -> dict[str, Any]:
         return {
             "enabled": settings.PERCEPTION_ENABLED,

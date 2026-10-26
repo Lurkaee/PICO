@@ -1,8 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { GitBranch, Play, StopCircle, RefreshCw, CheckCircle2, XCircle, Clock, AlertTriangle, ShieldCheck, HelpCircle } from 'lucide-react';
 import { api } from '../../api/client';
-import { StepVerificationRecord, WorkflowRun, WorkflowStep } from '../../types';
+import { StepVerificationRecord, WorkflowCompensation, WorkflowRun, WorkflowStep } from '../../types';
 import { useConnectivity } from '../../context/ConnectivityContext';
+
+function extractStepStatuses(run: WorkflowRun | null): Record<string, string> {
+  if (!run || !run.steps) return {};
+  const res: Record<string, string> = {};
+  if (Array.isArray(run.steps)) {
+    for (const s of run.steps) {
+      if (s.step_key) {
+        res[s.step_key] = s.status;
+      }
+    }
+  } else {
+    for (const [k, v] of Object.entries(run.steps)) {
+      if (v && v.status) {
+        res[k] = v.status;
+      }
+    }
+  }
+  return res;
+}
 
 export const WorkflowTimeline: React.FC = () => {
   const { isBackendReachable } = useConnectivity();
@@ -16,7 +35,17 @@ export const WorkflowTimeline: React.FC = () => {
   const [processing, setProcessing] = useState(false);
   const [reconcilingWorkflowId, setReconcilingWorkflowId] = useState<string | null>(null);
   const [ambiguousWorkflows, setAmbiguousWorkflows] = useState<
-    Record<string, { reason: string; timestamp: string; action: 'advance' | 'cancel' | 'compensate' }>
+    Record<
+      string,
+      {
+        reason: string;
+        timestamp: string;
+        action: 'advance' | 'cancel' | 'compensate';
+        previousStatus: string;
+        previousCompletedSteps: number;
+        previousStepStatuses: Record<string, string>;
+      }
+    >
   >({});
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
@@ -83,16 +112,99 @@ export const WorkflowTimeline: React.FC = () => {
   const reconcileWorkflow = async (workflowId: string) => {
     setReconcilingWorkflowId(workflowId);
     setActionError(null);
+    const ambiguousEntry = ambiguousWorkflows[workflowId];
+
     try {
       const run = await api.getWorkflow(workflowId);
       setSelectedWorkflow(run);
       setWorkflows((prev) => prev.map((w) => (w.id === run.id ? run : w)));
-      setAmbiguousWorkflows((prev) => {
-        const next = { ...prev };
-        delete next[workflowId];
-        return next;
-      });
-      setActionError(`Reconciliation confirmed: workflow ${workflowId} status is ${run.status}. Controls unlocked.`);
+
+      if (!ambiguousEntry) {
+        setAmbiguousWorkflows((prev) => {
+          const next = { ...prev };
+          delete next[workflowId];
+          return next;
+        });
+        return;
+      }
+
+      const { action, previousStatus, previousCompletedSteps, previousStepStatuses } = ambiguousEntry;
+
+      if (action === 'cancel') {
+        if (run.status === 'cancelled') {
+          setAmbiguousWorkflows((prev) => {
+            const next = { ...prev };
+            delete next[workflowId];
+            return next;
+          });
+          setActionError(`Reconciliation confirmed: workflow ${workflowId} cancellation confirmed. Controls unlocked.`);
+        } else if (['completed', 'succeeded', 'failed'].includes(run.status)) {
+          setAmbiguousWorkflows((prev) => {
+            const next = { ...prev };
+            delete next[workflowId];
+            return next;
+          });
+          setActionError(`Reconciliation confirmed: workflow ${workflowId} resolved with status ${run.status}. Controls unlocked.`);
+        } else {
+          setActionError(
+            `Reconciliation inconclusive: workflow ${workflowId} status is still '${run.status}' (cancellation unconfirmed). Controls remain locked.`
+          );
+        }
+      } else if (action === 'advance') {
+        const currentSteps = extractStepStatuses(run);
+        const stepsProgressed = Object.keys(currentSteps).some(
+          (k) => previousStepStatuses[k] && previousStepStatuses[k] !== currentSteps[k]
+        );
+        const countProgressed = (run.completed_steps || 0) > (previousCompletedSteps || 0);
+        const transitioned =
+          previousStatus !== run.status &&
+          ['completed', 'succeeded', 'failed', 'cancelled', 'awaiting_approval', 'review_required'].includes(run.status);
+
+        if (stepsProgressed || countProgressed || transitioned) {
+          setAmbiguousWorkflows((prev) => {
+            const next = { ...prev };
+            delete next[workflowId];
+            return next;
+          });
+          setActionError(`Reconciliation confirmed: workflow ${workflowId} advancement confirmed (status: ${run.status}). Controls unlocked.`);
+        } else {
+          setActionError(
+            `Reconciliation inconclusive: workflow ${workflowId} remains in status '${run.status}' without step transition. Advancement unconfirmed; controls remain locked.`
+          );
+        }
+      } else if (action === 'compensate') {
+        let compensations: WorkflowCompensation[] = [];
+        try {
+          compensations = await api.getWorkflowCompensations(workflowId);
+        } catch {
+          // Compensations list fetch failed
+        }
+
+        const hasExecutedComp = compensations.some((c) =>
+          ['succeeded', 'failed', 'running', 'awaiting_approval', 'uncertain', 'blocked'].includes(c.status)
+        );
+
+        if (hasExecutedComp) {
+          const compSummary = compensations.map((c) => `${c.compensation_capability_id}: ${c.status}`).join(', ');
+          setAmbiguousWorkflows((prev) => {
+            const next = { ...prev };
+            delete next[workflowId];
+            return next;
+          });
+          setActionError(`Reconciliation confirmed: compensation records verified on backend (${compSummary}). Controls unlocked.`);
+        } else if (compensations.length === 0) {
+          setAmbiguousWorkflows((prev) => {
+            const next = { ...prev };
+            delete next[workflowId];
+            return next;
+          });
+          setActionError(`Reconciliation confirmed: no compensation records registered for workflow ${workflowId}. Controls unlocked.`);
+        } else {
+          setActionError(
+            `Reconciliation inconclusive: workflow ${workflowId} compensation actions remain in 'registered' status without execution. Controls remain locked.`
+          );
+        }
+      }
     } catch (err) {
       setActionError(
         `Reconciliation inconclusive: could not verify workflow state (${err instanceof Error ? err.message : String(err)}). Controls remain locked.`
@@ -114,6 +226,9 @@ export const WorkflowTimeline: React.FC = () => {
     }
     setProcessing(true);
     setActionError(null);
+    const prevStatus = selectedWorkflow.status;
+    const prevCompleted = selectedWorkflow.completed_steps || 0;
+    const prevSteps = extractStepStatuses(selectedWorkflow);
     try {
       const advanced = await api.advanceWorkflow(selectedWorkflow.id);
       setSelectedWorkflow(advanced);
@@ -127,6 +242,9 @@ export const WorkflowTimeline: React.FC = () => {
             reason: 'Network interrupted during workflow advance; outcome is unconfirmed.',
             timestamp: new Date().toLocaleTimeString(),
             action: 'advance',
+            previousStatus: prevStatus,
+            previousCompletedSteps: prevCompleted,
+            previousStepStatuses: prevSteps,
           },
         }));
         setActionError('Outcome unknown: network interrupted during workflow advance. Controls locked until authoritative reconciliation.');
@@ -150,6 +268,9 @@ export const WorkflowTimeline: React.FC = () => {
     }
     setProcessing(true);
     setActionError(null);
+    const prevStatus = selectedWorkflow.status;
+    const prevCompleted = selectedWorkflow.completed_steps || 0;
+    const prevSteps = extractStepStatuses(selectedWorkflow);
     try {
       const cancelled = await api.cancelWorkflow(selectedWorkflow.id, 'Cancelled by operator via workflow UI');
       setSelectedWorkflow(cancelled);
@@ -163,6 +284,9 @@ export const WorkflowTimeline: React.FC = () => {
             reason: 'Network interrupted during workflow cancellation; outcome is unconfirmed.',
             timestamp: new Date().toLocaleTimeString(),
             action: 'cancel',
+            previousStatus: prevStatus,
+            previousCompletedSteps: prevCompleted,
+            previousStepStatuses: prevSteps,
           },
         }));
         setActionError('Outcome unknown: network interrupted during workflow cancellation. Controls locked until authoritative reconciliation.');
@@ -186,6 +310,9 @@ export const WorkflowTimeline: React.FC = () => {
     }
     setProcessing(true);
     setActionError(null);
+    const prevStatus = selectedWorkflow.status;
+    const prevCompleted = selectedWorkflow.completed_steps || 0;
+    const prevSteps = extractStepStatuses(selectedWorkflow);
     try {
       const compensated = await api.compensateWorkflow(selectedWorkflow.id, 'Compensated by operator via workflow UI');
       setSelectedWorkflow(compensated);
@@ -199,6 +326,9 @@ export const WorkflowTimeline: React.FC = () => {
             reason: 'Network interrupted during workflow compensation; outcome is unconfirmed.',
             timestamp: new Date().toLocaleTimeString(),
             action: 'compensate',
+            previousStatus: prevStatus,
+            previousCompletedSteps: prevCompleted,
+            previousStepStatuses: prevSteps,
           },
         }));
         setActionError('Outcome unknown: network interrupted during workflow compensation. Controls locked until authoritative reconciliation.');

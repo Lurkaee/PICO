@@ -57,28 +57,44 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
     onReconnectedRef.current = onReconnected;
   });
 
-  // Track the active manager instance.
-  const managerRef = useRef<ConnectivityManager>(customManager ?? new ConnectivityManager());
-  if (customManager && managerRef.current !== customManager) {
-    managerRef.current = customManager;
+  // Track the internally owned manager (lazy initialization to avoid orphaned instances on rerender).
+  const internalManagerRef = useRef<ConnectivityManager | null>(null);
+
+  if (customManager) {
+    if (internalManagerRef.current) {
+      internalManagerRef.current.dispose();
+      internalManagerRef.current = null;
+    }
+  } else {
+    if (!internalManagerRef.current || internalManagerRef.current.disposed) {
+      internalManagerRef.current = new ConnectivityManager();
+    }
   }
 
-  const [state, setState] = useState<ConnectivityState>(() => managerRef.current.getState());
+  const activeManager = customManager ?? internalManagerRef.current!;
+  const activeManagerRef = useRef<ConnectivityManager>(activeManager);
+  activeManagerRef.current = activeManager;
+
+  const [state, setState] = useState<ConnectivityState>(() => activeManager.getState());
   const [drafts, setDrafts] = useState<DraftMessage[]>([]);
   const previousReachableRef = useRef<boolean>(
-    managerRef.current.getState().isOnline || managerRef.current.getState().isDegraded
+    activeManager.getState().isOnline || activeManager.getState().isDegraded
   );
 
   useEffect(() => {
-    // If the manager in managerRef was disposed (e.g. from StrictMode unmount cleanup)
-    // and no customManager was passed, construct a fresh viable manager.
-    let currentManager = customManager ?? managerRef.current;
-    if (!customManager && currentManager.disposed) {
-      currentManager = new ConnectivityManager();
-      managerRef.current = currentManager;
-      setState(currentManager.getState());
-      previousReachableRef.current = currentManager.getState().isOnline || currentManager.getState().isDegraded;
+    // If the internally owned manager was disposed (e.g. StrictMode effect replay)
+    // and no customManager was passed, create a fresh viable manager.
+    let currentManager = customManager;
+    if (!currentManager) {
+      if (!internalManagerRef.current || internalManagerRef.current.disposed) {
+        internalManagerRef.current = new ConnectivityManager();
+      }
+      currentManager = internalManagerRef.current;
     }
+
+    activeManagerRef.current = currentManager;
+    setState(currentManager.getState());
+    previousReachableRef.current = currentManager.getState().isOnline || currentManager.getState().isDegraded;
 
     const unsubscribe = currentManager.subscribe((newState) => {
       const wasReachable = previousReachableRef.current;
@@ -97,8 +113,8 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
 
     return () => {
       unsubscribe();
-      // Only dispose if we created the manager internally
-      if (!customManager) {
+      // Only dispose if we created the manager internally and it's our internal manager
+      if (!customManager && internalManagerRef.current === currentManager) {
         currentManager.dispose();
       }
     };
@@ -158,9 +174,9 @@ export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
       ...state,
       connectivity: state.status,
       isBackendReachable,
-      checkNow: () => managerRef.current.probeHealth(),
-      reportInferenceDegraded: (reason: string) => managerRef.current.reportInferenceDegraded(reason),
-      clearInferenceDegraded: () => managerRef.current.clearInferenceDegraded(),
+      checkNow: () => activeManagerRef.current.probeHealth(),
+      reportInferenceDegraded: (reason: string) => activeManagerRef.current.reportInferenceDegraded(reason),
+      clearInferenceDegraded: () => activeManagerRef.current.clearInferenceDegraded(),
       drafts,
       saveDraft,
       addDraft,
