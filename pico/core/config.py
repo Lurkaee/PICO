@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     HOME_ASSISTANT_VERIFICATION_TIMEOUT_SECONDS: float = 5.0
     HOME_ASSISTANT_VERIFICATION_POLL_INTERVAL_SECONDS: float = 0.5
 
+    # Home Assistant Stage C Allowlisted Switch Actuation Settings (Milestone P7.4.1)
+    HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED: bool = False
+    HOME_ASSISTANT_SWITCH_ALLOWLIST: str = "[]"
+
     # OS & Desktop Application Automation Settings (Milestone P8.1)
     OS_AUTOMATION_ENABLED: bool = True
     OS_APPLICATION_ALLOWLIST: str = "{}"

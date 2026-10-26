@@ -365,8 +365,16 @@ sequenceDiagram
     - **Bounded State Reads**: Transient in-memory state reads; GPS coordinates, tokens, and personal identifiers are scrubbed. No permanent tracking database in Stage A.
     - **Read-Only Capabilities**: Registered in `CapabilityRegistry` under `RiskTier.READ_ONLY` (`homeassistant.status`, `homeassistant.list_entities`, `homeassistant.get_entity_state`, `homeassistant.overview`). Verifier rejects any false claim of physical device connectivity.
     - **Absolute Read-Only Boundary**: Zero actuation, service calls (`call_service`), or state mutation paths exist.
-  - **Stage B (First End-to-End Control — Planned for P7.3)**: Harmless single light toggle through the complete loop (Intent -> Context -> Plan -> Approval -> Act -> State Verification -> Event Ledger).
-  - **Stage C (Everyday Appliances — Planned for P7.4)**: Authorized lights, switches, smart plugs.
+  - **Stage B (First End-to-End Control — Verified in Milestone P7.3)**: Harmless single light toggle through the complete loop (Intent -> Context -> Plan -> Approval -> Act -> State Verification -> Event Ledger).
+  - **Stage C (Allowlisted Switches & Plugs — Verified in Milestone P7.4.1)**:
+    - Dedicated capability: `homeassistant.allowlisted_switch_actuate`.
+    - Triple enablement required (`HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED=true`).
+    - Explicit server configuration allowlist (`HOME_ASSISTANT_SWITCH_ALLOWLIST`): exact JSON list of `switch.*` entities only.
+    - Consequential risk tier (`RiskTier.HIGH`), `homeassistant:actuate` permission, `INTERNAL` data classification, zero retries (`max_retries=0`).
+    - Exact operations: `switch.turn_on` and `switch.turn_off`. `toggle` and generic service calls (`call_service`) are prohibited.
+    - Redundant dispatch avoidance: skips mutation if current state matches target state (`dispatch_status='already_satisfied'`).
+    - Independent verification: post-dispatch verification via read-only state inspection (`GET /api/states/{id}`). Never claims physical device connectivity.
+    - Read-only preflight readiness inspection via CLI, REST API (`/api/homeassistant/switch/readiness`), and capability (`homeassistant.switch_readiness`).
   - **Stage D (Complex Household Control — Planned)**: Scenes, thermostats, climate controls with physical consequence modeling.
 - Security-sensitive actuators (door locks, security systems) remain **NOTIFY-ONLY** / blocked under current policy.
 
@@ -413,7 +421,7 @@ Target Environment:
 | **CAP-PER-02** | Visual Inspection Adapter | User-requested screenshots & camera snapshots | Perception | Screen capture, OpenCV/Camera | Tier 1 (Sensor) | `SENSITIVE` | Host Display, Webcam | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Cameras off by default, temporary frames discarded post-inference, explicit capture trigger. |
 | **CAP-PER-03** | Movement & Motion Sensor | Motion event ingestion and change detection | Perception | Camera diffing, PIR sensor | Tier 1 (Sensor) | `INTERNAL` | Host Camera / PIR Hub | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Confidence-rated motion events, event normalization, cooldown deduplication, zero covert tracking. |
 | **CAP-PER-04** | Environmental Telemetry | Sensor ingestion for temperature, light, presence | Perception | MQTT / Home Assistant API | Tier 0 (Ingest) | `INTERNAL` | Sensor network / Hub | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Normalized sensor contracts, offline test doubles, rate limiting. |
-| **CAP-HA-01**  | Home Assistant Appliance Control | Physical smart home awareness and actuation | Physical World | Home Assistant API | Tier 2 (Actuation) | `INTERNAL` | Home Assistant Hub | Documented spec in `docs/architecture.md` | **PLANNED (P7)** | Stage A (read-only) -> Stage B (verified light toggle) -> Stage C (switches/plugs) -> Stage D (climate). High-impact security controls blocked. |
+| **CAP-HA-01**  | Home Assistant Appliance Control | Physical smart home awareness and actuation | Physical World | Home Assistant API | Tier 2 (Actuation) | `INTERNAL` | Home Assistant Hub | `tests/test_homeassistant_actuation.py`, `tests/test_homeassistant_switch_actuation.py` | **VERIFIED (Stage A, B, C)** | Stage A (read-only), Stage B (verified light toggle), Stage C (allowlisted switches/plugs) verified. High-impact security controls remain blocked. |
 | **CAP-PC-01**  | Computer & Workspace Control | Sandboxed application, window, and file automation | Workspace | OS accessibility, Playwright | Tier 2 (Automation) | `INTERNAL` / `SENSITIVE` | Host OS | Documented spec in `docs/architecture.md` | **PLANNED (P8)** | Reversible staged diffs, isolated browser profile, untrusted web content isolation, verification before success claims. |
 | **CAP-AGT-01** | Multi-Agent Coordination | Subtask delegation over Task Engine | Coordination | Task Engine, Single Model | Tier 1 (Orchestration)| All | Host CPU / GPU | Documented spec in `docs/architecture.md` | **PLANNED (P9)** | Logical workers scheduled over single resident model, independent verification of worker outputs. |
 | **CAP-EXP-01** | Unified PICO Experience | Real-time web UI, streaming chat, approval cards | Experience Layer | FastAPI, SSE, Web frontend | Tier 0 (Presentation) | All | Modern Browser | Documented spec in `docs/api-contract.md` | **PLANNED (P10)**| Streaming chat, voice toggle, sensor indicators, memory inspection, approval interaction, offline resilience. |

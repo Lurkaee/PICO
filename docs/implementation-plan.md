@@ -94,8 +94,18 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Audit trail in immutable event ledger recording intent, approval, dispatch, and verification outcomes without credential leaks.
   - Read-only planning endpoint (`POST /api/homeassistant/actuation/plan`) and execution proposal endpoint (`POST /api/homeassistant/actuation/propose`).
   - Commissioning & Readiness Gate: Read-only preflight evaluation via CLI (`python -m pico.homeassistant.readiness`), REST API (`GET /api/homeassistant/actuation/readiness`), and tool capability (`homeassistant.actuation_readiness`). Inspects integration configuration, target test light domain constraints, approval credential presence without value revelation, fail-closed authorization availability, transport security, and actuation-disabled-by-default safety invariants. Strictly zero mutation calls, zero unsolicited network calls during offline preflight, and explicit operator opt-in required for live read-only inspection.
-- [ ] **P7.4 Stage C/D Everyday Appliances**: Authorized switches, plugs, and climate controls.
-- **Status**: **STAGE A & STAGE B (P7.1, P7.2, P7.3 COMMISSIONING READINESS) COMPLETED & VERIFIED; P7.4 PLANNED**.
+- [x] **P7.4.1 Stage C Explicitly Allowlisted Switch/Plug Control (First Stage C Capability)**:
+  - Narrow, separately registered Stage C capability: `homeassistant.allowlisted_switch_actuate`.
+  - Triple enablement gate: requires `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, and `HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED=true` (disabled by default).
+  - Explicit entity allowlist (`HOME_ASSISTANT_SWITCH_ALLOWLIST`): exact JSON list of `switch.*` domain entities. Rejects wildcards, regex, prefixes, empty list, non-switch domains, and unlisted entities.
+  - Fail-closed authorization: requires `homeassistant:actuate` permission, server-side `APPROVAL_SECRET_TOKEN` validation via constant-time comparison, triple-digest agreement, and single-use dispatch protection.
+  - Operations strictly limited to `switch.turn_on` and `switch.turn_off`. `toggle`, custom services, and generic service execution (`call_service`) are strictly prohibited.
+  - State satisfaction check: skips mutation if switch is already in the requested state (`dispatch_status='already_satisfied'`).
+  - Read-after-write independent verification via read-only state query (`GET /api/states/{id}`). Never claims `physical_device_connectivity_claimed`. Zero automatic retries (`max_retries=0`).
+  - REST API routes: `POST /api/homeassistant/switch/plan`, `POST /api/homeassistant/switch/propose`, `GET /api/homeassistant/switch/readiness`, and `GET /api/homeassistant/switch/{execution_id}` (strictly isolated to switch capability).
+  - Preflight readiness inspection via CLI (`python -m pico.homeassistant.readiness --switch`), REST API (`GET /api/homeassistant/switch/readiness`), and tool capability (`homeassistant.switch_readiness`).
+- [ ] **P7.4.2 Stage D Climate & Environmental Controls**: Planned.
+- **Status**: **STAGE A, STAGE B & STAGE C (P7.1, P7.2, P7.3, P7.4.1) COMPLETED & VERIFIED; P7.4.2 PLANNED**.
 
 
 ### Milestone P8: Computer Control & Engineering Workspace

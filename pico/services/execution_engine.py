@@ -213,7 +213,7 @@ class ToolExecutionEngine:
                 )
                 action_desc = (
                     "Physical actuation"
-                    if execution.capability_id == "homeassistant.test_light_actuate"
+                    if execution.capability_id in ("homeassistant.test_light_actuate", "homeassistant.allowlisted_switch_actuate")
                     else "Application launch"
                     if execution.capability_id == "os.launch_application"
                     else "Filesystem modification"

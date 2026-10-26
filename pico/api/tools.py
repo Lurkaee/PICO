@@ -117,7 +117,7 @@ async def submit_execution(
 
     if is_authorized:
         effective_perms.add("admin:consequential")
-        if payload.capability_id == "homeassistant.test_light_actuate":
+        if payload.capability_id in ("homeassistant.test_light_actuate", "homeassistant.allowlisted_switch_actuate"):
             effective_perms.add("homeassistant:actuate")
         elif payload.capability_id == "os.inspect_windows":
             effective_perms.add("os:inspect")
@@ -228,7 +228,7 @@ async def run_execution(
 
     if is_authorized:
         effective_perms.add("admin:consequential")
-        if item.capability_id == "homeassistant.test_light_actuate":
+        if item.capability_id in ("homeassistant.test_light_actuate", "homeassistant.allowlisted_switch_actuate"):
             effective_perms.add("homeassistant:actuate")
         elif item.capability_id == "os.inspect_windows":
             effective_perms.add("os:inspect")
