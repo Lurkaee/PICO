@@ -406,6 +406,99 @@ class ToolExecutionEngine:
                         f"Approval invalidated: Launch profile for alias '{alias}' was modified after approval was granted."
                     )
 
+            # Climate actuation verification at execution boundary
+            elif execution.capability_id == "homeassistant.allowlisted_climate_setpoint_actuate":
+                from pico.homeassistant.climate import (
+                    validate_climate_allowlist,
+                    validate_climate_grid_origins,
+                )
+
+                target_entity = validated_input_snapshot.get("target_entity_id", "")
+                bound_origin = validated_input_snapshot.get("expected_grid_origin")
+                bound_origin_unit = validated_input_snapshot.get("expected_grid_origin_unit")
+
+                # 1. Re-verify target entity remains allowlisted at dispatch
+                try:
+                    current_allowlist = validate_climate_allowlist()
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Approval invalidated: Climate allowlist invalid or unconfigured at dispatch ({exc})",
+                            "target_entity_id": target_entity,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Climate allowlist is invalid or unconfigured at dispatch: {exc}"
+                    )
+
+                if target_entity not in current_allowlist:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Target entity missing or removed from climate allowlist at dispatch",
+                            "target_entity_id": target_entity,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Target climate entity '{target_entity}' is not allowlisted at dispatch."
+                    )
+
+                # 2. Re-verify trusted grid origin and unit configuration at dispatch
+                try:
+                    current_origins = validate_climate_grid_origins(allowlist=current_allowlist)
+                    current_entry = current_origins.get(target_entity)
+                    curr_origin = current_entry["origin"] if current_entry else None
+                    curr_origin_unit = current_entry["unit"] if current_entry else None
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Approval invalidated: Climate grid origin configuration invalid at dispatch ({exc})",
+                            "target_entity_id": target_entity,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Climate grid origin configuration is invalid at dispatch: {exc}"
+                    )
+
+                if curr_origin != bound_origin or curr_origin_unit != bound_origin_unit:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Climate grid origin configuration modified after approval",
+                            "target_entity_id": target_entity,
+                            "bound_origin": bound_origin,
+                            "bound_origin_unit": bound_origin_unit,
+                            "current_origin": curr_origin,
+                            "current_origin_unit": curr_origin_unit,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Climate grid origin configuration for entity '{target_entity}' "
+                        f"was modified after approval was granted (bound: {bound_origin}:{bound_origin_unit}, current: {curr_origin}:{curr_origin_unit})."
+                    )
+
             # Filesystem staged diff verification at execution boundary
             elif execution.capability_id == "filesystem.apply_staged_diff":
                 from pico.filesystem.adapter import get_filesystem_adapter

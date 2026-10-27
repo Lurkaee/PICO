@@ -17,6 +17,11 @@ from pico.homeassistant.actuation import (
     validate_climate_actuation_preconditions,
     validate_switch_actuation_preconditions,
 )
+from pico.core.errors import ValidationError
+from pico.homeassistant.climate import (
+    validate_climate_allowlist,
+    validate_climate_grid_origins,
+)
 from pico.homeassistant.contracts import (
     ClimateActuationResult,
     SwitchActuationResult,
@@ -453,6 +458,14 @@ class HomeAssistantClimateActuationInput(BaseModel):
         default=None,
         description="Optional human-readable reason for climate setpoint actuation.",
     )
+    expected_grid_origin: float | None = Field(
+        default=None,
+        description="Trusted server-configured grid origin bound into the execution input and approval digest.",
+    )
+    expected_grid_origin_unit: str | None = Field(
+        default=None,
+        description="Trusted server-configured grid origin unit bound into the execution input and approval digest.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -536,6 +549,47 @@ class HomeAssistantClimateActuationCapability(BaseCapability):
         if self._service:
             return self._service
         return HomeAssistantClimateActuationService()
+
+    def prepare_input(self, input_data: dict[str, Any], db: Any = None) -> dict[str, Any]:
+        """Enriches and binds the trusted server-configured climate grid origin and unit.
+
+        Fails closed if caller attempts to forge, substitute, or tamper with grid origin.
+        """
+        data = dict(input_data)
+        entity_id = data.get("target_entity_id")
+        if not entity_id or not isinstance(entity_id, str):
+            return data
+
+        clean_id = entity_id.strip()
+
+        # Resolve server-configured grid origin for this entity
+        effective_origin: float | None = None
+        effective_unit: str | None = None
+        try:
+            current_allowlist = validate_climate_allowlist()
+            origins_map = validate_climate_grid_origins(allowlist=current_allowlist)
+            if clean_id in origins_map:
+                effective_origin = origins_map[clean_id]["origin"]
+                effective_unit = origins_map[clean_id]["unit"]
+        except Exception:
+            # If invalid or cannot be loaded, keep as None; validation will fail downstream
+            pass
+
+        # Protect against client tampering
+        if "expected_grid_origin" in data and data["expected_grid_origin"] is not None:
+            if data["expected_grid_origin"] != effective_origin:
+                raise ValidationError(
+                    "Caller-supplied expected_grid_origin does not match trusted server-configured grid origin."
+                )
+        if "expected_grid_origin_unit" in data and data["expected_grid_origin_unit"] is not None:
+            if data["expected_grid_origin_unit"] != effective_unit:
+                raise ValidationError(
+                    "Caller-supplied expected_grid_origin_unit does not match trusted server-configured grid origin unit."
+                )
+
+        data["expected_grid_origin"] = effective_origin
+        data["expected_grid_origin_unit"] = effective_unit
+        return data
 
     async def execute(
         self, input_data: dict[str, Any], context: ExecutionContext

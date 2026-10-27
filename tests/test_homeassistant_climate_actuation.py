@@ -36,6 +36,8 @@ from pico.homeassistant.contracts import (
     ClimateActuationPlan,
     ClimateActuationResult,
     ClimateReadinessReport,
+    ReadinessCheckStatus,
+    ReadinessErrorCategory,
 )
 from pico.homeassistant.readiness import evaluate_climate_readiness
 from pico.homeassistant.ws_client import ALLOWED_READONLY_WS_COMMANDS
@@ -816,23 +818,324 @@ def test_api_climate_propose_rejects_unknown_fields() -> None:
     assert resp.status_code == 422
 
 
+# =====================================================================
+# 5b. Finding C Readiness & Security Audit Tests
+# =====================================================================
+
 @pytest.mark.anyio
-async def test_readiness_reports_actuation_enabled_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """evaluate_climate_readiness reports actuation_enabled=True only when both flags are enabled."""
+async def test_readiness_reports_actuation_enabled_and_truthful_summary_when_all_prerequisites_met(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_climate_readiness reports actuation_enabled=True and truthful summary when all 5 prerequisites are met."""
     transport, _ = make_mock_climate_transport()
     async with httpx.AsyncClient(transport=transport) as http_client:
         ro_client = HomeAssistantClient(http_client=http_client)
 
-        # Both enabled
-        monkeypatch.setattr(settings, "HOME_ASSISTANT_ACTUATION_ENABLED", True)
-        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", True)
-        report_enabled = await evaluate_climate_readiness(check_live=False, readonly_client=ro_client)
-        assert report_enabled.actuation_enabled is True
+        report = await evaluate_climate_readiness(check_live=False, readonly_client=ro_client)
+        assert report.actuation_enabled is True
+        assert report.ready_for_observation is True
+        assert "Climate setpoint actuation is enabled (approval still required)." in report.summary
 
-        # Climate actuation disabled
-        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", False)
-        report_disabled = await evaluate_climate_readiness(check_live=False, readonly_client=ro_client)
-        assert report_disabled.actuation_enabled is False
+        # Check items present and passing
+        check_names = {c.name: c.status for c in report.checks}
+        assert check_names["integration_configuration"] == ReadinessCheckStatus.PASS
+        assert check_names["climate_awareness_configuration"] == ReadinessCheckStatus.PASS
+        assert check_names["climate_allowlist"] == ReadinessCheckStatus.PASS
+        assert check_names["target_climate_entity_membership"] == ReadinessCheckStatus.PASS
+        assert check_names["climate_grid_origins"] == ReadinessCheckStatus.PASS
+        assert check_names["actuation_boundary"] == ReadinessCheckStatus.PASS
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "missing_setting,value,expected_summary_part",
+    [
+        ("HOME_ASSISTANT_ENABLED", False, "NOT READY"),
+        ("HOME_ASSISTANT_ACCESS_TOKEN", "", "NOT READY"),
+        ("HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED", False, "NOT READY"),
+        ("HOME_ASSISTANT_ACTUATION_ENABLED", False, "Climate awareness is ready (physical actuation disabled)."),
+        ("HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", False, "Climate awareness is ready (physical actuation disabled)."),
+    ],
+)
+async def test_readiness_actuation_disabled_for_each_missing_prerequisite(
+    missing_setting: str,
+    value: Any,
+    expected_summary_part: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ANY of the 5 required prerequisites is missing, actuation_enabled MUST be False."""
+    transport, _ = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+
+        monkeypatch.setattr(settings, missing_setting, value)
+        report = await evaluate_climate_readiness(check_live=False, readonly_client=ro_client)
+        assert report.actuation_enabled is False
+        assert expected_summary_part in report.summary
+
+
+@pytest.mark.anyio
+async def test_readiness_reports_invalid_climate_grid_origins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_climate_readiness fails closed when HOME_ASSISTANT_CLIMATE_GRID_ORIGINS is invalid."""
+    transport, _ = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+
+        # Negative origin
+        bad_origins = {TEST_CLIMATE_A: {"origin": -5.0, "unit": "°C"}}
+        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_GRID_ORIGINS", json.dumps(bad_origins))
+        report = await evaluate_climate_readiness(check_live=False, readonly_client=ro_client)
+
+        assert report.ready_for_observation is False
+        check_dict = {c.name: c for c in report.checks}
+        grid_check = check_dict["climate_grid_origins"]
+        assert grid_check.status == ReadinessCheckStatus.FAIL
+        assert grid_check.error_category == ReadinessErrorCategory.INVALID_ENTITY
+        assert "NOT READY" in report.summary
+        assert "climate_grid_origins" in report.summary
+
+
+@pytest.mark.anyio
+async def test_readiness_reports_empty_climate_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_climate_readiness reports NOT_CONFIGURED when climate allowlist is empty."""
+    transport, _ = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+
+        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_ALLOWLIST", "[]")
+        report = await evaluate_climate_readiness(check_live=False, readonly_client=ro_client)
+
+        assert report.ready_for_observation is False
+        check_dict = {c.name: c for c in report.checks}
+        assert check_dict["climate_allowlist"].status == ReadinessCheckStatus.NOT_CONFIGURED
+
+
+# =====================================================================
+# 5c. Security Audit: Approval & Configuration Binding Tests
+# =====================================================================
+
+@pytest.mark.anyio
+async def test_post_approval_grid_origin_change_invalidates_execution_with_zero_mutations(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Modifying HOME_ASSISTANT_CLIMATE_GRID_ORIGINS after approval invalidates execution authorization with ZERO mutations."""
+    transport, state_box = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_service = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        custom_cap = HomeAssistantClimateActuationCapability(service=act_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_setpoint_actuate": custom_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        execution = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temperature": 22.5,
+                "target_unit": "°C",
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+
+        # Bound origin in proposal snapshot was 16.0
+        assert execution.input_json["expected_grid_origin"] == 16.0
+        assert execution.input_json["expected_grid_origin_unit"] == "°C"
+
+        engine.approve(
+            execution.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        # Alter server configuration after approval was granted
+        modified_grid_origins = {
+            TEST_CLIMATE_A: {"origin": 17.0, "unit": "°C"},
+            TEST_CLIMATE_B: {"origin": 60.0, "unit": "°F"},
+        }
+        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_GRID_ORIGINS", json.dumps(modified_grid_origins))
+
+        # Execution attempt must fail closed before dispatch
+        with pytest.raises(AuthorizationError, match="modified after approval was granted"):
+            await engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+
+        # Zero mutation egress
+        assert len(state_box["mutation_calls"]) == 0
+
+        # Ledger event authorization_denied recorded
+        ledger_repo = EventLedgerRepository(db_session)
+        events = ledger_repo.list_events(execution_id=execution.id)
+        event_types = [e.event_type for e in events]
+        assert "authorization_denied" in event_types
+
+
+@pytest.mark.anyio
+async def test_post_approval_grid_origin_unit_change_invalidates_execution_with_zero_mutations(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Modifying the configured grid origin unit after approval invalidates execution with ZERO mutations."""
+    transport, state_box = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_service = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        custom_cap = HomeAssistantClimateActuationCapability(service=act_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_setpoint_actuate": custom_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        execution = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temperature": 22.5,
+                "target_unit": "°C",
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+
+        engine.approve(
+            execution.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        # Alter unit in server configuration after approval
+        modified_grid_origins = {
+            TEST_CLIMATE_A: {"origin": 16.0, "unit": "°F"},
+            TEST_CLIMATE_B: {"origin": 60.0, "unit": "°F"},
+        }
+        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_GRID_ORIGINS", json.dumps(modified_grid_origins))
+
+        # Execution attempt must fail closed before dispatch
+        with pytest.raises(AuthorizationError, match="modified after approval was granted"):
+            await engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+
+        # Zero mutation egress
+        assert len(state_box["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_post_approval_removal_from_allowlist_invalidates_execution_with_zero_mutations(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing target entity from HOME_ASSISTANT_CLIMATE_ALLOWLIST after approval invalidates execution with ZERO mutations."""
+    transport, state_box = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_service = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        custom_cap = HomeAssistantClimateActuationCapability(service=act_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_setpoint_actuate": custom_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        execution = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temperature": 22.5,
+                "target_unit": "°C",
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+
+        engine.approve(
+            execution.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        # Remove TEST_CLIMATE_A from allowlist
+        monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_ALLOWLIST", json.dumps([TEST_CLIMATE_B]))
+
+        with pytest.raises(AuthorizationError, match="not allowlisted at dispatch"):
+            await engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+
+        # Zero mutation egress
+        assert len(state_box["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_persistent_replay_prevention_across_restarts_and_instances(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Atomic compare-and-set persistent claim prevents replay across process restarts and new engine instances."""
+    transport, state_box = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_service = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        custom_cap = HomeAssistantClimateActuationCapability(service=act_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_setpoint_actuate": custom_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        execution = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temperature": 22.5,
+                "target_unit": "°C",
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+
+        engine.approve(
+            execution.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        # First execution succeeds
+        completed_exec = await engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+        assert completed_exec.status == "succeeded"
+        assert len(state_box["mutation_calls"]) == 1
+
+        # Simulate process restart: fresh engine and fresh capability/service instance
+        fresh_service = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        fresh_cap = HomeAssistantClimateActuationCapability(service=fresh_service)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_setpoint_actuate": fresh_cap},
+        )
+        fresh_engine = ToolExecutionEngine(db_session, registry)
+
+        # Attempt to replay the executed proposal on fresh engine instance
+        with pytest.raises((ValidationError, AuthorizationError)):
+            await fresh_engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
+
+        # Zero duplicate mutations dispatched (call count remains strictly 1)
+        assert len(state_box["mutation_calls"]) == 1
 
 
 # =====================================================================
