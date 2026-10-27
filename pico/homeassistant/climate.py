@@ -1,3 +1,4 @@
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import logging
@@ -19,6 +20,14 @@ from pico.homeassistant.service import HomeAssistantService
 logger = logging.getLogger(__name__)
 
 ENTITY_ID_REGEX = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
+
+# Home Assistant ClimateEntityFeature bit constants (verified from homeassistant.components.climate.const)
+HA_CLIMATE_FEATURE_TARGET_TEMPERATURE = 1
+HA_CLIMATE_FEATURE_TARGET_TEMPERATURE_RANGE = 2
+
+# Operating modes that explicitly prohibit or do not support target temperature regulation
+TEMPERATURE_INCOMPATIBLE_MODES = {"off", "fan_only"}
+TEMPERATURE_COMPATIBLE_MODES = {"heat", "cool", "heat_cool", "auto", "dry"}
 
 SUPPORTED_UNITS = {
     "°c": "°C",
@@ -108,6 +117,164 @@ def parse_temperature(val: Any) -> float | None:
         if math.isfinite(f_val):
             return f_val
     return None
+
+
+def parse_temperature_step(val: Any) -> float | None:
+    """Parse and validate temperature step metadata.
+
+    Must be a strictly positive, finite numeric value. Rejects bools, <=0, NaN, Inf.
+    """
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        f_val = float(val)
+        if math.isfinite(f_val) and f_val > 0:
+            return f_val
+    return None
+
+
+def parse_supported_features(val: Any) -> int | None:
+    """Parse and validate supported_features bitmask. Rejects bools, floats, negatives, and non-ints."""
+    if val is None or isinstance(val, bool) or not isinstance(val, int):
+        return None
+    if 0 <= val <= 1048575:
+        return val
+    return None
+
+
+def validate_temperature_step(
+    requested_temperature: float,
+    step: float | None,
+    raw_step: Any = None,
+) -> tuple[bool, str, str | None]:
+    """Validate requested temperature against reported target_temp_step using decimal-safe arithmetic.
+
+    Invariants:
+    1. Returns (False, "step_unknown", reason) if step is missing, zero, negative, or invalid.
+    2. Uses Decimal for exact decimal increment testing; rejects floating-point imprecision.
+    3. Does not invent an alignment origin or offset; checks exact alignment on the supported increment grid.
+    4. Returns (False, "target_step_mismatch", reason) if requested setpoint conflicts with the step.
+    5. Returns (True, "ready", None) when setpoint strictly aligns with supported step.
+    """
+    if raw_step is None and step is None:
+        return (
+            False,
+            "step_unknown",
+            "Entity does not report target_temp_step metadata; step compatibility cannot be reliably established.",
+        )
+    if step is None or step <= 0 or not math.isfinite(step):
+        display_step = raw_step if raw_step is not None else step
+        return (
+            False,
+            "step_unknown",
+            f"Entity reported invalid target_temp_step ({display_step!r}); step metadata must be a positive, finite number.",
+        )
+
+    try:
+        dec_req = Decimal(str(requested_temperature))
+        dec_step = Decimal(str(step))
+    except (InvalidOperation, ValueError):
+        return (
+            False,
+            "step_unknown",
+            f"Unable to parse requested temperature ({requested_temperature}) or step ({step}) as decimal.",
+        )
+
+    remainder = dec_req % dec_step
+    tolerance = Decimal("1e-6")
+    if remainder > tolerance and (dec_step - remainder) > tolerance:
+        return (
+            False,
+            "target_step_mismatch",
+            f"Requested temperature {requested_temperature} does not align with supported step increment {step}.",
+        )
+
+    return (True, "ready", None)
+
+
+def validate_temperature_capability(
+    supported_features: int | None,
+    raw_supported_features: Any = None,
+) -> tuple[bool, str, str | None]:
+    """Validate whether the climate entity supports single target temperature setpoints.
+
+    Verified Home Assistant contract:
+    - TARGET_TEMPERATURE (bit 0, value 1): single setpoint support.
+    - TARGET_TEMPERATURE_RANGE (bit 1, value 2): dual low/high setpoint range support.
+
+    Returns (is_supported, status, reason).
+    """
+    if raw_supported_features is None and supported_features is None:
+        return (
+            False,
+            "capability_unknown",
+            "Entity does not report trustworthy supported_features capability metadata; setpoint capability cannot be reliably established.",
+        )
+    if supported_features is None or supported_features < 0:
+        display_feat = raw_supported_features if raw_supported_features is not None else supported_features
+        return (
+            False,
+            "capability_unknown",
+            f"Entity reported invalid supported_features capability metadata ({display_feat!r}).",
+        )
+
+    # Check for single target temperature support (Bit 0, value 1)
+    if (supported_features & HA_CLIMATE_FEATURE_TARGET_TEMPERATURE) != 0:
+        return (True, "ready", None)
+
+    # If Bit 0 is not set, check if it only supports target temperature range (Bit 1, value 2)
+    if (supported_features & HA_CLIMATE_FEATURE_TARGET_TEMPERATURE_RANGE) != 0:
+        return (
+            False,
+            "unsupported_capability",
+            f"Entity does not support single target temperature setpoints (supported_features={supported_features}); entity only advertises dual-setpoint temperature range capability.",
+        )
+
+    return (
+        False,
+        "unsupported_capability",
+        f"Entity does not support target temperature operations (supported_features={supported_features}).",
+    )
+
+
+def validate_mode_compatibility(
+    hvac_mode: str | None,
+) -> tuple[bool, str, str | None]:
+    """Check if reported HVAC mode permits setting a target temperature.
+
+    Returns (is_compatible, status, reason).
+    """
+    if not hvac_mode:
+        return (
+            False,
+            "state_unknown",
+            "Entity reports empty or missing operating mode.",
+        )
+
+    mode_lower = hvac_mode.strip().lower()
+
+    if mode_lower == "off":
+        return (
+            False,
+            "mode_incompatible",
+            "Entity is reported in 'off' mode and cannot accept temperature setpoints while powered off.",
+        )
+
+    if mode_lower == "fan_only":
+        return (
+            False,
+            "mode_incompatible",
+            "Entity is reported in 'fan_only' mode which does not regulate temperature.",
+        )
+
+    if mode_lower not in TEMPERATURE_COMPATIBLE_MODES:
+        return (
+            False,
+            "mode_incompatible",
+            f"Reported operating mode '{hvac_mode}' is not compatible with setting a target temperature.",
+        )
+
+    return (True, "ready", None)
 
 
 def parse_temperature_unit(raw_unit: Any) -> str | None:
@@ -250,7 +417,8 @@ class HomeAssistantClimateService:
         target_temp = parse_temperature(clean_attrs.get("temperature"))
         min_temp = parse_temperature(clean_attrs.get("min_temp"))
         max_temp = parse_temperature(clean_attrs.get("max_temp"))
-        target_temp_step = parse_temperature(clean_attrs.get("target_temp_step"))
+        target_temp_step = parse_temperature_step(clean_attrs.get("target_temp_step"))
+        supported_features = parse_supported_features(clean_attrs.get("supported_features"))
 
         raw_unit = (
             clean_attrs.get("unit_of_measurement")
@@ -292,6 +460,7 @@ class HomeAssistantClimateService:
             min_temp=min_temp,
             max_temp=max_temp,
             target_temp_step=target_temp_step,
+            supported_features=supported_features,
             temperature_unit=temp_unit,
             hvac_mode=state_str,
             hvac_modes=hvac_modes,
@@ -409,6 +578,8 @@ class HomeAssistantClimateService:
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
                 max_temp=obs.max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
                 temperature_unit=obs.temperature_unit,
                 hvac_mode=obs.hvac_mode,
                 hvac_modes=obs.hvac_modes,
@@ -420,7 +591,61 @@ class HomeAssistantClimateService:
                 data_classification=obs.data_classification,
             )
 
-        # Check unit consistency
+        # 1. Capability check (supported_features)
+        raw_feat = obs.attributes.get("supported_features")
+        is_cap_ok, cap_status, cap_reason = validate_temperature_capability(
+            supported_features=obs.supported_features,
+            raw_supported_features=raw_feat,
+        )
+        if not is_cap_ok:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=obs.min_temp,
+                max_temp=obs.max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status=cap_status,
+                reasons=[cap_reason] if cap_reason else ["Capability validation failed."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        # 2. Operating mode compatibility check (hvac_mode)
+        is_mode_ok, mode_status, mode_reason = validate_mode_compatibility(obs.hvac_mode)
+        if not is_mode_ok:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=obs.min_temp,
+                max_temp=obs.max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status=mode_status,
+                reasons=[mode_reason] if mode_reason else ["Operating mode is incompatible with temperature setpoints."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        # 3. Check unit consistency
         if requested_unit is not None:
             norm_requested_unit = parse_temperature_unit(requested_unit)
             if norm_requested_unit is None:
@@ -433,6 +658,8 @@ class HomeAssistantClimateService:
                     target_temperature=obs.target_temperature,
                     min_temp=obs.min_temp,
                     max_temp=obs.max_temp,
+                    target_temp_step=obs.target_temp_step,
+                    supported_features=obs.supported_features,
                     temperature_unit=obs.temperature_unit,
                     hvac_mode=obs.hvac_mode,
                     hvac_modes=obs.hvac_modes,
@@ -453,6 +680,8 @@ class HomeAssistantClimateService:
                     target_temperature=obs.target_temperature,
                     min_temp=obs.min_temp,
                     max_temp=obs.max_temp,
+                    target_temp_step=obs.target_temp_step,
+                    supported_features=obs.supported_features,
                     temperature_unit=obs.temperature_unit,
                     hvac_mode=obs.hvac_mode,
                     hvac_modes=obs.hvac_modes,
@@ -466,7 +695,7 @@ class HomeAssistantClimateService:
                     data_classification=obs.data_classification,
                 )
 
-        # Validate temperature limits
+        # 4. Validate temperature limits
         min_temp = obs.min_temp
         max_temp = obs.max_temp
         unit_str = obs.temperature_unit or ""
@@ -481,6 +710,8 @@ class HomeAssistantClimateService:
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
                 max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
                 temperature_unit=obs.temperature_unit,
                 hvac_mode=obs.hvac_mode,
                 hvac_modes=obs.hvac_modes,
@@ -502,6 +733,8 @@ class HomeAssistantClimateService:
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
                 max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
                 temperature_unit=obs.temperature_unit,
                 hvac_mode=obs.hvac_mode,
                 hvac_modes=obs.hvac_modes,
@@ -525,6 +758,8 @@ class HomeAssistantClimateService:
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
                 max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
                 temperature_unit=obs.temperature_unit,
                 hvac_mode=obs.hvac_mode,
                 hvac_modes=obs.hvac_modes,
@@ -538,6 +773,37 @@ class HomeAssistantClimateService:
                 data_classification=obs.data_classification,
             )
 
+        # 5. Target temperature step check
+        raw_step = obs.attributes.get("target_temp_step")
+        is_step_ok, step_status, step_reason = validate_temperature_step(
+            requested_temperature=requested_temperature,
+            step=obs.target_temp_step,
+            raw_step=raw_step,
+        )
+        if not is_step_ok:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=min_temp,
+                max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status=step_status,
+                reasons=[step_reason] if step_reason else ["Target temperature step validation failed."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        # All checks passed: plan is ready (feasibility assessment only, no mutation)
         return ClimateSetpointPlan(
             plan_id=plan_id,
             entity_id=clean_id,
@@ -547,13 +813,18 @@ class HomeAssistantClimateService:
             target_temperature=obs.target_temperature,
             min_temp=min_temp,
             max_temp=max_temp,
+            target_temp_step=obs.target_temp_step,
+            supported_features=obs.supported_features,
             temperature_unit=obs.temperature_unit,
             hvac_mode=obs.hvac_mode,
             hvac_modes=obs.hvac_modes,
             is_feasible=True,
             feasibility_status="ready",
             reasons=[
-                f"Requested temperature {requested_temperature}{unit_str} is feasible within reported operating limits [{min_temp}, {max_temp}]."
+                f"Requested temperature {requested_temperature}{unit_str} is feasible: aligns with reported step ({obs.target_temp_step}{unit_str}), "
+                f"falls within operating bounds [{min_temp}, {max_temp}]{unit_str}, entity advertises single-setpoint capability (features={obs.supported_features}), "
+                f"and active mode '{obs.hvac_mode}' supports temperature regulation. "
+                "Guarantees metadata feasibility only; does not claim physical device connectivity or guarantee subsequent actuation success."
             ],
             is_mutation_performed=False,
             input_digest=input_digest,

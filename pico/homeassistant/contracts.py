@@ -113,6 +113,11 @@ class ReadinessErrorCategory(str, Enum):
     UNIT_UNKNOWN = "UNIT_UNKNOWN"
     NOT_ALLOWLISTED = "NOT_ALLOWLISTED"
     METADATA_INVALID = "METADATA_INVALID"
+    TARGET_STEP_MISMATCH = "TARGET_STEP_MISMATCH"
+    STEP_UNKNOWN = "STEP_UNKNOWN"
+    MODE_INCOMPATIBLE = "MODE_INCOMPATIBLE"
+    UNSUPPORTED_CAPABILITY = "UNSUPPORTED_CAPABILITY"
+    CAPABILITY_UNKNOWN = "CAPABILITY_UNKNOWN"
 
 
 class ReadinessCheckItem(BaseModel):
@@ -187,6 +192,7 @@ class ClimateObservation(BaseModel):
     min_temp: float | None = None
     max_temp: float | None = None
     target_temp_step: float | None = None
+    supported_features: int | None = None
     temperature_unit: str | None = None
     hvac_mode: str | None = None
     hvac_modes: list[str] = Field(default_factory=list)
@@ -213,6 +219,8 @@ class ClimateSetpointPlan(BaseModel):
     target_temperature: float | None = None
     min_temp: float | None = None
     max_temp: float | None = None
+    target_temp_step: float | None = None
+    supported_features: int | None = None
     temperature_unit: str | None = None
     hvac_mode: str | None = None
     hvac_modes: list[str] = Field(default_factory=list)

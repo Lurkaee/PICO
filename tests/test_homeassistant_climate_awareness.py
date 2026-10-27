@@ -59,15 +59,18 @@ from pico.homeassistant.climate import (
     parse_temperature,
     parse_temperature_unit,
     validate_climate_allowlist,
+    validate_temperature_step,
 )
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.contracts import (
     ClimateObservation,
     ClimateReadinessReport,
     ClimateSetpointPlan,
+    EntityState,
     ReadinessCheckStatus,
     ReadinessErrorCategory,
 )
+from pico.homeassistant.service import HomeAssistantService
 from pico.homeassistant.readiness import (
     HomeAssistantClimateReadinessChecker,
     evaluate_climate_readiness,
@@ -116,6 +119,7 @@ def make_mock_climate_transport(
                 "min_temp": 16.0,
                 "max_temp": 28.0,
                 "target_temp_step": 0.5,
+                "supported_features": 1,
                 "unit_of_measurement": "°C",
                 "hvac_modes": ["off", "heat", "cool", "auto"],
             },
@@ -130,6 +134,7 @@ def make_mock_climate_transport(
                 "min_temp": 60.0,
                 "max_temp": 85.0,
                 "target_temp_step": 1.0,
+                "supported_features": 1,
                 "unit_of_measurement": "°F",
                 "hvac_modes": ["off", "cool", "fan_only"],
             },
@@ -685,3 +690,570 @@ def test_cli_runner_climate_offline_and_live() -> None:
         # Live
         code_live = readiness_cli_main(["--climate", "--live", "--json"])
         assert code_live == 0
+
+
+# =====================================================================
+# 5. Milestone P7.4.2.1.1: Climate Feasibility Metadata & Mode Closure Tests
+# =====================================================================
+
+@pytest.mark.anyio
+async def test_setpoint_aligns_with_reported_half_degree_step() -> None:
+    """Requested setpoint aligned with reported 0.5 step returns ready."""
+    client, call_log = make_mock_climate_client()
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.5,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is True
+    assert plan.feasibility_status == "ready"
+    assert plan.target_temp_step == 0.5
+    assert plan.supported_features == 1
+    assert "aligns with reported step" in plan.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_setpoint_aligns_with_quarter_degree_step() -> None:
+    """Requested setpoint aligned with reported 0.25 step returns ready."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat",
+            "attributes": {
+                "friendly_name": "Living Room Thermostat",
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.25,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.25,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is True
+    assert plan.feasibility_status == "ready"
+    assert plan.target_temp_step == 0.25
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_setpoint_conflicts_with_half_degree_step() -> None:
+    """Requested setpoint not aligned with 0.5 step returns target_step_mismatch."""
+    client, call_log = make_mock_climate_client()
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.3,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "target_step_mismatch"
+    assert "does not align with supported step increment" in plan.reasons[0]
+    assert plan.target_temp_step == 0.5
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_setpoint_conflicts_with_integer_step() -> None:
+    """Requested fractional setpoint on an entity reporting 1.0 step returns target_step_mismatch."""
+    client, call_log = make_mock_climate_client()
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    # TEST_CLIMATE_B reports target_temp_step = 1.0, range [60.0, 85.0] °F
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_B,
+        requested_temperature=72.5,
+        requested_unit="°F",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "target_step_mismatch"
+    assert "does not align with supported step increment 1.0" in plan.reasons[0]
+    assert plan.target_temp_step == 1.0
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_missing_step_metadata_returns_step_unknown() -> None:
+    """Missing target_temp_step returns step_unknown rather than fabricating a default."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+                # target_temp_step intentionally omitted
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "step_unknown"
+    assert "does not report target_temp_step metadata" in plan.reasons[0]
+    assert plan.target_temp_step is None
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_zero_or_negative_step_metadata_returns_step_unknown() -> None:
+    """Zero or negative step metadata returns step_unknown."""
+    for bad_step in (0, -0.5, -1.0):
+        payloads = {
+            TEST_CLIMATE_A: {
+                "entity_id": TEST_CLIMATE_A,
+                "state": "heat",
+                "attributes": {
+                    "current_temperature": 20.5,
+                    "min_temp": 16.0,
+                    "max_temp": 28.0,
+                    "target_temp_step": bad_step,
+                    "supported_features": 1,
+                    "unit_of_measurement": "°C",
+                },
+            }
+        }
+        client, call_log = make_mock_climate_client(entity_payloads=payloads)
+        service = HomeAssistantClimateService(readonly_client=client)
+
+        plan = await service.assess_setpoint_feasibility(
+            target_entity_id=TEST_CLIMATE_A,
+            requested_temperature=21.0,
+            requested_unit="°C",
+        )
+        assert plan.is_feasible is False
+        assert plan.feasibility_status == "step_unknown"
+        assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_boolean_or_string_step_metadata_returns_step_unknown() -> None:
+    """Boolean or string step metadata returns step_unknown."""
+    for bad_step in (True, False, "invalid_step"):
+        payloads = {
+            TEST_CLIMATE_A: {
+                "entity_id": TEST_CLIMATE_A,
+                "state": "heat",
+                "attributes": {
+                    "current_temperature": 20.5,
+                    "min_temp": 16.0,
+                    "max_temp": 28.0,
+                    "target_temp_step": bad_step,
+                    "supported_features": 1,
+                    "unit_of_measurement": "°C",
+                },
+            }
+        }
+        client, call_log = make_mock_climate_client(entity_payloads=payloads)
+        service = HomeAssistantClimateService(readonly_client=client)
+
+        plan = await service.assess_setpoint_feasibility(
+            target_entity_id=TEST_CLIMATE_A,
+            requested_temperature=21.0,
+            requested_unit="°C",
+        )
+        assert plan.is_feasible is False
+        assert plan.feasibility_status == "step_unknown"
+        assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_non_finite_step_metadata_returns_step_unknown() -> None:
+    """Non-finite step metadata (NaN, Inf) returns step_unknown."""
+    for bad_step in (float("nan"), float("inf"), -float("inf")):
+        # Direct validation helper test
+        is_ok, status, _ = validate_temperature_step(21.0, bad_step)
+        assert is_ok is False
+        assert status == "step_unknown"
+
+        # Service level test with direct mocked entity state
+        mock_service = HomeAssistantService(client=None)
+        mock_entity_state = EntityState(
+            entity_id=TEST_CLIMATE_A,
+            domain="climate",
+            state="heat",
+            attributes={
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": bad_step,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        )
+        with patch.object(mock_service, "get_entity_state", return_value=mock_entity_state):
+            service = HomeAssistantClimateService(service=mock_service)
+            plan = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 21.0, "°C")
+            assert plan.is_feasible is False
+            assert plan.feasibility_status == "step_unknown"
+
+
+@pytest.mark.anyio
+async def test_missing_capability_metadata_returns_capability_unknown() -> None:
+    """Entity omitting supported_features returns capability_unknown."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "unit_of_measurement": "°C",
+                # supported_features omitted
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "capability_unknown"
+    assert "does not report trustworthy supported_features" in plan.reasons[0]
+    assert plan.supported_features is None
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_boolean_or_negative_capability_returns_capability_unknown() -> None:
+    """Boolean or negative supported_features returns capability_unknown."""
+    for bad_feat in (True, False, -1, -100):
+        payloads = {
+            TEST_CLIMATE_A: {
+                "entity_id": TEST_CLIMATE_A,
+                "state": "heat",
+                "attributes": {
+                    "current_temperature": 20.5,
+                    "min_temp": 16.0,
+                    "max_temp": 28.0,
+                    "target_temp_step": 0.5,
+                    "supported_features": bad_feat,
+                    "unit_of_measurement": "°C",
+                },
+            }
+        }
+        client, call_log = make_mock_climate_client(entity_payloads=payloads)
+        service = HomeAssistantClimateService(readonly_client=client)
+
+        plan = await service.assess_setpoint_feasibility(
+            target_entity_id=TEST_CLIMATE_A,
+            requested_temperature=21.0,
+            requested_unit="°C",
+        )
+        assert plan.is_feasible is False
+        assert plan.feasibility_status == "capability_unknown"
+        assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_unsupported_range_only_capability_rejected() -> None:
+    """Entity with supported_features=2 (range only) rejects single setpoint as unsupported_capability."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 2,  # TARGET_TEMPERATURE_RANGE only
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "unsupported_capability"
+    assert "only advertises dual-setpoint temperature range capability" in plan.reasons[0]
+    assert plan.supported_features == 2
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_unsupported_zero_features_rejected() -> None:
+    """Entity with supported_features=0 rejects single setpoint as unsupported_capability."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 0,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "unsupported_capability"
+    assert plan.supported_features == 0
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_supported_dual_single_and_range_capability() -> None:
+    """Entity supporting both single setpoint and range (1 | 2 = 3) passes capability check."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 3,  # 1 | 2
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is True
+    assert plan.feasibility_status == "ready"
+    assert plan.supported_features == 3
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_off_rejected_as_mode_incompatible() -> None:
+    """Entity in 'off' mode returns mode_incompatible."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "off",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert "off" in plan.reasons[0].lower()
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_fan_only_rejected_as_mode_incompatible() -> None:
+    """Entity in 'fan_only' mode returns mode_incompatible."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "fan_only",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert "fan_only" in plan.reasons[0].lower()
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_custom_unsupported_rejected_as_mode_incompatible() -> None:
+    """Entity in unrecognized operating mode returns mode_incompatible."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "purifying_air",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert "purifying_air" in plan.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_compatible_modes() -> None:
+    """Standard temperature-regulating modes (cool, heat, heat_cool, auto, dry) pass mode check."""
+    for mode in ("cool", "heat", "heat_cool", "auto", "dry"):
+        payloads = {
+            TEST_CLIMATE_A: {
+                "entity_id": TEST_CLIMATE_A,
+                "state": mode,
+                "attributes": {
+                    "current_temperature": 20.5,
+                    "min_temp": 16.0,
+                    "max_temp": 28.0,
+                    "target_temp_step": 0.5,
+                    "supported_features": 1,
+                    "unit_of_measurement": "°C",
+                },
+            }
+        }
+        client, call_log = make_mock_climate_client(entity_payloads=payloads)
+        service = HomeAssistantClimateService(readonly_client=client)
+
+        plan = await service.assess_setpoint_feasibility(
+            target_entity_id=TEST_CLIMATE_A,
+            requested_temperature=21.0,
+            requested_unit="°C",
+        )
+        assert plan.is_feasible is True
+        assert plan.feasibility_status == "ready"
+        assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_boundary_temperatures_at_min_and_max() -> None:
+    """Exact min_temp and max_temp are feasible when aligned with step."""
+    client, call_log = make_mock_climate_client()
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    # TEST_CLIMATE_A has min=16.0, max=28.0, step=0.5
+    # 1. At min_temp
+    plan_min = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 16.0, "°C")
+    assert plan_min.is_feasible is True
+    assert plan_min.feasibility_status == "ready"
+
+    # 2. At max_temp
+    plan_max = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 28.0, "°C")
+    assert plan_max.is_feasible is True
+    assert plan_max.feasibility_status == "ready"
+
+    # 3. Just below min_temp
+    plan_below = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 15.5, "°C")
+    assert plan_below.is_feasible is False
+    assert plan_below.feasibility_status == "target_out_of_range"
+
+    # 4. Just above max_temp
+    plan_above = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 28.5, "°C")
+    assert plan_above.is_feasible is False
+    assert plan_above.feasibility_status == "target_out_of_range"
+
+    assert len(call_log["mutation_calls"]) == 0
+
+
+def test_sanitizer_rejects_booleans_for_numeric_attributes() -> None:
+    """Sanitizer must reject boolean values supplied for numeric attributes."""
+    raw = {
+        "friendly_name": "Test Thermostat",
+        "supported_features": True,
+        "target_temp_step": False,
+        "min_temp": True,
+        "max_temp": False,
+        "temperature": True,
+        "current_temperature": False,
+        "unit_of_measurement": "°C",
+    }
+    sanitized = sanitize_entity_attributes(raw)
+    assert sanitized["friendly_name"] == "Test Thermostat"
+    assert sanitized["unit_of_measurement"] == "°C"
+    assert "supported_features" not in sanitized
+    assert "target_temp_step" not in sanitized
+    assert "min_temp" not in sanitized
+    assert "max_temp" not in sanitized
+    assert "temperature" not in sanitized
+    assert "current_temperature" not in sanitized
+
+
+def test_sanitizer_accepts_valid_supported_features_and_step() -> None:
+    """Sanitizer preserves valid integer supported_features and numeric target_temp_step."""
+    raw = {
+        "supported_features": 1,
+        "target_temp_step": 0.5,
+        "min_temp": 16.0,
+        "max_temp": 28.0,
+        "unit_of_measurement": "°C",
+    }
+    sanitized = sanitize_entity_attributes(raw)
+    assert sanitized["supported_features"] == 1
+    assert sanitized["target_temp_step"] == 0.5
+    assert sanitized["min_temp"] == 16.0
+    assert sanitized["max_temp"] == 28.0

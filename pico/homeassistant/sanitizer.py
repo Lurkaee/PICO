@@ -51,6 +51,26 @@ APPROVED_ATTRIBUTE_KEYS = {
     "target_temp_high",
     "target_temp_low",
     "temperature_unit",
+    "supported_features",
+}
+
+NUMERIC_ATTRIBUTE_KEYS = {
+    "temperature",
+    "current_temperature",
+    "target_temperature",
+    "min_temp",
+    "max_temp",
+    "target_temp_step",
+    "target_temp_high",
+    "target_temp_low",
+    "supported_features",
+    "battery",
+    "battery_level",
+    "humidity",
+    "brightness",
+    "color_temp",
+    "volume_level",
+    "current_position",
 }
 
 
@@ -66,6 +86,7 @@ def sanitize_entity_attributes(raw_attributes: dict[str, Any] | None) -> dict[st
     6. Cap string lengths to 128 chars and bounded collections to <= 5 scalar items.
     7. Bound the dictionary to at most 12 keys.
     8. Ensure total UTF-8 encoded JSON size is strictly <= 1024 bytes.
+    9. Reject booleans where numeric values are strictly required.
     """
     if not raw_attributes or not isinstance(raw_attributes, dict):
         return {}
@@ -87,6 +108,24 @@ def sanitize_entity_attributes(raw_attributes: dict[str, Any] | None) -> dict[st
 
         # Nested dictionaries are prohibited
         if isinstance(v, dict):
+            continue
+
+        # Reject booleans where numeric values are strictly required
+        if key_lower in NUMERIC_ATTRIBUTE_KEYS and isinstance(v, bool):
+            continue
+
+        # Specific strict validation for supported_features
+        if key_lower == "supported_features":
+            if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 1048575:
+                sanitized[k] = v
+            continue
+
+        # Specific strict validation for target_temp_step
+        if key_lower == "target_temp_step":
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                f_val = float(v)
+                if math.isfinite(f_val):
+                    sanitized[k] = f_val
             continue
 
         # Handle booleans (bool is a subclass of int, check first)
