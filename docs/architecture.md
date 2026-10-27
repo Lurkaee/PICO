@@ -521,8 +521,14 @@ Target Environment:
   - Bitmask precedence: A `supported_features` bitmask advertising `TARGET_TEMPERATURE` cannot override an incompatible operating mode.
   - Corrected step-grid alignment semantics: Upstream contract documents `target_temp_step` as the increment without defining a universal grid origin (neither 0.0 nor `min_temp` can be assumed). When `grid_origin` is not established, the planner fails closed as `step_alignment_unknown` (`is_feasible=false`). When a verified `grid_origin` is provided, offset alignment is evaluated with decimal-safe modulo (`abs(dec_req - dec_origin) % dec_step == 0`).
   - Preserved invariants: Zero rounding/mutation of requested temperature, strict rejection of booleans/malformed step values, strictly read-only awareness without climate mutation endpoints.
+- **P7.4.2.1.3 Stage D Trusted Climate Grid-Origin Configuration**:
+  - Closed the trust gap on step-grid origin authority: Public `ClimatePlanRequest` callers must NOT establish or choose a step-grid origin. Client-supplied `grid_origin` is strictly forbidden and rejected with HTTP 422 (`extra="forbid"` and explicit validator).
+  - Server-controlled per-entity configuration: Added `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS` (default `"{}"`), validated fail-closed. Requires exact allowlisted `climate.*` entity IDs, no wildcards, no duplicates, exactly `{"origin", "unit"}` fields, finite non-negative non-boolean numeric origins, and canonical units matching the entity's observed temperature unit.
+  - Fail-closed alignment: Unconfigured entities or unit mismatches fail closed as `step_alignment_unknown`. Missing or invalid `target_temp_step` fails closed as `step_unknown`.
+  - Canonical plan digest binding: `input_digest` binds exact entity ID, requested temperature, requested unit, and effective server-configured origin and unit (`f"{origin}:{unit}"` or `"none:none"`).
+  - Preserved strict zero-mutation boundaries: Zero climate actuation endpoints, zero mutation calls.
 - **P7.4.2 Stage D Climate & Environmental Controls (Full Physical Actuation)**: Planned. Physical climate actuation remains strictly unsupported.
-- *Status*: **STAGE A (P7.1/P7.2), STAGE B (P7.3), STAGE C (P7.4.1/P7.4.1.2), & STAGE D PREPARATORY (P7.4.2.1/P7.4.2.1.1/P7.4.2.1.2) VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
+- *Status*: **STAGE A (P7.1/P7.2), STAGE B (P7.3), STAGE C (P7.4.1/P7.4.1.2), & STAGE D PREPARATORY (P7.4.2.1/P7.4.2.1.1/P7.4.2.1.2/P7.4.2.1.3) VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
 
 ### Milestone P8: Computer Control & Engineering Workspace
 - Sandboxed desktop application and window inspection (P8.1).
