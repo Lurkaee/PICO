@@ -634,18 +634,31 @@ The desktop client implements a structured error model mapping transport, timeou
 - **Strictly Read-Only Awareness & Planning**: Under no circumstances does Milestone P7.4.2.1 change thermostat setpoints, adjust HVAC modes, toggle fan modes, activate presets, or dispatch mutations. `is_mutation_performed=false` is guaranteed. Physical actuation remains strictly disabled.
 - **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_ENABLED=true` and `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true` (disabled by default). Does NOT enable physical actuation.
 - **Exact String Allowlist**: `HOME_ASSISTANT_CLIMATE_ALLOWLIST` must be a JSON array of exact `climate.*` entity IDs. Wildcards (`*`), prefixes, regex, empty allowlist, whitespace variations, and non-climate domains fail closed with `ValidationError`.
-- **Bounded Sanitized Attributes**: State payloads pass through `sanitize_entity_attributes` and expose only trustworthy bounded fields (`current_temperature`, `temperature`, `min_temp`, `max_temp`, `target_temp_step`, `temperature_unit`, `hvac_mode`, `hvac_modes`). Unvetted attributes, tokens, and GPS coordinates are dropped.
-- **Fail-Closed Feasibility Planning**: Requested target temperatures are evaluated against reported device limits. Missing, non-numeric, non-finite, contradictory, or missing-unit bounds report `state_unknown`, `unit_unknown`, or `target_out_of_range`. Operating limits and units are never fabricated.
+- **Bounded Sanitized Attributes**: State payloads pass through `sanitize_entity_attributes` and expose only trustworthy bounded fields (`current_temperature`, `temperature`, `min_temp`, `max_temp`, `target_temp_step`, `supported_features`, `temperature_unit`, `hvac_mode`, `hvac_modes`). Unvetted attributes, tokens, and GPS coordinates are dropped. Booleans are strictly rejected for all numeric attributes.
+- **Fail-Closed Feasibility Planning & Status Taxonomy (Milestone P7.4.2.1.1)**:
+  Requested target temperatures are evaluated against reported device limits, step alignment, capability bitmasks, and operating mode compatibility. Structured outcomes include:
+  - `ready`: All reported constraints satisfied (unit match, numerical range, step alignment, single setpoint capability, compatible operating mode). Certifies metadata feasibility only; never claims physical device connectivity or guarantees subsequent actuation success.
+  - `target_out_of_range`: Requested setpoint is below reported `min_temp` or above reported `max_temp`.
+  - `target_step_mismatch`: Requested setpoint conflicts with reported `target_temp_step` increment (using decimal-safe arithmetic).
+  - `step_unknown`: Entity reports missing, zero, negative, boolean, or invalid `target_temp_step`.
+  - `mode_incompatible`: Current reported operating mode (`off`, `fan_only`, or unrecognized) does not regulate or allow setting temperature.
+  - `unsupported_capability`: Entity does not support single target temperature setpoints (e.g. only supports dual-setpoint range `TARGET_TEMPERATURE_RANGE` or lacks temperature features).
+  - `capability_unknown`: Reliable capability metadata cannot be established from reported `supported_features`.
+  - `unit_unknown`: Reported or requested temperature unit is missing, unrecognized, or mismatched.
+  - `state_unavailable`: Entity is unreachable or reported as `unavailable`.
+  - `state_unknown`: Entity state is reported as `unknown` or bounds are missing/contradictory.
+  - `not_allowlisted`: Target entity is not present in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`.
+  - `disabled`: Integration or climate awareness is disabled by policy.
 
 - **`POST /api/homeassistant/climate/plan`**
   - **Description**: Evaluates the feasibility of a requested temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
   - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str`).
-  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id`, `entity_id`, `requested_temperature`, `requested_unit`, `current_temperature`, `min_temp`, `max_temp`, `temperature_unit`, `is_feasible`, `feasibility_status`, `reasons`, `input_digest`, `is_mutation_performed=false`).
+  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
 
 - **`GET /api/homeassistant/climate/observe/{entity_id}`**
   - **Description**: Inspects the current reported state and operating bounds of an allowlisted climate entity. Guaranteed read-only GET.
   - **Path Parameters**: `entity_id: str` (must match exact allowlisted `climate.*` entity).
-  - **Response (200 OK)**: `ClimateObservation` (`entity_id`, `domain`, `state`, `current_temperature`, `target_temperature`, `min_temp`, `max_temp`, `target_temp_step`, `temperature_unit`, `hvac_mode`, `hvac_modes`, `state_readiness`, `reasons`, `attributes`, `is_mutation_performed=false`, `physical_device_connectivity_claimed=false`).
+  - **Response (200 OK)**: `ClimateObservation` (`entity_id: str`, `domain: str = "climate"`, `state: str`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `state_readiness: str`, `reasons: list[str]`, `attributes: dict`, `is_mutation_performed: bool = false`, `physical_device_connectivity_claimed: bool = false`).
 
 - **`GET /api/homeassistant/climate/readiness`**
   - **Description**: Evaluates Stage D climate awareness and observation readiness. Offline preflight performs zero network requests. Live read-only check (`check_live=true`) probes the target climate entity without mutations.

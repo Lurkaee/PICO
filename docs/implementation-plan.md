@@ -120,8 +120,15 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Read-only readiness inspection: CLI (`python -m pico.homeassistant.readiness --climate`), REST API (`GET /api/homeassistant/climate/readiness`), and tool capability (`homeassistant.climate_readiness`).
   - REST API endpoints: `POST /api/homeassistant/climate/plan`, `GET /api/homeassistant/climate/observe/{entity_id}`, and `GET /api/homeassistant/climate/readiness`.
   - Zero climate mutation or generic service capabilities: WebSocket allowlist unchanged, zero POST/PUT/PATCH/DELETE calls issued for climate planning/observation.
+- [x] **P7.4.2.1.1 Stage D Climate Feasibility Metadata & Mode-Semantics Closure**:
+  - Closed the `target_temp_step` gap: Decimal-safe increment alignment check (`dec_req % dec_step == 0`) with tolerance. Distinguishes supported aligned setpoint (`ready`), misaligned setpoint (`target_step_mismatch`), and missing/invalid/zero/negative/bool/non-finite step metadata (`step_unknown`). Does not fabricate default step increments or invent grid origins.
+  - Verified capability bitmask validation (`supported_features`): Verified against Home Assistant climate contract (`TARGET_TEMPERATURE = 1`, `TARGET_TEMPERATURE_RANGE = 2`). Rejects single-setpoint requests against dual-range-only entities as `unsupported_capability`. Reports `capability_unknown` when capability metadata is missing, boolean, or malformed.
+  - Operating mode compatibility enforcement: Prohibits reporting single setpoint as feasible when reported `hvac_mode` is `"off"` (powered off) or `"fan_only"` (fan only does not regulate temperature) or unrecognized non-regulating mode (`mode_incompatible`).
+  - Sanitization boundary hardening: Added `supported_features` to `APPROVED_ATTRIBUTE_KEYS`. Enforced strict rejection of booleans where numeric values are expected across all numeric attributes (`supported_features`, `target_temp_step`, `min_temp`, `max_temp`, `temperature`, `current_temperature`).
+  - API & client transparency: Exposes `target_temp_step: float | None` and `supported_features: int | None` on `ClimateSetpointPlan` and `supported_features` on `ClimateObservation`.
+  - Explicit feasibility semantics: A `ready` plan certifies metadata feasibility (valid unit, numerical bounds, step alignment, single setpoint feature flag, active regulating mode); does not claim physical device connectivity or guarantee subsequent actuation success. Strict zero-mutation boundary maintained.
 - [ ] **P7.4.2 Stage D Climate & Environmental Controls (Full Physical Actuation)**: Planned. Physical climate actuation remains strictly unsupported.
-- **Status**: **STAGE A, STAGE B, STAGE C, & STAGE D PREPARATORY (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1) COMPLETED & VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
+- **Status**: **STAGE A, STAGE B, STAGE C, & STAGE D PREPARATORY (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1, P7.4.2.1.1) COMPLETED & VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
 
 
 ### Milestone P8: Computer Control & Engineering Workspace
