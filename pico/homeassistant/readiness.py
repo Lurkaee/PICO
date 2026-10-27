@@ -1155,15 +1155,30 @@ class HomeAssistantClimateReadinessChecker:
                 )
 
         # 5. Actuation boundary check
-        checks.append(
-            ReadinessCheckItem(
-                name="actuation_boundary",
-                status=ReadinessCheckStatus.PASS,
-                error_category=None,
-                message="Climate physical actuation is disabled by policy (strictly read-only awareness milestone).",
-                remediation=None,
-            )
+        actuation_enabled = bool(
+            settings.HOME_ASSISTANT_ACTUATION_ENABLED
+            and getattr(settings, "HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", False)
         )
+        if actuation_enabled:
+            checks.append(
+                ReadinessCheckItem(
+                    name="actuation_boundary",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message="Climate physical actuation is explicitly enabled (HOME_ASSISTANT_ACTUATION_ENABLED=true and HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true).",
+                    remediation=None,
+                )
+            )
+        else:
+            checks.append(
+                ReadinessCheckItem(
+                    name="actuation_boundary",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message="Climate physical actuation is disabled by policy (strictly read-only awareness mode).",
+                    remediation=None,
+                )
+            )
 
         # 6. Transport security check
         base_url = settings.HOME_ASSISTANT_BASE_URL
@@ -1361,7 +1376,7 @@ class HomeAssistantClimateReadinessChecker:
             target_entity_id=target_to_probe,
             allowlisted_entities=sorted(list(allowlisted_set)),
             climate_awareness_enabled=climate_awareness_enabled,
-            actuation_enabled=False,
+            actuation_enabled=actuation_enabled,
             live_check_performed=check_live,
             live_passed=live_passed if check_live else None,
             state_readiness=state_readiness,

@@ -1,4 +1,5 @@
 from pico.capabilities.homeassistant.ha_actuation import (
+    HomeAssistantClimateActuationCapability,
     HomeAssistantSwitchActuationCapability,
     HomeAssistantTestLightActuationCapability,
 )
@@ -10,6 +11,7 @@ from pico.capabilities.homeassistant.ha_capabilities import (
 )
 from pico.capabilities.homeassistant.ha_readiness import (
     HomeAssistantActuationReadinessCapability,
+    HomeAssistantClimateReadinessCapability,
     HomeAssistantSwitchActuationReadinessCapability,
 )
 
@@ -22,4 +24,6 @@ __all__ = [
     "HomeAssistantActuationReadinessCapability",
     "HomeAssistantSwitchActuationCapability",
     "HomeAssistantSwitchActuationReadinessCapability",
+    "HomeAssistantClimateReadinessCapability",
+    "HomeAssistantClimateActuationCapability",
 ]

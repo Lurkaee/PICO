@@ -684,7 +684,32 @@ The desktop client implements a structured error model mapping transport, timeou
 - **`GET /api/homeassistant/climate/readiness`**
   - **Description**: Evaluates Stage D climate awareness and observation readiness. Offline preflight performs zero network requests. Live read-only check (`check_live=true`) probes the target climate entity without mutations.
   - **Query Parameters**: `check_live: bool` (default: `false`), `target_entity_id: str | None` (optional).
-  - **Response (200 OK)**: `ClimateReadinessReport` (`ready_for_observation`, `target_entity_id`, `allowlisted_entities`, `climate_awareness_enabled`, `actuation_enabled=false`, `live_check_performed`, `live_passed`, `state_readiness`, `observation`, `checks`, `summary`).
+  - **Response (200 OK)**: `ClimateReadinessReport` (`ready_for_observation`, `target_entity_id`, `allowlisted_entities`, `climate_awareness_enabled`, `actuation_enabled: bool`, `live_check_performed`, `live_passed`, `state_readiness`, `observation`, `checks`, `summary`).
+
+---
+
+### 2.9.3 Stage D Allowlisted Single-Setpoint Climate Actuation (Milestone P7.4.2.2)
+
+**Operational Invariants & Safety Constraints**:
+- **Single Operation Supported**: Setting target temperature on an explicitly allowlisted `climate.*` entity. The entity must already be in a compatible operating mode (`heat` or `cool`). Automatic mode changes, fan mode adjustments, preset activation, `heat_cool` dual-range setpoints, and generic service calls (`call_service`) are strictly prohibited.
+- **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true` (default: `False`). All parent gates must also be satisfied: `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true`, non-empty `HOME_ASSISTANT_CLIMATE_ALLOWLIST`, valid server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`, `APPROVAL_SECRET_TOKEN`, and `homeassistant:actuate` permission.
+- **Fail-Closed Target Allowlist**: Target entity must match an exact string in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`. Wildcards, regex, prefixes, and non-climate domains fail closed with `ValidationError`.
+- **Server-Controlled Grid Origins**: Client requests cannot supply or override `grid_origin`. Setting `grid_origin` or extra properties is forbidden and rejected with HTTP 422. Step alignment is computed strictly against server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`.
+- **Mandatory Pre-Dispatch Verification**: Authoritative fresh read immediately before mutation validates entity availability, mode compatibility (`heat` or `cool`), range bounds (`min_temp <= target <= max_temp`), step alignment, single-use approval ticket validity, and triple-digest agreement (`recomputed == persisted == approved`).
+- **Idempotency & State Satisfaction**: If current reported temperature already matches requested target, physical dispatch is skipped (`dispatch_status='already_satisfied'`) and verified independently.
+- **Single Dispatch Boundary**: Exactly one HTTP `POST /api/services/climate/set_temperature` call with `{"entity_id": target_id, "temperature": target_temp}`. Strictly zero automatic retries (`max_retries=0`, `idempotent=False`, `consequential=True`) on timeouts or failures.
+- **Independent Read-After-Write Verification**: Post-dispatch state is independently observed via read-only `GET /api/states/{id}`. Never claims physical device connectivity (`physical_device_connectivity_claimed=False`).
+
+- **`POST /api/homeassistant/climate/propose`**
+  - **Description**: Proposes a single-setpoint climate actuation execution for an allowlisted climate entity. Creates a `ToolExecution` in `awaiting_approval` status bound to SHA-256 digest. Fails closed without valid `X-Pico-Approval-Token` or `homeassistant:actuate` permission.
+  - **Request Body**: `ClimateProposeRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str | None = None`, optional `reason: str | None = None`). Extra fields (including `grid_origin`) are forbidden.
+  - **Headers**: `X-Pico-Approval-Token` (mandatory).
+  - **Response (201 Created)**: `ToolExecutionResponse` (status: `awaiting_approval`).
+
+- **`GET /api/homeassistant/climate/execution/{execution_id}`**
+  - **Description**: Inspect approval state, execution status, and verification outcome of a climate actuation execution.
+  - **Path Parameters**: `execution_id: str`.
+  - **Response (200 OK)**: `ToolExecutionResponse`.
 
 ---
 

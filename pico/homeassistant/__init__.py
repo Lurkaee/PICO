@@ -5,8 +5,10 @@ from pico.homeassistant.classification import (
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.actuation import (
     HomeAssistantActuationService,
+    HomeAssistantClimateActuationService,
     HomeAssistantSwitchActuationService,
     validate_actuation_preconditions,
+    validate_climate_actuation_preconditions,
     validate_switch_actuation_preconditions,
     validate_switch_allowlist,
 )
@@ -16,6 +18,8 @@ from pico.homeassistant.climate import (
 )
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
+    ClimateActuationPlan,
+    ClimateActuationResult,
     ClimateObservation,
     ClimateReadinessReport,
     ClimateSetpointPlan,
@@ -47,9 +51,11 @@ __all__ = [
     "HomeAssistantService",
     "HomeAssistantActuationService",
     "HomeAssistantSwitchActuationService",
+    "HomeAssistantClimateActuationService",
     "HomeAssistantClimateService",
     "validate_actuation_preconditions",
     "validate_switch_actuation_preconditions",
+    "validate_climate_actuation_preconditions",
     "validate_switch_allowlist",
     "validate_climate_allowlist",
     "HomeAssistantWebSocketClient",
@@ -69,6 +75,8 @@ __all__ = [
     "SwitchActuationReadinessReport",
     "ClimateObservation",
     "ClimateSetpointPlan",
+    "ClimateActuationPlan",
+    "ClimateActuationResult",
     "ClimateReadinessReport",
     "HomeAssistantClimateReadinessChecker",
     "evaluate_climate_readiness",

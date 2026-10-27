@@ -248,3 +248,40 @@ class ClimateReadinessReport(BaseModel):
     observation: ClimateObservation | None = None
     checks: list[ReadinessCheckItem] = Field(default_factory=list)
     summary: str
+
+
+class ClimateActuationPlan(BaseModel):
+    """Milestone P7.4.2.2: Consequential single-setpoint climate actuation action plan."""
+    __test__ = False
+    plan_id: str
+    entity_id: str
+    requested_temperature: float
+    requested_unit: str | None = None
+    current_temperature: float | None = None
+    current_target_temperature: float | None = None
+    hvac_mode: str | None = None
+    service: str = "climate.set_temperature"
+    state_readiness: str = "ready"
+    is_mutation_needed: bool
+    preconditions: list[str]
+    expected_postconditions: list[str]
+    input_digest: str
+    expires_at: str
+    data_classification: str = "INTERNAL"
+    is_mutation_performed: bool = False
+
+
+class ClimateActuationResult(BaseModel):
+    """Milestone P7.4.2.2: Structured execution and independent verification outcome for climate actuation."""
+    __test__ = False
+    success: bool
+    entity_id: str
+    requested_temperature: float
+    requested_unit: str | None = None
+    reported_temperature: float | None = None
+    reported_mode: str | None = None
+    dispatch_status: str
+    verification_status: str
+    verification_details: dict[str, Any] = Field(default_factory=dict)
+    message: str
+    physical_device_connectivity_claimed: bool = False
