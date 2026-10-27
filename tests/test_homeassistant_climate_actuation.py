@@ -1117,6 +1117,24 @@ async def test_persistent_replay_prevention_across_restarts_and_instances(
         assert completed_exec.status == "succeeded"
         assert len(state_box["mutation_calls"]) == 1
 
+        # Confirm the execution has persisted consumed-ticket metadata and approval evidence
+        exec_repo = ToolExecutionRepository(db_session)
+        persisted_exec = exec_repo.get_by_id(execution.id)
+        assert persisted_exec is not None
+        assert persisted_exec.metadata_json is not None
+        assert persisted_exec.metadata_json.get("dispatch_consumed") is True
+        assert "dispatched_at" in persisted_exec.metadata_json
+        assert persisted_exec.approved_by == "authenticated_token_holder"
+        assert persisted_exec.approval_input_digest == execution.input_digest
+
+        # Restore only the execution status to 'queued' to pass the preliminary status gate,
+        # preserving the consumed-ticket metadata and all other relevant approval evidence.
+        exec_repo.update_status(execution_id=execution.id, status="queued")
+        queued_exec = exec_repo.get_by_id(execution.id)
+        assert queued_exec is not None
+        assert queued_exec.status == "queued"
+        assert queued_exec.metadata_json.get("dispatch_consumed") is True
+
         # Simulate process restart: fresh engine and fresh capability/service instance
         fresh_service = HomeAssistantClimateActuationService(
             readonly_client=ro_client,
@@ -1130,12 +1148,30 @@ async def test_persistent_replay_prevention_across_restarts_and_instances(
         )
         fresh_engine = ToolExecutionEngine(db_session, registry)
 
-        # Attempt to replay the executed proposal on fresh engine instance
-        with pytest.raises((ValidationError, AuthorizationError)):
+        # Attempt to replay the executed proposal on fresh engine instance.
+        # Assert specifically that the persistent consumed-ticket guard raises AuthorizationError.
+        with pytest.raises(
+            AuthorizationError,
+            match=f"Approval for execution '{execution.id}' has already been consumed and cannot be replayed",
+        ):
             await fresh_engine.execute(execution.id, caller_permissions={"homeassistant:actuate"})
 
-        # Zero duplicate mutations dispatched (call count remains strictly 1)
+        # Verify that an authorization_denied event is persisted with the replay-denial reason
+        ledger_repo = EventLedgerRepository(db_session)
+        events = ledger_repo.list_events(execution_id=execution.id)
+        denied_events = [e for e in events if e.event_type == "authorization_denied"]
+        assert len(denied_events) == 1
+        assert denied_events[0].payload_json.get("reason") == "Replay attempt: approval ticket already consumed"
+
+        # Assert that the replay attempt generates zero additional physical mutation calls (remains strictly 1)
         assert len(state_box["mutation_calls"]) == 1
+
+        # Preserve and verify the original successful execution evidence and consumed-ticket state
+        final_exec = exec_repo.get_by_id(execution.id)
+        assert final_exec is not None
+        assert final_exec.metadata_json.get("dispatch_consumed") is True
+        assert final_exec.approval_input_digest == execution.input_digest
+        assert final_exec.approved_by == "authenticated_token_holder"
 
 
 # =====================================================================
