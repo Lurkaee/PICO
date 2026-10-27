@@ -217,6 +217,7 @@ class ClimateSetpointPlan(BaseModel):
     requested_temperature: float
     requested_unit: str | None = None
     grid_origin: float | None = None
+    grid_origin_unit: str | None = None
     current_temperature: float | None = None
     target_temperature: float | None = None
     min_temp: float | None = None

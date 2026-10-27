@@ -643,13 +643,19 @@ The desktop client implements a structured error model mapping transport, timeou
   - `dry`: Fails closed as `mode_incompatible`. Dehumidification mode does not establish universal single-temperature compatibility across integrations.
   - `off` and `fan_only`: Incompatible (`mode_incompatible`). The entity is off or running fan-only without temperature regulation.
   - Feature bitmask precedence: A `supported_features` bitmask declaring single-temperature capability cannot override an incompatible current operating mode.
-- **Step-Grid Alignment Semantics (Milestone P7.4.2.1.2)**:
+- **Step-Grid Alignment Semantics & Trusted Grid Origin (Milestones P7.4.2.1.2 & P7.4.2.1.3)**:
   Home Assistant documents `target_temp_step` as the step increment without establishing an authoritative grid origin (neither 0.0 nor `min_temp` can be assumed as a universal origin).
-  - When `grid_origin` is not established/provided, step alignment is indeterminate and the planner fails closed as `step_alignment_unknown` (`is_feasible=false`).
-  - When a verified `grid_origin` is provided, alignment is evaluated via decimal-safe arithmetic: `abs(requested - origin) % step == 0`.
-  - Strict rejection of booleans, malformed numbers, zero, negative, NaN, and infinity for step size.
+  - **Removal of Caller Authority (Milestone P7.4.2.1.3)**: Callers and client requests must NOT establish, supply, or override grid origins. Client-supplied `grid_origin` in `ClimatePlanRequest` is strictly forbidden and rejected with HTTP 422 (`extra="forbid"` with explicit validator).
+  - **Server-Controlled Per-Entity Configuration**: Trusted step-grid origins live exclusively in server-side operator configuration (`HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`, default `"{}"`).
+    - Format: `{"climate.entity_id": {"origin": 16.0, "unit": "°C"}}`.
+    - Operator Verification: Operators must verify device step-grid origins from authoritative manufacturer/integration specifications before configuring them. Never inferred automatically from `min_temp`, current temperature, requested setpoint, friendly names, or model proposals.
+    - Fail-Closed Validation: Exact `climate.*` entity IDs, must be present in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`, no wildcards or special characters, exactly `{"origin", "unit"}` fields, finite non-negative non-boolean numeric origin, and canonical unit matching the entity's observed unit.
+  - When an entity lacks a configured server origin, step alignment fails closed as `step_alignment_unknown` (`is_feasible=false`).
+  - When a verified server origin is configured and unit-compatible, alignment is evaluated via decimal-safe arithmetic: `abs(requested - origin) % step == 0`.
+  - Misaligned setpoint returns `target_step_mismatch`. Missing, zero, negative, boolean, or invalid `target_temp_step` returns `step_unknown`.
+  - Canonical SHA-256 plan digest binds exact entity ID, requested temperature, requested unit, and effective trusted origin + unit.
   - Never silently round or modify the requested temperature.
-- **Fail-Closed Feasibility Planning & Status Taxonomy (Milestones P7.4.2.1.1 & P7.4.2.1.2)**:
+- **Fail-Closed Feasibility Planning & Status Taxonomy (Milestones P7.4.2.1.1, P7.4.2.1.2 & P7.4.2.1.3)**:
   Requested target temperatures are evaluated against reported device limits, step alignment, capability bitmasks, and operating mode compatibility. Structured outcomes include:
   - `ready`: All reported constraints satisfied (unit match, numerical range, step alignment under established grid origin, single setpoint capability, compatible operating mode). Certifies metadata feasibility only; never claims physical device connectivity or guarantees subsequent actuation success.
   - `target_out_of_range`: Requested setpoint is below reported `min_temp` or above reported `max_temp`.
@@ -667,8 +673,8 @@ The desktop client implements a structured error model mapping transport, timeou
 
 - **`POST /api/homeassistant/climate/plan`**
   - **Description**: Evaluates the feasibility of a requested temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
-  - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str`, optional `grid_origin: float | None = None`).
-  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `grid_origin: float | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
+  - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str | None = None`). Any client attempt to supply `grid_origin` or extra fields is rejected with HTTP 422.
+  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `grid_origin: float | None`, `grid_origin_unit: str | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
 
 - **`GET /api/homeassistant/climate/observe/{entity_id}`**
   - **Description**: Inspects the current reported state and operating bounds of an allowlisted climate entity. Guaranteed read-only GET.

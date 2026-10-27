@@ -204,11 +204,16 @@ def validate_temperature_step(
             "step alignment cannot be reliably proven from reported metadata.",
         )
 
-    if not isinstance(grid_origin, (int, float)) or isinstance(grid_origin, bool) or not math.isfinite(float(grid_origin)):
+    if (
+        not isinstance(grid_origin, (int, float))
+        or isinstance(grid_origin, bool)
+        or not math.isfinite(float(grid_origin))
+        or float(grid_origin) < 0
+    ):
         return (
             False,
             "step_alignment_unknown",
-            f"Invalid grid_origin ({grid_origin!r}); must be a finite numeric value.",
+            f"Invalid grid_origin ({grid_origin!r}); must be a non-negative finite numeric value.",
         )
 
     try:
@@ -328,6 +333,135 @@ def parse_temperature_unit(raw_unit: Any) -> str | None:
     return SUPPORTED_UNITS.get(normalized)
 
 
+def validate_climate_grid_origins(
+    raw_config: Any | None = None,
+    allowlist: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Validate and normalize operator-controlled per-entity climate step-grid origins.
+
+    Invariants:
+    1. Exact string matching only. No wildcards, regex, prefixes, or domain wildcards.
+    2. Must map exact 'climate.*' entity IDs to objects with exactly {'origin', 'unit'}.
+    3. Entities must be present in the Stage D climate allowlist.
+    4. Origin must be a finite, non-negative, non-boolean numeric value.
+    5. Unit must be a recognized, supported temperature unit ('°C', '°F', 'K').
+    6. Malformed JSON, duplicate keys, extra/unexpected fields, or invalid types fail closed with ValidationError.
+    7. Empty configuration ('{}') is valid and denotes no entity has an established grid origin.
+    """
+    if raw_config is None:
+        raw_config = getattr(settings, "HOME_ASSISTANT_CLIMATE_GRID_ORIGINS", "{}")
+
+    if isinstance(raw_config, str):
+        clean_str = raw_config.strip()
+        if not clean_str or clean_str == "{}":
+            return {}
+
+        def check_duplicate_keys(pairs: list[tuple[Any, Any]]) -> dict[Any, Any]:
+            res: dict[Any, Any] = {}
+            for k, v in pairs:
+                if k in res:
+                    raise ValidationError(f"Duplicate entity ID '{k}' in HOME_ASSISTANT_CLIMATE_GRID_ORIGINS.")
+                res[k] = v
+            return res
+
+        try:
+            parsed = json.loads(clean_str, object_pairs_hook=check_duplicate_keys)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"Malformed JSON in HOME_ASSISTANT_CLIMATE_GRID_ORIGINS: {exc}")
+    elif isinstance(raw_config, dict):
+        parsed = raw_config
+    else:
+        raise ValidationError("HOME_ASSISTANT_CLIMATE_GRID_ORIGINS must be a JSON object or dictionary.")
+
+    if not isinstance(parsed, dict):
+        raise ValidationError("HOME_ASSISTANT_CLIMATE_GRID_ORIGINS must be a JSON object or dictionary mapping entity IDs to configuration objects.")
+
+    if not parsed:
+        return {}
+
+    if allowlist is None:
+        allowlist = validate_climate_allowlist()
+
+    validated: dict[str, dict[str, Any]] = {}
+    for entity_id, entry in parsed.items():
+        if not isinstance(entity_id, str):
+            raise ValidationError(f"Grid origin entity ID keys must be strings; received {type(entity_id).__name__}: {entity_id!r}")
+
+        if entity_id != entity_id.strip():
+            raise ValidationError(f"Whitespace variations in grid origin entity ID '{entity_id}' are prohibited.")
+
+        clean_id = entity_id.strip()
+        if not clean_id:
+            raise ValidationError("Empty entity ID string in HOME_ASSISTANT_CLIMATE_GRID_ORIGINS.")
+
+        if any(ch in clean_id for ch in ("*", "?", "/", "\\")):
+            raise ValidationError(f"Wildcards or special characters in grid origin entity ID '{clean_id}' are prohibited.")
+
+        if not clean_id.startswith("climate."):
+            domain = clean_id.split(".", 1)[0]
+            raise ValidationError(
+                f"Configured entity '{clean_id}' is in domain '{domain}'. "
+                "Climate grid origins are strictly restricted to 'climate.*' entities."
+            )
+
+        if not ENTITY_ID_REGEX.match(clean_id):
+            raise ValidationError(
+                f"Invalid entity ID format '{clean_id}' in HOME_ASSISTANT_CLIMATE_GRID_ORIGINS. "
+                "Expected format: 'climate.<name>' with alphanumeric/underscore characters only."
+            )
+
+        if clean_id not in allowlist:
+            raise ValidationError(
+                f"Configured climate grid origin entity '{clean_id}' is not in HOME_ASSISTANT_CLIMATE_ALLOWLIST."
+            )
+
+        if not isinstance(entry, dict):
+            raise ValidationError(
+                f"Grid origin configuration for '{clean_id}' must be an object/dict; received {type(entry).__name__}."
+            )
+
+        if set(entry.keys()) != {"origin", "unit"}:
+            unexpected = set(entry.keys()) - {"origin", "unit"}
+            missing = {"origin", "unit"} - set(entry.keys())
+            detail = f"unexpected fields: {unexpected}" if unexpected else f"missing fields: {missing}"
+            raise ValidationError(
+                f"Grid origin configuration for '{clean_id}' must contain exactly 'origin' and 'unit' fields ({detail})."
+            )
+
+        raw_origin = entry["origin"]
+        if raw_origin is None or isinstance(raw_origin, bool) or not isinstance(raw_origin, (int, float)):
+            raise ValidationError(
+                f"Invalid origin {raw_origin!r} for '{clean_id}'; must be a finite numeric value."
+            )
+        f_origin = float(raw_origin)
+        if not math.isfinite(f_origin):
+            raise ValidationError(
+                f"Non-finite origin {raw_origin!r} for '{clean_id}' is not permitted."
+            )
+        if f_origin < 0:
+            raise ValidationError(
+                f"Invalid origin {raw_origin!r} for '{clean_id}'; negative origins are not permitted."
+            )
+
+        raw_unit = entry["unit"]
+        if not isinstance(raw_unit, str):
+            raise ValidationError(
+                f"Unit in grid origin configuration for '{clean_id}' must be a string; received {type(raw_unit).__name__}."
+            )
+        norm_unit = parse_temperature_unit(raw_unit)
+        if norm_unit is None:
+            raise ValidationError(
+                f"Unrecognized temperature unit '{raw_unit}' in grid origin configuration for '{clean_id}'."
+            )
+
+        validated[clean_id] = {
+            "origin": f_origin,
+            "unit": norm_unit,
+        }
+
+    return validated
+
+
 class HomeAssistantClimateService:
     """High-level service for Stage D read-only climate awareness and safe setpoint feasibility.
 
@@ -343,9 +477,11 @@ class HomeAssistantClimateService:
         self,
         service: HomeAssistantService | None = None,
         readonly_client: HomeAssistantClient | None = None,
+        trusted_grid_origins: Any = None,
     ) -> None:
         self._service = service or HomeAssistantService(client=readonly_client)
         self._client = readonly_client or (self._service._client if hasattr(self._service, "_client") else None)
+        self._trusted_grid_origins_raw = trusted_grid_origins
 
     async def get_climate_observation(self, entity_id: str) -> ClimateObservation:
         """Inspect and return bounded, typed climate observation for an allowlisted entity.
@@ -520,7 +656,6 @@ class HomeAssistantClimateService:
         target_entity_id: str,
         requested_temperature: float,
         requested_unit: str | None = None,
-        grid_origin: float | None = None,
     ) -> ClimateSetpointPlan:
         """Assess the feasibility of a requested temperature setpoint without executing mutations.
 
@@ -530,8 +665,28 @@ class HomeAssistantClimateService:
         clean_id = target_entity_id.strip()
         plan_id = f"plan_climate_{uuid.uuid4().hex[:12]}"
 
-        # Canonical SHA-256 digest
-        digest_input = f"{clean_id}:{requested_temperature}:{requested_unit or ''}:{grid_origin}"
+        # Resolve effective server-configured grid origin for this entity
+        effective_origin: float | None = None
+        effective_origin_unit: str | None = None
+        grid_config_error: str | None = None
+
+        try:
+            current_allowlist = validate_climate_allowlist()
+            origins_map = validate_climate_grid_origins(
+                raw_config=self._trusted_grid_origins_raw,
+                allowlist=current_allowlist,
+            )
+            if clean_id in origins_map:
+                effective_origin = origins_map[clean_id]["origin"]
+                effective_origin_unit = origins_map[clean_id]["unit"]
+        except ValidationError as exc:
+            grid_config_error = str(exc)
+        except Exception as exc:
+            grid_config_error = f"Failed to load trusted grid origin configuration: {exc}"
+
+        # Canonical SHA-256 digest binding exact entity ID, requested temperature, requested unit, and effective origin + unit
+        origin_digest_str = f"{effective_origin}:{effective_origin_unit}" if effective_origin is not None else "none:none"
+        digest_input = f"{clean_id}:{requested_temperature}:{requested_unit or ''}:{origin_digest_str}"
         input_digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
 
         # Reject non-finite or invalid temperature input
@@ -545,7 +700,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=float("nan") if not isinstance(requested_temperature, (int, float)) else requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 is_feasible=False,
                 feasibility_status="state_unknown",
                 reasons=["Requested temperature must be a finite numeric value."],
@@ -560,7 +716,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 is_feasible=False,
                 feasibility_status="disabled",
                 reasons=["Home Assistant integration is disabled by policy (HOME_ASSISTANT_ENABLED=false)."],
@@ -574,7 +731,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 is_feasible=False,
                 feasibility_status="disabled",
                 reasons=["Climate awareness is disabled by policy (HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=false)."],
@@ -591,7 +749,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 is_feasible=False,
                 feasibility_status="not_allowlisted",
                 reasons=[str(exc)],
@@ -605,7 +764,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 is_feasible=False,
                 feasibility_status="not_allowlisted",
                 reasons=[f"Target entity '{clean_id}' is not in HOME_ASSISTANT_CLIMATE_ALLOWLIST."],
@@ -623,7 +783,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
@@ -653,7 +814,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
@@ -679,7 +841,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
@@ -706,7 +869,8 @@ class HomeAssistantClimateService:
                     entity_id=clean_id,
                     requested_temperature=requested_temperature,
                     requested_unit=requested_unit,
-                    grid_origin=grid_origin,
+                    grid_origin=effective_origin,
+                    grid_origin_unit=effective_origin_unit,
                     current_temperature=obs.current_temperature,
                     target_temperature=obs.target_temperature,
                     min_temp=obs.min_temp,
@@ -729,7 +893,8 @@ class HomeAssistantClimateService:
                     entity_id=clean_id,
                     requested_temperature=requested_temperature,
                     requested_unit=requested_unit,
-                    grid_origin=grid_origin,
+                    grid_origin=effective_origin,
+                    grid_origin_unit=effective_origin_unit,
                     current_temperature=obs.current_temperature,
                     target_temperature=obs.target_temperature,
                     min_temp=obs.min_temp,
@@ -760,7 +925,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -784,7 +950,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -810,7 +977,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -830,13 +998,150 @@ class HomeAssistantClimateService:
                 data_classification=obs.data_classification,
             )
 
-        # 5. Target temperature step check
+        # 5. Target temperature step & grid origin check
         raw_step = obs.attributes.get("target_temp_step")
+        if raw_step is None and obs.target_temp_step is None:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=min_temp,
+                max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status="step_unknown",
+                reasons=["Entity does not report target_temp_step metadata; step compatibility cannot be reliably established."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        if (
+            obs.target_temp_step is None
+            or obs.target_temp_step <= 0
+            or not math.isfinite(obs.target_temp_step)
+            or isinstance(raw_step, bool)
+        ):
+            display_step = raw_step if raw_step is not None else obs.target_temp_step
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=min_temp,
+                max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status="step_unknown",
+                reasons=[f"Entity reported invalid target_temp_step ({display_step!r}); step metadata must be a positive, finite number."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        # Step is valid. Check grid origin configuration.
+        if grid_config_error:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=min_temp,
+                max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status="step_alignment_unknown",
+                reasons=[f"Server-side climate grid origin configuration error: {grid_config_error}"],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        if effective_origin is None:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                grid_origin=None,
+                grid_origin_unit=None,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=min_temp,
+                max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status="step_alignment_unknown",
+                reasons=[
+                    f"Entity reports target_temp_step={obs.target_temp_step}, but no trusted server-side step-grid origin is configured for '{clean_id}' "
+                    "(HOME_ASSISTANT_CLIMATE_GRID_ORIGINS). Feasibility planner cannot verify step alignment without operator-verified grid origin configuration."
+                ],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        if effective_origin_unit != obs.temperature_unit:
+            return ClimateSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                requested_temperature=requested_temperature,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                current_temperature=obs.current_temperature,
+                target_temperature=obs.target_temperature,
+                min_temp=min_temp,
+                max_temp=max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=False,
+                feasibility_status="step_alignment_unknown",
+                reasons=[
+                    f"Configured grid origin unit '{effective_origin_unit}' does not match entity's reported temperature unit '{obs.temperature_unit}'."
+                ],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
         is_step_ok, step_status, step_reason = validate_temperature_step(
             requested_temperature=requested_temperature,
             step=obs.target_temp_step,
             raw_step=raw_step,
-            grid_origin=grid_origin,
+            grid_origin=effective_origin,
         )
         if not is_step_ok:
             return ClimateSetpointPlan(
@@ -844,7 +1149,8 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
-                grid_origin=grid_origin,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -863,13 +1169,14 @@ class HomeAssistantClimateService:
             )
 
         # All checks passed: plan is ready (feasibility assessment only, no mutation)
-        origin_desc = f" from established grid origin {grid_origin}" if grid_origin is not None else ""
+        origin_desc = f" from trusted server-configured grid origin {effective_origin}{effective_origin_unit}"
         return ClimateSetpointPlan(
             plan_id=plan_id,
             entity_id=clean_id,
             requested_temperature=requested_temperature,
             requested_unit=requested_unit,
-            grid_origin=grid_origin,
+            grid_origin=effective_origin,
+            grid_origin_unit=effective_origin_unit,
             current_temperature=obs.current_temperature,
             target_temperature=obs.target_temperature,
             min_temp=min_temp,

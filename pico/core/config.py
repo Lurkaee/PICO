@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     # Home Assistant Stage D Read-Only Climate Awareness Settings (Milestone P7.4.2.1)
     HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED: bool = False
     HOME_ASSISTANT_CLIMATE_ALLOWLIST: str = "[]"
+    HOME_ASSISTANT_CLIMATE_GRID_ORIGINS: str = "{}"
 
     # OS & Desktop Application Automation Settings (Milestone P8.1)
     OS_AUTOMATION_ENABLED: bool = True

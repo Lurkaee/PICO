@@ -1,7 +1,7 @@
 import secrets
-from typing import Literal
+from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
 from pico.capabilities.registry import registry
@@ -356,6 +356,8 @@ def get_switch_actuation_status(
 # --- Milestone P7.4.2.1 Stage D Read-Only Climate Awareness & Planning Operations ---
 
 class ClimatePlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     target_entity_id: str = Field(
         description="Exact climate entity ID. Must belong to the Stage D allowlist.",
     )
@@ -366,10 +368,16 @@ class ClimatePlanRequest(BaseModel):
         default=None,
         description="Optional explicit temperature unit (e.g. '°C', '°F').",
     )
-    grid_origin: float | None = Field(
-        default=None,
-        description="Optional verified step-grid origin for evaluating setpoint alignment (e.g. 16.0).",
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_untrusted_grid_origin(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "grid_origin" in data:
+            raise ValueError(
+                "Client-supplied 'grid_origin' is forbidden. Grid origins are server-side "
+                "operator configurations and cannot be supplied or overridden in client requests."
+            )
+        return data
 
 
 @router.post(
@@ -390,7 +398,6 @@ async def plan_climate_setpoint(
         target_entity_id=payload.target_entity_id,
         requested_temperature=payload.target_temperature,
         requested_unit=payload.target_unit,
-        grid_origin=payload.grid_origin,
     )
 
 
