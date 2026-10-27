@@ -127,8 +127,13 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Sanitization boundary hardening: Added `supported_features` to `APPROVED_ATTRIBUTE_KEYS`. Enforced strict rejection of booleans where numeric values are expected across all numeric attributes (`supported_features`, `target_temp_step`, `min_temp`, `max_temp`, `temperature`, `current_temperature`).
   - API & client transparency: Exposes `target_temp_step: float | None` and `supported_features: int | None` on `ClimateSetpointPlan` and `supported_features` on `ClimateObservation`.
   - Explicit feasibility semantics: A `ready` plan certifies metadata feasibility (valid unit, numerical bounds, step alignment, single setpoint feature flag, active regulating mode); does not claim physical device connectivity or guarantee subsequent actuation success. Strict zero-mutation boundary maintained.
+- [x] **P7.4.2.1.2 Stage D Climate Mode-Semantics & Step-Grid Correctness**:
+  - Corrected single-setpoint operating mode semantics: Evaluated against authoritative Home Assistant core contract. `auto` mode is incompatible (`mode_incompatible`) because Home Assistant explicitly documents temperature cannot be set in this mode. `heat_cool` mode is incompatible (`mode_incompatible`) because it requires a dual-setpoint target range (`target_temp_low`/`target_temp_high`). `dry` mode fails closed (`mode_incompatible`) as universal single-setpoint compatibility is unverified. `off` and `fan_only` remain incompatible. `heat` and `cool` are the supported single-setpoint modes.
+  - Feature bitmask precedence: A `supported_features` bitmask advertising `TARGET_TEMPERATURE` cannot override an incompatible operating mode.
+  - Corrected step-grid alignment semantics: Upstream contract documents `target_temp_step` as the increment without defining a universal grid origin (neither 0.0 nor `min_temp` can be assumed). When `grid_origin` is not established, the planner fails closed as `step_alignment_unknown` (`is_feasible=false`). When a verified `grid_origin` is provided, offset alignment is evaluated with decimal-safe modulo (`abs(dec_req - dec_origin) % dec_step == 0`).
+  - Preserved invariants: Zero rounding/mutation of requested temperature, strict rejection of booleans/malformed step values, strictly read-only awareness without climate mutation endpoints.
 - [ ] **P7.4.2 Stage D Climate & Environmental Controls (Full Physical Actuation)**: Planned. Physical climate actuation remains strictly unsupported.
-- **Status**: **STAGE A, STAGE B, STAGE C, & STAGE D PREPARATORY (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1, P7.4.2.1.1) COMPLETED & VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
+- **Status**: **STAGE A, STAGE B, STAGE C, & STAGE D PREPARATORY (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1, P7.4.2.1.1, P7.4.2.1.2) COMPLETED & VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
 
 
 ### Milestone P8: Computer Control & Engineering Workspace

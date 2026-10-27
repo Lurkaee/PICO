@@ -115,6 +115,7 @@ class ReadinessErrorCategory(str, Enum):
     METADATA_INVALID = "METADATA_INVALID"
     TARGET_STEP_MISMATCH = "TARGET_STEP_MISMATCH"
     STEP_UNKNOWN = "STEP_UNKNOWN"
+    STEP_ALIGNMENT_UNKNOWN = "STEP_ALIGNMENT_UNKNOWN"
     MODE_INCOMPATIBLE = "MODE_INCOMPATIBLE"
     UNSUPPORTED_CAPABILITY = "UNSUPPORTED_CAPABILITY"
     CAPABILITY_UNKNOWN = "CAPABILITY_UNKNOWN"
@@ -215,6 +216,7 @@ class ClimateSetpointPlan(BaseModel):
     entity_id: str
     requested_temperature: float
     requested_unit: str | None = None
+    grid_origin: float | None = None
     current_temperature: float | None = None
     target_temperature: float | None = None
     min_temp: float | None = None

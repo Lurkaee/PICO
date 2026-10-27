@@ -317,18 +317,21 @@ def test_sanitizer_bounds_climate_attributes() -> None:
 
 @pytest.mark.anyio
 async def test_valid_climate_response_produces_feasible_plan() -> None:
-    """Valid target within reported bounds produces a feasible plan with status 'ready'."""
+    """Valid target within reported bounds produces a feasible plan with status 'ready' when grid origin is established."""
     client, call_log = make_mock_climate_client()
     service = HomeAssistantClimateService(readonly_client=client)
 
+    # 1. With verified grid origin established
     plan = await service.assess_setpoint_feasibility(
         target_entity_id=TEST_CLIMATE_A,
         requested_temperature=22.5,
         requested_unit="°C",
+        grid_origin=16.0,
     )
     assert plan.is_feasible is True
     assert plan.feasibility_status == "ready"
     assert plan.requested_temperature == 22.5
+    assert plan.grid_origin == 16.0
     assert plan.current_temperature == 20.5
     assert plan.min_temp == 16.0
     assert plan.max_temp == 28.0
@@ -336,6 +339,17 @@ async def test_valid_climate_response_produces_feasible_plan() -> None:
     assert plan.is_mutation_performed is False
     assert len(call_log["mutation_calls"]) == 0
     assert len(call_log["read_calls"]) == 1
+
+    # 2. Without grid origin (standard HA contract does not document origin): returns step_alignment_unknown
+    plan_no_origin = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=22.5,
+        requested_unit="°C",
+    )
+    assert plan_no_origin.is_feasible is False
+    assert plan_no_origin.feasibility_status == "step_alignment_unknown"
+    assert "upstream Home Assistant contract does not establish a step-grid origin" in plan_no_origin.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
 
 
 @pytest.mark.anyio
@@ -616,12 +630,33 @@ async def test_climate_readiness_capability_execution() -> None:
 
 
 def test_api_climate_plan_route() -> None:
-    """Route test: POST /api/homeassistant/climate/plan."""
+    """Route test: POST /api/homeassistant/climate/plan with and without grid_origin."""
     transport, call_log = make_mock_climate_transport()
 
-    with patch("pico.homeassistant.client.httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
+    real_client_cls = httpx.AsyncClient
+    with patch("pico.homeassistant.client.httpx.AsyncClient", side_effect=lambda **kwargs: real_client_cls(transport=transport)):
         with TestClient(app) as test_client:
+            # 1. With established grid_origin
             resp = test_client.post(
+                "/api/homeassistant/climate/plan",
+                json={
+                    "target_entity_id": TEST_CLIMATE_A,
+                    "target_temperature": 21.5,
+                    "target_unit": "°C",
+                    "grid_origin": 16.0,
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["is_feasible"] is True
+            assert data["feasibility_status"] == "ready"
+            assert data["grid_origin"] == 16.0
+            assert data["requested_temperature"] == 21.5
+            assert data["is_mutation_performed"] is False
+            assert len(call_log["mutation_calls"]) == 0
+
+            # 2. Without grid_origin (upstream contract leaves origin undefined)
+            resp_no_origin = test_client.post(
                 "/api/homeassistant/climate/plan",
                 json={
                     "target_entity_id": TEST_CLIMATE_A,
@@ -629,12 +664,10 @@ def test_api_climate_plan_route() -> None:
                     "target_unit": "°C",
                 },
             )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["is_feasible"] is True
-            assert data["feasibility_status"] == "ready"
-            assert data["requested_temperature"] == 21.5
-            assert data["is_mutation_performed"] is False
+            assert resp_no_origin.status_code == 200
+            data_no_origin = resp_no_origin.json()
+            assert data_no_origin["is_feasible"] is False
+            assert data_no_origin["feasibility_status"] == "step_alignment_unknown"
             assert len(call_log["mutation_calls"]) == 0
 
 
@@ -698,14 +731,16 @@ def test_cli_runner_climate_offline_and_live() -> None:
 
 @pytest.mark.anyio
 async def test_setpoint_aligns_with_reported_half_degree_step() -> None:
-    """Requested setpoint aligned with reported 0.5 step returns ready."""
+    """Requested setpoint aligned with reported 0.5 step returns ready when grid origin is established."""
     client, call_log = make_mock_climate_client()
     service = HomeAssistantClimateService(readonly_client=client)
 
+    # With established grid origin (16.0): aligns
     plan = await service.assess_setpoint_feasibility(
         target_entity_id=TEST_CLIMATE_A,
         requested_temperature=21.5,
         requested_unit="°C",
+        grid_origin=16.0,
     )
     assert plan.is_feasible is True
     assert plan.feasibility_status == "ready"
@@ -714,10 +749,20 @@ async def test_setpoint_aligns_with_reported_half_degree_step() -> None:
     assert "aligns with reported step" in plan.reasons[0]
     assert len(call_log["mutation_calls"]) == 0
 
+    # Without grid origin: fail closed as step_alignment_unknown
+    plan_no_origin = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.5,
+        requested_unit="°C",
+    )
+    assert plan_no_origin.is_feasible is False
+    assert plan_no_origin.feasibility_status == "step_alignment_unknown"
+    assert len(call_log["mutation_calls"]) == 0
+
 
 @pytest.mark.anyio
 async def test_setpoint_aligns_with_quarter_degree_step() -> None:
-    """Requested setpoint aligned with reported 0.25 step returns ready."""
+    """Requested setpoint aligned with reported 0.25 step returns ready when grid origin is established."""
     payloads = {
         TEST_CLIMATE_A: {
             "entity_id": TEST_CLIMATE_A,
@@ -736,20 +781,32 @@ async def test_setpoint_aligns_with_quarter_degree_step() -> None:
     client, call_log = make_mock_climate_client(entity_payloads=payloads)
     service = HomeAssistantClimateService(readonly_client=client)
 
+    # With established grid origin (16.0): aligns
     plan = await service.assess_setpoint_feasibility(
         target_entity_id=TEST_CLIMATE_A,
         requested_temperature=21.25,
         requested_unit="°C",
+        grid_origin=16.0,
     )
     assert plan.is_feasible is True
     assert plan.feasibility_status == "ready"
     assert plan.target_temp_step == 0.25
     assert len(call_log["mutation_calls"]) == 0
 
+    # Without grid origin: returns step_alignment_unknown
+    plan_no_origin = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.25,
+        requested_unit="°C",
+    )
+    assert plan_no_origin.is_feasible is False
+    assert plan_no_origin.feasibility_status == "step_alignment_unknown"
+    assert len(call_log["mutation_calls"]) == 0
+
 
 @pytest.mark.anyio
 async def test_setpoint_conflicts_with_half_degree_step() -> None:
-    """Requested setpoint not aligned with 0.5 step returns target_step_mismatch."""
+    """Requested setpoint not aligned with 0.5 step returns target_step_mismatch under documented rule."""
     client, call_log = make_mock_climate_client()
     service = HomeAssistantClimateService(readonly_client=client)
 
@@ -757,6 +814,7 @@ async def test_setpoint_conflicts_with_half_degree_step() -> None:
         target_entity_id=TEST_CLIMATE_A,
         requested_temperature=21.3,
         requested_unit="°C",
+        grid_origin=16.0,
     )
     assert plan.is_feasible is False
     assert plan.feasibility_status == "target_step_mismatch"
@@ -771,16 +829,62 @@ async def test_setpoint_conflicts_with_integer_step() -> None:
     client, call_log = make_mock_climate_client()
     service = HomeAssistantClimateService(readonly_client=client)
 
-    # TEST_CLIMATE_B reports target_temp_step = 1.0, range [60.0, 85.0] °F
+    # TEST_CLIMATE_B reports target_temp_step = 1.0, range [60.0, 85.0] °F, grid_origin = 60.0
     plan = await service.assess_setpoint_feasibility(
         target_entity_id=TEST_CLIMATE_B,
         requested_temperature=72.5,
         requested_unit="°F",
+        grid_origin=60.0,
     )
     assert plan.is_feasible is False
     assert plan.feasibility_status == "target_step_mismatch"
     assert "does not align with supported step increment 1.0" in plan.reasons[0]
     assert plan.target_temp_step == 1.0
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_step_grid_non_zero_offset_rule() -> None:
+    """Non-zero minimum/offset case demonstrating implementation does not assume a zero-origin grid."""
+    # Suppose grid origin is 16.5 and step is 1.0.
+    # 17.5 aligns: (17.5 - 16.5) = 1.0, 1.0 % 1.0 == 0.
+    # (Under a zero-origin assumption, 17.5 % 1.0 would falsely report mismatch).
+    is_ok, status, reason = validate_temperature_step(17.5, step=1.0, grid_origin=16.5)
+    assert is_ok is True
+    assert status == "ready"
+    assert reason is None
+
+    # 17.0 is a genuine mismatch: (17.0 - 16.5) = 0.5, 0.5 % 1.0 != 0.
+    is_mismatch, m_status, m_reason = validate_temperature_step(17.0, step=1.0, grid_origin=16.5)
+    assert is_mismatch is False
+    assert m_status == "target_step_mismatch"
+    assert "does not align with supported step increment 1.0 from established grid origin 16.5" in m_reason
+
+
+@pytest.mark.anyio
+async def test_step_grid_unknown_origin_returns_step_alignment_unknown() -> None:
+    """When target_temp_step is known but grid_origin is None, fail closed as step_alignment_unknown."""
+    is_ok, status, reason = validate_temperature_step(21.5, step=0.5, grid_origin=None)
+    assert is_ok is False
+    assert status == "step_alignment_unknown"
+    assert "upstream Home Assistant contract does not establish a step-grid origin" in reason
+
+
+@pytest.mark.anyio
+async def test_no_hidden_rounding_or_mutation_of_requested_value() -> None:
+    """Planner must never silently round or modify the requested temperature."""
+    client, call_log = make_mock_climate_client()
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.3,
+        requested_unit="°C",
+        grid_origin=16.0,
+    )
+    # Requested temperature must remain exactly 21.3, never rounded to 21.5 or 21.0
+    assert plan.requested_temperature == 21.3
+    assert plan.is_feasible is False
     assert len(call_log["mutation_calls"]) == 0
 
 
@@ -1037,7 +1141,8 @@ async def test_unsupported_zero_features_rejected() -> None:
 
 @pytest.mark.anyio
 async def test_supported_dual_single_and_range_capability() -> None:
-    """Entity supporting both single setpoint and range (1 | 2 = 3) passes capability check."""
+    """Entity supporting both single setpoint and range (1 | 2 = 3) passes capability check in heat mode,
+    but is rejected when current mode is heat_cool."""
     payloads = {
         TEST_CLIMATE_A: {
             "entity_id": TEST_CLIMATE_A,
@@ -1055,15 +1160,170 @@ async def test_supported_dual_single_and_range_capability() -> None:
     client, call_log = make_mock_climate_client(entity_payloads=payloads)
     service = HomeAssistantClimateService(readonly_client=client)
 
+    # In heat mode with verified grid origin, it is feasible (ready)
     plan = await service.assess_setpoint_feasibility(
         target_entity_id=TEST_CLIMATE_A,
         requested_temperature=21.0,
         requested_unit="°C",
+        grid_origin=16.0,
     )
     assert plan.is_feasible is True
     assert plan.feasibility_status == "ready"
     assert plan.supported_features == 3
     assert len(call_log["mutation_calls"]) == 0
+
+    # In heat mode without grid origin, fails closed as step_alignment_unknown
+    plan_no_origin = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+    )
+    assert plan_no_origin.is_feasible is False
+    assert plan_no_origin.feasibility_status == "step_alignment_unknown"
+
+    # In heat_cool mode, even with supported_features=3, single setpoint is mode_incompatible
+    payloads[TEST_CLIMATE_A]["state"] = "heat_cool"
+    client_hc, call_log_hc = make_mock_climate_client(entity_payloads=payloads)
+    service_hc = HomeAssistantClimateService(readonly_client=client_hc)
+    plan_hc = await service_hc.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+        grid_origin=16.0,
+    )
+    assert plan_hc.is_feasible is False
+    assert plan_hc.feasibility_status == "mode_incompatible"
+    assert "heat_cool" in plan_hc.reasons[0].lower()
+    assert len(call_log_hc["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_auto_rejected_as_mode_incompatible() -> None:
+    """Entity in 'auto' mode returns mode_incompatible because temperature cannot be set in auto mode."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "auto",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+        grid_origin=16.0,
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert "auto" in plan.reasons[0].lower()
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_heat_cool_rejected_as_mode_incompatible() -> None:
+    """Entity in 'heat_cool' mode returns mode_incompatible because dual-setpoint range is required."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "heat_cool",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 3,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+        grid_origin=16.0,
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert "heat_cool" in plan.reasons[0].lower()
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_operating_mode_dry_fails_closed_as_mode_incompatible() -> None:
+    """Entity in 'dry' mode returns mode_incompatible failing closed under unverified setpoint compatibility."""
+    payloads = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "dry",
+            "attributes": {
+                "current_temperature": 20.5,
+                "min_temp": 16.0,
+                "max_temp": 28.0,
+                "target_temp_step": 0.5,
+                "supported_features": 1,
+                "unit_of_measurement": "°C",
+            },
+        }
+    }
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(readonly_client=client)
+
+    plan = await service.assess_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        requested_temperature=21.0,
+        requested_unit="°C",
+        grid_origin=16.0,
+    )
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert "dry" in plan.reasons[0].lower()
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_feature_bitmask_cannot_override_incompatible_mode() -> None:
+    """supported_features declaring single-temperature (1 or 3) cannot override incompatible modes."""
+    incompatible_modes = ("off", "fan_only", "auto", "heat_cool", "dry")
+    for mode in incompatible_modes:
+        payloads = {
+            TEST_CLIMATE_A: {
+                "entity_id": TEST_CLIMATE_A,
+                "state": mode,
+                "attributes": {
+                    "current_temperature": 20.5,
+                    "min_temp": 16.0,
+                    "max_temp": 28.0,
+                    "target_temp_step": 0.5,
+                    "supported_features": 3,  # Has TARGET_TEMPERATURE bit
+                    "unit_of_measurement": "°C",
+                },
+            }
+        }
+        client, call_log = make_mock_climate_client(entity_payloads=payloads)
+        service = HomeAssistantClimateService(readonly_client=client)
+
+        plan = await service.assess_setpoint_feasibility(
+            target_entity_id=TEST_CLIMATE_A,
+            requested_temperature=21.0,
+            requested_unit="°C",
+            grid_origin=16.0,
+        )
+        assert plan.is_feasible is False
+        assert plan.feasibility_status == "mode_incompatible"
+        assert len(call_log["mutation_calls"]) == 0
 
 
 @pytest.mark.anyio
@@ -1161,8 +1421,8 @@ async def test_operating_mode_custom_unsupported_rejected_as_mode_incompatible()
 
 @pytest.mark.anyio
 async def test_operating_mode_compatible_modes() -> None:
-    """Standard temperature-regulating modes (cool, heat, heat_cool, auto, dry) pass mode check."""
-    for mode in ("cool", "heat", "heat_cool", "auto", "dry"):
+    """Single-setpoint temperature-regulating modes (cool, heat) pass mode check when grid_origin is provided."""
+    for mode in ("cool", "heat"):
         payloads = {
             TEST_CLIMATE_A: {
                 "entity_id": TEST_CLIMATE_A,
@@ -1184,36 +1444,61 @@ async def test_operating_mode_compatible_modes() -> None:
             target_entity_id=TEST_CLIMATE_A,
             requested_temperature=21.0,
             requested_unit="°C",
+            grid_origin=16.0,
         )
         assert plan.is_feasible is True
         assert plan.feasibility_status == "ready"
         assert len(call_log["mutation_calls"]) == 0
 
+        # Without grid_origin, fails closed as step_alignment_unknown
+        plan_no_origin = await service.assess_setpoint_feasibility(
+            target_entity_id=TEST_CLIMATE_A,
+            requested_temperature=21.0,
+            requested_unit="°C",
+        )
+        assert plan_no_origin.is_feasible is False
+        assert plan_no_origin.feasibility_status == "step_alignment_unknown"
+
 
 @pytest.mark.anyio
 async def test_boundary_temperatures_at_min_and_max() -> None:
-    """Exact min_temp and max_temp are feasible when aligned with step."""
+    """Exact min_temp and max_temp are feasible when aligned with step and origin is established."""
     client, call_log = make_mock_climate_client()
     service = HomeAssistantClimateService(readonly_client=client)
 
     # TEST_CLIMATE_A has min=16.0, max=28.0, step=0.5
-    # 1. At min_temp
-    plan_min = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 16.0, "°C")
+    # 1. At min_temp with grid_origin=16.0 -> ready
+    plan_min = await service.assess_setpoint_feasibility(
+        TEST_CLIMATE_A, 16.0, "°C", grid_origin=16.0
+    )
     assert plan_min.is_feasible is True
     assert plan_min.feasibility_status == "ready"
 
-    # 2. At max_temp
-    plan_max = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 28.0, "°C")
+    # At min_temp without grid_origin -> step_alignment_unknown
+    plan_min_no_origin = await service.assess_setpoint_feasibility(
+        TEST_CLIMATE_A, 16.0, "°C"
+    )
+    assert plan_min_no_origin.is_feasible is False
+    assert plan_min_no_origin.feasibility_status == "step_alignment_unknown"
+
+    # 2. At max_temp with grid_origin=16.0 -> ready
+    plan_max = await service.assess_setpoint_feasibility(
+        TEST_CLIMATE_A, 28.0, "°C", grid_origin=16.0
+    )
     assert plan_max.is_feasible is True
     assert plan_max.feasibility_status == "ready"
 
     # 3. Just below min_temp
-    plan_below = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 15.5, "°C")
+    plan_below = await service.assess_setpoint_feasibility(
+        TEST_CLIMATE_A, 15.5, "°C", grid_origin=16.0
+    )
     assert plan_below.is_feasible is False
     assert plan_below.feasibility_status == "target_out_of_range"
 
     # 4. Just above max_temp
-    plan_above = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 28.5, "°C")
+    plan_above = await service.assess_setpoint_feasibility(
+        TEST_CLIMATE_A, 28.5, "°C", grid_origin=16.0
+    )
     assert plan_above.is_feasible is False
     assert plan_above.feasibility_status == "target_out_of_range"
 

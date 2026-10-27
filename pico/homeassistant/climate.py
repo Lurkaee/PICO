@@ -25,9 +25,20 @@ ENTITY_ID_REGEX = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
 HA_CLIMATE_FEATURE_TARGET_TEMPERATURE = 1
 HA_CLIMATE_FEATURE_TARGET_TEMPERATURE_RANGE = 2
 
-# Operating modes that explicitly prohibit or do not support target temperature regulation
-TEMPERATURE_INCOMPATIBLE_MODES = {"off", "fan_only"}
-TEMPERATURE_COMPATIBLE_MODES = {"heat", "cool", "heat_cool", "auto", "dry"}
+# Operating modes compatible with a single target temperature setpoint request.
+# Home Assistant ClimateEntity contract:
+# - 'heat': device heats to a single target temperature.
+# - 'cool': device cools to a single target temperature.
+SINGLE_SETPOINT_COMPATIBLE_MODES = {"heat", "cool"}
+
+# Documented mode incompatibility reasons for single-setpoint planning
+MODE_INCOMPATIBILITY_REASONS = {
+    "off": "Entity is reported in 'off' mode and cannot accept temperature setpoints while powered off.",
+    "fan_only": "Entity is reported in 'fan_only' mode which only runs the fan without temperature regulation.",
+    "auto": "Entity is reported in 'auto' mode; Home Assistant documents that a target temperature cannot be set in auto mode.",
+    "heat_cool": "Entity is reported in 'heat_cool' mode which requires a dual-setpoint temperature range (target_temp_low/target_temp_high); single-setpoint requests are incompatible with heat_cool mode.",
+    "dry": "Entity is reported in 'dry' mode; the Home Assistant climate contract does not reliably establish temperature setpoint compatibility for dry mode.",
+}
 
 SUPPORTED_UNITS = {
     "°c": "°C",
@@ -146,15 +157,19 @@ def validate_temperature_step(
     requested_temperature: float,
     step: float | None,
     raw_step: Any = None,
+    grid_origin: float | None = None,
 ) -> tuple[bool, str, str | None]:
-    """Validate requested temperature against reported target_temp_step using decimal-safe arithmetic.
+    """Validate requested temperature against reported target_temp_step.
 
     Invariants:
-    1. Returns (False, "step_unknown", reason) if step is missing, zero, negative, or invalid.
+    1. Returns (False, "step_unknown", reason) if step is missing, zero, negative, boolean, or invalid.
     2. Uses Decimal for exact decimal increment testing; rejects floating-point imprecision.
-    3. Does not invent an alignment origin or offset; checks exact alignment on the supported increment grid.
-    4. Returns (False, "target_step_mismatch", reason) if requested setpoint conflicts with the step.
-    5. Returns (True, "ready", None) when setpoint strictly aligns with supported step.
+    3. If grid_origin is not established (None), returns (False, "step_alignment_unknown", reason)
+       because the upstream Home Assistant ClimateEntity contract specifies the increment granularity
+       without establishing a step-grid origin (neither zero nor min_temp is an authoritative grid anchor).
+    4. If grid_origin is established, checks exact alignment on the grid: (abs(requested - grid_origin) % step == 0).
+       Returns (False, "target_step_mismatch", reason) if the requested setpoint conflicts with the step.
+    5. Returns (True, "ready", None) when the setpoint strictly aligns with the verified grid.
     """
     if raw_step is None and step is None:
         return (
@@ -162,7 +177,7 @@ def validate_temperature_step(
             "step_unknown",
             "Entity does not report target_temp_step metadata; step compatibility cannot be reliably established.",
         )
-    if step is None or step <= 0 or not math.isfinite(step):
+    if step is None or step <= 0 or not math.isfinite(step) or isinstance(raw_step, bool):
         display_step = raw_step if raw_step is not None else step
         return (
             False,
@@ -180,13 +195,40 @@ def validate_temperature_step(
             f"Unable to parse requested temperature ({requested_temperature}) or step ({step}) as decimal.",
         )
 
-    remainder = dec_req % dec_step
+    if grid_origin is None:
+        return (
+            False,
+            "step_alignment_unknown",
+            f"Entity reports target_temp_step={step}, but the upstream Home Assistant contract does not establish "
+            "a step-grid origin (neither zero nor min_temp is an authoritative grid anchor); "
+            "step alignment cannot be reliably proven from reported metadata.",
+        )
+
+    if not isinstance(grid_origin, (int, float)) or isinstance(grid_origin, bool) or not math.isfinite(float(grid_origin)):
+        return (
+            False,
+            "step_alignment_unknown",
+            f"Invalid grid_origin ({grid_origin!r}); must be a finite numeric value.",
+        )
+
+    try:
+        dec_origin = Decimal(str(grid_origin))
+    except (InvalidOperation, ValueError):
+        return (
+            False,
+            "step_alignment_unknown",
+            f"Unable to parse grid_origin ({grid_origin}) as decimal.",
+        )
+
+    offset = abs(dec_req - dec_origin)
+    remainder = offset % dec_step
     tolerance = Decimal("1e-6")
     if remainder > tolerance and (dec_step - remainder) > tolerance:
         return (
             False,
             "target_step_mismatch",
-            f"Requested temperature {requested_temperature} does not align with supported step increment {step}.",
+            f"Requested temperature {requested_temperature} does not align with supported step increment {step} "
+            f"from established grid origin {grid_origin}.",
         )
 
     return (True, "ready", None)
@@ -240,7 +282,15 @@ def validate_temperature_capability(
 def validate_mode_compatibility(
     hvac_mode: str | None,
 ) -> tuple[bool, str, str | None]:
-    """Check if reported HVAC mode permits setting a target temperature.
+    """Check if reported HVAC mode permits setting a single target temperature.
+
+    Home Assistant ClimateEntity contract:
+    - 'off': incompatible with setting a temperature.
+    - 'fan_only': only fan runs, no temperature regulation.
+    - 'auto': HA documentation explicitly specifies temperature cannot be set in auto mode.
+    - 'heat_cool': uses dual target temperature range (low/high), incompatible with single setpoint.
+    - 'dry': primarily dehumidification; contract does not reliably establish temperature setpoint compatibility.
+    - 'heat' and 'cool': compatible with single-setpoint requests if capability is supported.
 
     Returns (is_compatible, status, reason).
     """
@@ -253,25 +303,18 @@ def validate_mode_compatibility(
 
     mode_lower = hvac_mode.strip().lower()
 
-    if mode_lower == "off":
+    if mode_lower in MODE_INCOMPATIBILITY_REASONS:
         return (
             False,
             "mode_incompatible",
-            "Entity is reported in 'off' mode and cannot accept temperature setpoints while powered off.",
+            MODE_INCOMPATIBILITY_REASONS[mode_lower],
         )
 
-    if mode_lower == "fan_only":
+    if mode_lower not in SINGLE_SETPOINT_COMPATIBLE_MODES:
         return (
             False,
             "mode_incompatible",
-            "Entity is reported in 'fan_only' mode which does not regulate temperature.",
-        )
-
-    if mode_lower not in TEMPERATURE_COMPATIBLE_MODES:
-        return (
-            False,
-            "mode_incompatible",
-            f"Reported operating mode '{hvac_mode}' is not compatible with setting a target temperature.",
+            f"Reported operating mode '{hvac_mode}' is not compatible with setting a single target temperature setpoint.",
         )
 
     return (True, "ready", None)
@@ -477,6 +520,7 @@ class HomeAssistantClimateService:
         target_entity_id: str,
         requested_temperature: float,
         requested_unit: str | None = None,
+        grid_origin: float | None = None,
     ) -> ClimateSetpointPlan:
         """Assess the feasibility of a requested temperature setpoint without executing mutations.
 
@@ -487,7 +531,7 @@ class HomeAssistantClimateService:
         plan_id = f"plan_climate_{uuid.uuid4().hex[:12]}"
 
         # Canonical SHA-256 digest
-        digest_input = f"{clean_id}:{requested_temperature}:{requested_unit or ''}"
+        digest_input = f"{clean_id}:{requested_temperature}:{requested_unit or ''}:{grid_origin}"
         input_digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
 
         # Reject non-finite or invalid temperature input
@@ -501,6 +545,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=float("nan") if not isinstance(requested_temperature, (int, float)) else requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 is_feasible=False,
                 feasibility_status="state_unknown",
                 reasons=["Requested temperature must be a finite numeric value."],
@@ -515,6 +560,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 is_feasible=False,
                 feasibility_status="disabled",
                 reasons=["Home Assistant integration is disabled by policy (HOME_ASSISTANT_ENABLED=false)."],
@@ -528,6 +574,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 is_feasible=False,
                 feasibility_status="disabled",
                 reasons=["Climate awareness is disabled by policy (HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=false)."],
@@ -544,6 +591,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 is_feasible=False,
                 feasibility_status="not_allowlisted",
                 reasons=[str(exc)],
@@ -557,6 +605,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 is_feasible=False,
                 feasibility_status="not_allowlisted",
                 reasons=[f"Target entity '{clean_id}' is not in HOME_ASSISTANT_CLIMATE_ALLOWLIST."],
@@ -574,6 +623,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
@@ -603,6 +653,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
@@ -628,6 +679,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=obs.min_temp,
@@ -654,6 +706,7 @@ class HomeAssistantClimateService:
                     entity_id=clean_id,
                     requested_temperature=requested_temperature,
                     requested_unit=requested_unit,
+                    grid_origin=grid_origin,
                     current_temperature=obs.current_temperature,
                     target_temperature=obs.target_temperature,
                     min_temp=obs.min_temp,
@@ -676,6 +729,7 @@ class HomeAssistantClimateService:
                     entity_id=clean_id,
                     requested_temperature=requested_temperature,
                     requested_unit=requested_unit,
+                    grid_origin=grid_origin,
                     current_temperature=obs.current_temperature,
                     target_temperature=obs.target_temperature,
                     min_temp=obs.min_temp,
@@ -706,6 +760,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -729,6 +784,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -754,6 +810,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -779,6 +836,7 @@ class HomeAssistantClimateService:
             requested_temperature=requested_temperature,
             step=obs.target_temp_step,
             raw_step=raw_step,
+            grid_origin=grid_origin,
         )
         if not is_step_ok:
             return ClimateSetpointPlan(
@@ -786,6 +844,7 @@ class HomeAssistantClimateService:
                 entity_id=clean_id,
                 requested_temperature=requested_temperature,
                 requested_unit=requested_unit,
+                grid_origin=grid_origin,
                 current_temperature=obs.current_temperature,
                 target_temperature=obs.target_temperature,
                 min_temp=min_temp,
@@ -804,11 +863,13 @@ class HomeAssistantClimateService:
             )
 
         # All checks passed: plan is ready (feasibility assessment only, no mutation)
+        origin_desc = f" from established grid origin {grid_origin}" if grid_origin is not None else ""
         return ClimateSetpointPlan(
             plan_id=plan_id,
             entity_id=clean_id,
             requested_temperature=requested_temperature,
             requested_unit=requested_unit,
+            grid_origin=grid_origin,
             current_temperature=obs.current_temperature,
             target_temperature=obs.target_temperature,
             min_temp=min_temp,
@@ -821,7 +882,7 @@ class HomeAssistantClimateService:
             is_feasible=True,
             feasibility_status="ready",
             reasons=[
-                f"Requested temperature {requested_temperature}{unit_str} is feasible: aligns with reported step ({obs.target_temp_step}{unit_str}), "
+                f"Requested temperature {requested_temperature}{unit_str} is feasible: aligns with reported step ({obs.target_temp_step}{unit_str}){origin_desc}, "
                 f"falls within operating bounds [{min_temp}, {max_temp}]{unit_str}, entity advertises single-setpoint capability (features={obs.supported_features}), "
                 f"and active mode '{obs.hvac_mode}' supports temperature regulation. "
                 "Guarantees metadata feasibility only; does not claim physical device connectivity or guarantee subsequent actuation success."

@@ -366,6 +366,10 @@ class ClimatePlanRequest(BaseModel):
         default=None,
         description="Optional explicit temperature unit (e.g. '°C', '°F').",
     )
+    grid_origin: float | None = Field(
+        default=None,
+        description="Optional verified step-grid origin for evaluating setpoint alignment (e.g. 16.0).",
+    )
 
 
 @router.post(
@@ -386,6 +390,7 @@ async def plan_climate_setpoint(
         target_entity_id=payload.target_entity_id,
         requested_temperature=payload.target_temperature,
         requested_unit=payload.target_unit,
+        grid_origin=payload.grid_origin,
     )
 
 

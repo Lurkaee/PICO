@@ -193,3 +193,17 @@ Before PICO is authorized to execute real external actions (file writing outside
     - Sanitizer boolean rejection: Bounded attribute sanitization (`sanitize_entity_attributes`) explicitly rejects boolean inputs for all numeric and feature attributes (`supported_features`, `target_temp_step`, `min_temp`, `max_temp`, `temperature`, `current_temperature`), preventing type confusion or spoofing.
     - Client-inspectable feasibility contracts: `ClimateSetpointPlan` exposes `target_temp_step` and `supported_features` alongside detailed rationale strings explaining that `ready` certifies metadata feasibility only, with zero physical device connectivity claim or actuation guarantee.
     - Continued zero-mutation boundary: Every climate plan, observation, and readiness probe produces strictly zero `POST`/`PUT`/`PATCH`/`DELETE` calls or physical state mutations. Physical climate actuation remains planned and strictly disabled.
+23. **Climate Mode-Semantics & Step-Grid Correctness Gate (Milestone P7.4.2.1.2)**:
+    - Authoritative single-setpoint operating mode compatibility: The single-setpoint planner models requests to set a single target temperature, without changing mode or setting a high/low range.
+      - `auto`: Rejected as `mode_incompatible` because Home Assistant core documentation explicitly specifies that temperature cannot be set in auto mode.
+      - `heat_cool`: Rejected as `mode_incompatible` because Home Assistant requires a dual-setpoint range (`target_temp_low`/`target_temp_high`) rather than a single target temperature in this mode.
+      - `dry`: Fails closed as `mode_incompatible` because the upstream contract does not reliably establish universal single-temperature compatibility across integrations for dehumidification.
+      - `off` and `fan_only`: Incompatible because the entity is powered off or running fan-only without temperature regulation.
+      - `heat` and `cool`: Compatible single-setpoint operating modes when `ClimateEntityFeature.TARGET_TEMPERATURE` is supported.
+    - Feature bitmask precedence over mode: A `supported_features` bitmask advertising single-temperature support (`TARGET_TEMPERATURE`) does not override an incompatible operating mode.
+    - Origin-agnostic step-grid alignment & fail-closed uncertainty: Home Assistant documents `target_temp_step` as the increment size without establishing that 0.0 or `min_temp` is the grid origin.
+      - When `grid_origin` is omitted or unverified, the planner fails closed with `step_alignment_unknown` (`is_feasible=False`), refusing to fabricate a pass or fail outcome on an unproven grid anchor.
+      - When an explicit, verified `grid_origin` is supplied, alignment evaluates offset modulo step size via decimal-safe arithmetic (`abs(dec_req - dec_origin) % dec_step == 0`).
+      - Preserves strict rejection of booleans, malformed values, zero, negative numbers, NaN, and infinity for step size.
+      - Zero hidden rounding: The requested temperature is evaluated exactly as submitted and is never silently altered.
+    - Persistent read-only boundary: Maintains strictly read-only climate inspection with zero mutation endpoints, disabled by default (`HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=False`), empty allowlist by default, and local-only classification enforcement.

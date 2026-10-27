@@ -628,20 +628,35 @@ The desktop client implements a structured error model mapping transport, timeou
 
 ---
 
-### 2.9.2 Stage D Read-Only Climate Awareness & Safe Setpoint Feasibility (Milestone P7.4.2.1)
+### 2.9.2 Stage D Read-Only Climate Awareness & Safe Setpoint Feasibility (Milestones P7.4.2.1, P7.4.2.1.1, P7.4.2.1.2)
 
 **Operational Invariants & Safety Constraints**:
 - **Strictly Read-Only Awareness & Planning**: Under no circumstances does Milestone P7.4.2.1 change thermostat setpoints, adjust HVAC modes, toggle fan modes, activate presets, or dispatch mutations. `is_mutation_performed=false` is guaranteed. Physical actuation remains strictly disabled.
 - **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_ENABLED=true` and `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true` (disabled by default). Does NOT enable physical actuation.
 - **Exact String Allowlist**: `HOME_ASSISTANT_CLIMATE_ALLOWLIST` must be a JSON array of exact `climate.*` entity IDs. Wildcards (`*`), prefixes, regex, empty allowlist, whitespace variations, and non-climate domains fail closed with `ValidationError`.
 - **Bounded Sanitized Attributes**: State payloads pass through `sanitize_entity_attributes` and expose only trustworthy bounded fields (`current_temperature`, `temperature`, `min_temp`, `max_temp`, `target_temp_step`, `supported_features`, `temperature_unit`, `hvac_mode`, `hvac_modes`). Unvetted attributes, tokens, and GPS coordinates are dropped. Booleans are strictly rejected for all numeric attributes.
-- **Fail-Closed Feasibility Planning & Status Taxonomy (Milestone P7.4.2.1.1)**:
+- **Single-Setpoint Operating Mode Semantics (Milestone P7.4.2.1.2)**:
+  Single-temperature feasibility planning assesses feasibility for setting a single target temperature. It does not switch modes or create dual-setpoint ranges:
+  - `heat` and `cool`: Fully compatible operating modes when the entity supports single setpoints (`ClimateEntityFeature.TARGET_TEMPERATURE`).
+  - `auto`: Incompatible (`mode_incompatible`). Home Assistant core documentation explicitly specifies: *"The temperature cannot be set in this mode."*
+  - `heat_cool`: Incompatible (`mode_incompatible`). This mode operates via a dual-setpoint range (`target_temp_low` and `target_temp_high`); single setpoint planning must not claim feasibility.
+  - `dry`: Fails closed as `mode_incompatible`. Dehumidification mode does not establish universal single-temperature compatibility across integrations.
+  - `off` and `fan_only`: Incompatible (`mode_incompatible`). The entity is off or running fan-only without temperature regulation.
+  - Feature bitmask precedence: A `supported_features` bitmask declaring single-temperature capability cannot override an incompatible current operating mode.
+- **Step-Grid Alignment Semantics (Milestone P7.4.2.1.2)**:
+  Home Assistant documents `target_temp_step` as the step increment without establishing an authoritative grid origin (neither 0.0 nor `min_temp` can be assumed as a universal origin).
+  - When `grid_origin` is not established/provided, step alignment is indeterminate and the planner fails closed as `step_alignment_unknown` (`is_feasible=false`).
+  - When a verified `grid_origin` is provided, alignment is evaluated via decimal-safe arithmetic: `abs(requested - origin) % step == 0`.
+  - Strict rejection of booleans, malformed numbers, zero, negative, NaN, and infinity for step size.
+  - Never silently round or modify the requested temperature.
+- **Fail-Closed Feasibility Planning & Status Taxonomy (Milestones P7.4.2.1.1 & P7.4.2.1.2)**:
   Requested target temperatures are evaluated against reported device limits, step alignment, capability bitmasks, and operating mode compatibility. Structured outcomes include:
-  - `ready`: All reported constraints satisfied (unit match, numerical range, step alignment, single setpoint capability, compatible operating mode). Certifies metadata feasibility only; never claims physical device connectivity or guarantees subsequent actuation success.
+  - `ready`: All reported constraints satisfied (unit match, numerical range, step alignment under established grid origin, single setpoint capability, compatible operating mode). Certifies metadata feasibility only; never claims physical device connectivity or guarantees subsequent actuation success.
   - `target_out_of_range`: Requested setpoint is below reported `min_temp` or above reported `max_temp`.
-  - `target_step_mismatch`: Requested setpoint conflicts with reported `target_temp_step` increment (using decimal-safe arithmetic).
+  - `target_step_mismatch`: Requested setpoint conflicts with reported `target_temp_step` increment relative to an established grid origin.
+  - `step_alignment_unknown`: Step increment is reported, but the step-grid origin is unverified/unknown; fails closed to prevent unverified alignment claims.
   - `step_unknown`: Entity reports missing, zero, negative, boolean, or invalid `target_temp_step`.
-  - `mode_incompatible`: Current reported operating mode (`off`, `fan_only`, or unrecognized) does not regulate or allow setting temperature.
+  - `mode_incompatible`: Current reported operating mode (`off`, `fan_only`, `auto`, `heat_cool`, `dry`, or unrecognized) does not support single-temperature regulation.
   - `unsupported_capability`: Entity does not support single target temperature setpoints (e.g. only supports dual-setpoint range `TARGET_TEMPERATURE_RANGE` or lacks temperature features).
   - `capability_unknown`: Reliable capability metadata cannot be established from reported `supported_features`.
   - `unit_unknown`: Reported or requested temperature unit is missing, unrecognized, or mismatched.
@@ -652,8 +667,8 @@ The desktop client implements a structured error model mapping transport, timeou
 
 - **`POST /api/homeassistant/climate/plan`**
   - **Description**: Evaluates the feasibility of a requested temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
-  - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str`).
-  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
+  - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str`, optional `grid_origin: float | None = None`).
+  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `grid_origin: float | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
 
 - **`GET /api/homeassistant/climate/observe/{entity_id}`**
   - **Description**: Inspects the current reported state and operating bounds of an allowlisted climate entity. Guaranteed read-only GET.
