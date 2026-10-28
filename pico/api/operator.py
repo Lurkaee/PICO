@@ -90,7 +90,7 @@ def pair_operator(
         httponly=True,
         samesite="strict",
         secure=False,  # Local development over HTTP
-        path="/",
+        path="/api",
         max_age=3600,
     )
 
@@ -137,5 +137,5 @@ def logout_operator(
 ) -> dict[str, str]:
     if session:
         OperatorSessionService.get_instance().invalidate_session(session.session_id, db=db)
-    response.delete_cookie(key=COOKIE_NAME, path="/")
+    response.delete_cookie(key=COOKIE_NAME, path="/api")
     return {"status": "logged_out"}

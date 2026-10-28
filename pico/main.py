@@ -262,9 +262,12 @@ async def spa_fallback_middleware(request: Request, call_next):
         path = request.url.path.lstrip("/")
         if not (path.startswith("api") or path in ("health", "docs", "redoc", "openapi.json")):
             dist_root = frontend_dist.resolve()
-            if PureWindowsPath(path).drive:
+            if PureWindowsPath(path).drive or "\0" in path:
                 return response
-            target_file = (dist_root / path).resolve()
+            try:
+                target_file = (dist_root / path).resolve()
+            except (ValueError, OSError):
+                return response
             if not target_file.is_relative_to(dist_root):
                 return response
             if target_file.is_file():

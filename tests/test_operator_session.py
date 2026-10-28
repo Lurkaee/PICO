@@ -70,8 +70,13 @@ def test_operator_session_lifecycle_and_pairing():
     assert pair_data["approver"] == "local_operator"
     csrf_token = pair_data["csrf_token"]
 
-    # Verify HttpOnly cookie was set
+    # Verify HttpOnly cookie was set scoped to /api
     assert "pico_operator_session" in client.cookies
+    set_cookie_header = pair_res.headers.get("set-cookie", "")
+    assert "pico_operator_session=" in set_cookie_header
+    assert "path=/api" in set_cookie_header.lower()
+    assert "httponly" in set_cookie_header.lower()
+    assert "samesite=strict" in set_cookie_header.lower()
 
     # 4. Check authenticated session reflects trusted bound approver
     res2 = client.get("/api/operator/session")
@@ -85,13 +90,16 @@ def test_operator_session_lifecycle_and_pairing():
     assert reuse_res.status_code == 403
     assert "Invalid or expired" in reuse_res.json()["detail"]
 
-    # 6. Logout revokes session
+    # 6. Logout revokes session and expires cookie at path=/api
     logout_res = client.post(
         "/api/operator/logout",
         headers={"X-CSRF-Token": csrf_token},
     )
     assert logout_res.status_code == 200
     assert logout_res.json()["status"] == "logged_out"
+    logout_cookie_header = logout_res.headers.get("set-cookie", "")
+    assert "pico_operator_session=" in logout_cookie_header
+    assert "path=/api" in logout_cookie_header.lower()
 
     # Verify session is now inactive
     res3 = client.get("/api/operator/session")
@@ -325,6 +333,9 @@ def test_cors_rejects_unneeded_origins_methods_and_headers(origin, method, heade
     "C:/outside.txt",
     "C:outside.txt",
     "C:%5coutside.txt",
+    "%00",
+    "%00/outside.txt",
+    "assets/%00",
 ])
 def test_spa_fallback_rejects_escape_paths(tmp_path, monkeypatch, escape_path):
     import pico.main as pico_main
@@ -338,6 +349,20 @@ def test_spa_fallback_rejects_escape_paths(tmp_path, monkeypatch, escape_path):
     response = TestClient(app).get("/" + escape_path)
     assert response.status_code == 404
     assert outside.read_text(encoding="utf-8") not in response.text
+
+
+def test_spa_fallback_percent_encoded_nul_path_returns_404(tmp_path, monkeypatch):
+    """Verify that requests with percent-encoded NUL bytes return 404 and do not raise 500 or escape."""
+    import pico.main as pico_main
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("SPA shell", encoding="utf-8")
+    monkeypatch.setattr(pico_main, "frontend_dist", dist)
+    client = TestClient(app)
+    response = client.get("/%00")
+    assert response.status_code == 404
+    assert response.status_code != 500
 
 
 def test_spa_fallback_rejects_symlink_escape(tmp_path, monkeypatch):

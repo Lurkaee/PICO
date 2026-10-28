@@ -32,6 +32,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const activeConversationIdRef = useRef<string | null>(activeConversation?.id ?? null);
+  const activeStreamIdRef = useRef<number>(0);
+
+  activeConversationIdRef.current = activeConversation?.id ?? null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
@@ -55,13 +59,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   // Load message history when active conversation changes
   useEffect(() => {
+    activeConversationIdRef.current = activeConversation?.id ?? null;
     if (!activeConversation) {
       setMessages([]);
+      setStreaming(false);
+      setStreamingContent('');
+      setCurrentRouting(null);
+      setIsCancelled(false);
       return;
     }
 
     let isMounted = true;
     setLoadingHistory(true);
+    setStreaming(false);
+    setStreamingContent('');
+    setCurrentRouting(null);
+    setIsCancelled(false);
     setStreamError(null);
     setAmbiguousOutcome(false);
 
@@ -124,6 +137,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       try {
         const title = trimmed.slice(0, 30) + (trimmed.length > 30 ? '...' : '');
         const newConv = await api.createConversation(title);
+        activeConversationIdRef.current = newConv.id;
         onConversationCreated(newConv);
         convId = newConv.id;
       } catch (err) {
@@ -147,6 +161,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setMessages((prev) => [...prev, userMessage]);
 
     // Prepare streaming
+    const streamId = ++activeStreamIdRef.current;
     setStreaming(true);
     setStreamingContent('');
     setCurrentRouting(null);
@@ -168,6 +183,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         },
         {
           onMeta: (meta) => {
+            if (activeConversationIdRef.current !== convId || activeStreamIdRef.current !== streamId) {
+              return;
+            }
             if (meta.provider && meta.model) {
               const routing: RoutingMetadata = {
                 provider: meta.provider,
@@ -181,26 +199,35 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           },
           onToken: (token) => {
             accumulated += token;
-            setStreamingContent(accumulated);
+            if (activeConversationIdRef.current === convId && activeStreamIdRef.current === streamId) {
+              setStreamingContent(accumulated);
+            }
           },
           onDone: (done) => {
             completionSuccessful = true;
             if (done.routing_metadata) {
               finalRouting = done.routing_metadata;
-              setCurrentRouting(done.routing_metadata);
             }
-            const assistantMessage: Message = {
-              id: `asst_${Date.now()}`,
-              conversation_id: convId!,
-              role: 'assistant',
-              content: accumulated,
-              created_at: new Date().toISOString(),
-              routing_metadata: finalRouting,
-            };
-            setMessages((prev) => [...prev, assistantMessage]);
-            setStreamingContent('');
+            if (activeConversationIdRef.current === convId && activeStreamIdRef.current === streamId) {
+              if (done.routing_metadata) {
+                setCurrentRouting(done.routing_metadata);
+              }
+              const assistantMessage: Message = {
+                id: `asst_${Date.now()}`,
+                conversation_id: convId!,
+                role: 'assistant',
+                content: accumulated,
+                created_at: new Date().toISOString(),
+                routing_metadata: finalRouting,
+              };
+              setMessages((prev) => [...prev, assistantMessage]);
+              setStreamingContent('');
+            }
           },
           onError: (err) => {
+            if (activeConversationIdRef.current !== convId || activeStreamIdRef.current !== streamId) {
+              return;
+            }
             const isNetworkInterruption =
               err.error === 'NetworkError' ||
               err.error === 'TimeoutError' ||
@@ -220,14 +247,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         controller.signal
       );
     } catch (err) {
-      if (!controller.signal.aborted) {
-        setStreamError(err instanceof Error ? err.message : String(err));
+      if (activeConversationIdRef.current === convId && activeStreamIdRef.current === streamId) {
+        if (!controller.signal.aborted) {
+          setStreamError(err instanceof Error ? err.message : String(err));
+        }
       }
     } finally {
-      setStreaming(false);
-      abortControllerRef.current = null;
-      setStreamingContent('');
-      if (!completionSuccessful) {
+      const isCurrentStreamInstance = activeStreamIdRef.current === streamId;
+      const isCurrentConv = activeConversationIdRef.current === convId;
+
+      if (isCurrentStreamInstance) {
+        setStreaming(false);
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
+        setStreamingContent('');
+      }
+
+      if (!completionSuccessful && isCurrentConv && isCurrentStreamInstance) {
         const cancelled = controller.signal.aborted;
         if (cancelled) {
           setIsCancelled(true);

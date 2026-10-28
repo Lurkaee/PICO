@@ -288,4 +288,142 @@ describe('ChatPanel Component', () => {
     const userMsgs = screen.getAllByText('Test retry');
     expect(userMsgs).toHaveLength(1);
   });
+
+  it('guards stream completion across conversation switches and prevents stale stream cleanup pollution', async () => {
+    const convA = {
+      id: 'conv_a',
+      title: 'Session A',
+      created_at: '2026-10-22T10:00:00Z',
+      updated_at: '2026-10-22T10:00:00Z',
+    };
+    const convB = {
+      id: 'conv_b',
+      title: 'Session B',
+      created_at: '2026-10-22T10:00:00Z',
+      updated_at: '2026-10-22T10:00:00Z',
+    };
+
+    vi.mocked(api.getMessages).mockImplementation(async (convId) => {
+      if (convId === 'conv_a') {
+        return [
+          {
+            id: 'msg_a_orig',
+            conversation_id: 'conv_a',
+            role: 'user',
+            content: 'Original message in A',
+            created_at: '2026-10-22T10:00:00Z',
+          },
+        ];
+      }
+      return [];
+    });
+
+    let resolveStreamA: (() => void) | undefined;
+    let callbacksA: sseModule.SSECallbacks | undefined;
+    let signalA: AbortSignal | undefined;
+
+    let resolveStreamB: (() => void) | undefined;
+    let callbacksB: sseModule.SSECallbacks | undefined;
+
+    vi.spyOn(sseModule, 'streamChat').mockImplementation(async (payload, callbacks, signal) => {
+      if (payload.conversation_id === 'conv_a') {
+        callbacksA = callbacks;
+        signalA = signal;
+        callbacks.onMeta?.({
+          conversation_id: 'conv_a',
+          provider: 'ollama',
+          model: 'qwen3.5:2b',
+          classification: 'INTERNAL',
+        });
+        callbacks.onToken?.('Token from Stream A');
+        return new Promise<void>((resolve) => {
+          resolveStreamA = resolve;
+        });
+      }
+
+      if (payload.conversation_id === 'conv_b') {
+        callbacksB = callbacks;
+        callbacks.onMeta?.({
+          conversation_id: 'conv_b',
+          provider: 'ollama',
+          model: 'qwen3.5:4b',
+          classification: 'INTERNAL',
+        });
+        callbacks.onToken?.('Token from Stream B');
+        return new Promise<void>((resolve) => {
+          resolveStreamB = resolve;
+        });
+      }
+    });
+
+    const { rerender } = render(<ChatPanel {...props} activeConversation={convA} />);
+    await screen.findByText('Original message in A');
+
+    // 1. Start streaming in conversation A
+    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'Prompt for A' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+
+    // 2. Let stream accumulate content
+    await screen.findByText(/Token from Stream A/);
+    expect(screen.getByText('Stop Generation')).toBeInTheDocument();
+
+    // 3. Switch to conversation B and abort A
+    rerender(<ChatPanel {...props} activeConversation={convB} />);
+    await waitFor(() => {
+      expect(signalA?.aborted).toBe(true);
+    });
+
+    // 4. Start a new stream in B before A's cleanup completes
+    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'Prompt for B' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+
+    await screen.findByText(/Token from Stream B/);
+    expect(screen.getByText('Stop Generation')).toBeInTheDocument();
+
+    // 5. Resolve A's stale callbacks and cleanup while B is active
+    await act(async () => {
+      callbacksA?.onToken?.(' Extra stale text from A');
+      callbacksA?.onMeta?.({
+        conversation_id: 'conv_a',
+        provider: 'ollama',
+        model: 'stale-model-a',
+        classification: 'INTERNAL',
+      });
+      callbacksA?.onError?.({ error: 'StaleErrorA', detail: 'Stale error detail A' });
+      resolveStreamA?.();
+    });
+
+    // 6. Verify A's stale callbacks do not pollute B:
+    // - B's streaming content remains Token from Stream B (not extra stale text from A)
+    expect(screen.queryByText(/Extra stale text from A/)).not.toBeInTheDocument();
+    // - B's routing model remains qwen3.5:4b (not stale-model-a)
+    expect(screen.queryByText('stale-model-a')).not.toBeInTheDocument();
+    // - No cancellation banner or stale errors in B
+    expect(screen.queryByText(/Generation stopped/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Stale error detail A/)).not.toBeInTheDocument();
+    // - B's streaming state and stop button are NOT cleared by A's finally cleanup
+    expect(screen.getByText('Stop Generation')).toBeInTheDocument();
+
+    // 7. Verify B can complete normally
+    await act(async () => {
+      callbacksB?.onToken?.(' - completed');
+      callbacksB?.onDone?.({
+        routing_metadata: {
+          provider: 'ollama',
+          model: 'qwen3.5:4b',
+          effective_classification: 'INTERNAL',
+        },
+      });
+      resolveStreamB?.();
+    });
+
+    await screen.findByText('Token from Stream B - completed');
+    expect(screen.queryByText('Stop Generation')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Token from Stream A/)).not.toBeInTheDocument();
+
+    // Verify switching back to A loads A's own correct history
+    rerender(<ChatPanel {...props} activeConversation={convA} />);
+    await screen.findByText('Original message in A');
+    expect(screen.queryByText('Token from Stream B - completed')).not.toBeInTheDocument();
+  });
 });
