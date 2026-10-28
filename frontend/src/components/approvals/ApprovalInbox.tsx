@@ -14,6 +14,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
   const [executions, setExecutions] = useState<ToolExecution[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [approvalNote, setApprovalNote] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
@@ -24,35 +25,61 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
   const requestSeq = useRef(0);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
 
-  const fetchAwaitingApprovals = async (clearError = false) => {
+  const scheduleNextPoll = (delay = 6000) => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (!isMountedRef.current) return;
+    pollTimerRef.current = setTimeout(() => {
+      fetchAwaitingApprovals();
+    }, delay);
+  };
+
+  const fetchAwaitingApprovals = async (clearAllErrors = false) => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
     const seq = ++requestSeq.current;
     setLoading(true);
-    if (clearError) {
+    if (clearAllErrors) {
       setActionError(null);
+      setFetchError(null);
     }
     try {
       const items = await api.listExecutions('awaiting_approval');
-      if (seq !== requestSeq.current) return;
+      if (!isMountedRef.current || seq !== requestSeq.current) return;
       setExecutions(items || []);
       setLastSuccessfulFetch(new Date());
       setIsStale(false);
+      setFetchError(null);
     } catch (err) {
-      if (seq !== requestSeq.current) return;
-      setActionError(err instanceof Error ? err.message : String(err));
+      if (!isMountedRef.current || seq !== requestSeq.current) return;
+      setFetchError(err instanceof Error ? err.message : String(err));
       // Retain in-memory items during transient network failure; do not wipe array
       setIsStale(true);
     } finally {
-      if (seq === requestSeq.current) {
+      if (isMountedRef.current && seq === requestSeq.current) {
         setLoading(false);
+        scheduleNextPoll(6000);
       }
     }
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     fetchAwaitingApprovals();
-    const timer = setInterval(fetchAwaitingApprovals, 6000);
-    return () => clearInterval(timer);
+    return () => {
+      isMountedRef.current = false;
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
   }, []);
 
   const reconcileExecution = async (id: string) => {
@@ -251,6 +278,26 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         >
           <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
           <span>{actionError}</span>
+        </div>
+      )}
+
+      {fetchError && (
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'var(--danger-subtle)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            color: 'var(--danger)',
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+          role="alert"
+        >
+          <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <span>{fetchError}</span>
         </div>
       )}
 

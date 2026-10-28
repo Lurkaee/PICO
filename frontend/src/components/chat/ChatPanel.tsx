@@ -69,6 +69,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       return;
     }
 
+    // Immediately filter local messages to retain only those matching the newly active conversation.
+    // This prevents previous conversation messages from lingering while history loads or if the request fails,
+    // while preserving unpersisted local messages for the newly active conversation.
+    setMessages((prev) => prev.filter((m) => m.conversation_id === activeConversation.id));
+
     let isMounted = true;
     setLoadingHistory(true);
     setStreaming(false);

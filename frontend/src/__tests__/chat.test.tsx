@@ -426,4 +426,46 @@ describe('ChatPanel Component', () => {
     await screen.findByText('Original message in A');
     expect(screen.queryByText('Token from Stream B - completed')).not.toBeInTheDocument();
   });
+it('immediately clears prior conversation messages on switch and handles failed history loading without leaking', async () => {
+    const convA = conversation('conv_a');
+    const convB = conversation('conv_b');
+
+    // 1. Load messages for conversation A
+    vi.mocked(api.getMessages).mockResolvedValueOnce([
+      {
+        id: 'msg_a1',
+        conversation_id: 'conv_a',
+        role: 'user',
+        content: 'Confidential message in Conversation A',
+        created_at: '2026-10-22T10:00:00Z',
+      },
+    ]);
+
+    const { rerender } = render(<ChatPanel {...props} activeConversation={convA} />);
+    await screen.findByText('Confidential message in Conversation A');
+
+    // 2. Setup deferred/rejecting promise for B\'s history request
+    let rejectConvB: ((err: any) => void) | undefined;
+    const convBPromise = new Promise((_resolve, reject) => {
+      rejectConvB = reject;
+    });
+    vi.mocked(api.getMessages).mockImplementationOnce(() => convBPromise as any);
+
+    // Switch to conversation B
+    rerender(<ChatPanel {...props} activeConversation={convB} />);
+
+    // 3. Verify A\'s messages disappear immediately before B\'s request resolves
+    expect(screen.queryByText('Confidential message in Conversation A')).not.toBeInTheDocument();
+    expect(screen.getByText(/Loading conversation history/)).toBeInTheDocument();
+
+    // 4. Reject B\'s history request
+    await act(async () => {
+      rejectConvB?.(new Error('Internal server error loading history'));
+      await Promise.resolve();
+    });
+
+    // 5. Verify A\'s messages are still absent and history error is visible
+    expect(screen.queryByText('Confidential message in Conversation A')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to load history: Internal server error loading history');
+  });
 });

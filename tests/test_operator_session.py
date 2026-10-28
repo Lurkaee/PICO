@@ -17,8 +17,14 @@ from pico.services.operator_session import OperatorSessionService
 @pytest.fixture(autouse=True)
 def reset_operator_session():
     OperatorSessionService.reset_instance()
+    with SessionLocal() as s:
+        s.query(OperatorPairingChallenge).delete()
+        s.commit()
     yield
     OperatorSessionService.reset_instance()
+    with SessionLocal() as s:
+        s.query(OperatorPairingChallenge).delete()
+        s.commit()
 
 
 def test_pairing_code_cannot_be_minted_via_browser_api():
@@ -135,6 +141,56 @@ def test_pairing_lockout_after_max_failed_attempts():
     locked_res = client.post("/api/operator/pair", json={"code": challenge.code})
     assert locked_res.status_code == 403
     assert "locked" in locked_res.json()["detail"].lower()
+
+
+def test_concurrent_failed_pairing_attempts_atomic_lockout():
+    """Verify concurrent invalid attempts atomically increment failed_attempts without lost updates."""
+    import threading
+    from pico.core.errors import AuthorizationError
+    from pico.db.session import SessionLocal
+
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(ttl_seconds=300)
+
+    # Use separate database sessions across synchronized concurrent threads
+    barrier = threading.Barrier(5)
+    errors: list[str] = []
+
+    def attempt_invalid():
+        with SessionLocal() as db_session:
+            barrier.wait()
+            try:
+                service.pair("000000", db=db_session)
+            except AuthorizationError as exc:
+                errors.append(str(exc))
+
+    threads = [threading.Thread(target=attempt_invalid) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(errors) == 5
+
+    # Check the challenge in database
+    with SessionLocal() as verify_session:
+        ch = (
+            verify_session.query(OperatorPairingChallenge)
+            .filter(
+                OperatorPairingChallenge.consumed_at.is_(None),
+                OperatorPairingChallenge.approver == "local_operator",
+            )
+            .order_by(OperatorPairingChallenge.created_at.desc())
+            .first()
+        )
+        assert ch is not None
+        assert ch.failed_attempts == 5
+
+    # A subsequent attempt with the legitimate code must fail due to lockout
+    with SessionLocal() as fresh_db:
+        with pytest.raises(AuthorizationError) as exc_info:
+            service.pair(challenge.code, db=fresh_db)
+        assert "locked" in str(exc_info.value).lower()
 
 
 def test_untrusted_host_and_origin_rejected():
