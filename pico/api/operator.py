@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Header, Request, Response, status
 from pico.core.errors import AuthorizationError
 from pico.schemas.operator import (
     OperatorSessionResponse,
-    PairingCodeResponse,
     PairRequest,
     PairResponse,
 )
@@ -56,26 +55,6 @@ def require_operator_session(
 
 
 @router.post(
-    "/pairing-code",
-    response_model=PairingCodeResponse,
-    summary="Generate a one-time pairing code for local operator connection",
-)
-def generate_pairing_code(request: Request) -> PairingCodeResponse:
-    # Verify request originates from local loopback
-    client_host = request.client.host if request.client else "unknown"
-    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
-        raise AuthorizationError("Pairing codes may only be requested from local loopback.")
-
-    service = OperatorSessionService.get_instance()
-    pairing = service.generate_pairing_code()
-    return PairingCodeResponse(
-        code=pairing.code,
-        expires_at=pairing.expires_at.isoformat(),
-        approver=pairing.approver,
-    )
-
-
-@router.post(
     "/pair",
     response_model=PairResponse,
     summary="Exchange a one-time pairing code for an HttpOnly operator session cookie",
@@ -85,6 +64,10 @@ def pair_operator(
     request: Request,
     response: Response,
 ) -> PairResponse:
+    client_host = request.client.host if request.client else "unknown"
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise AuthorizationError("Operator pairing is only available from local loopback.")
+
     # Origin and host validation
     service = OperatorSessionService.get_instance()
     host = request.headers.get("host")

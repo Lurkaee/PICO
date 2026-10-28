@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Square, XCircle, AlertCircle } from 'lucide-react';
 import { api } from '../../api/client';
 import { PerceptionStatus } from '../../types';
@@ -14,6 +14,11 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
   const [isRecording, setIsRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   useEffect(() => {
     let mounted = true;
@@ -28,6 +33,13 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
     fetchStatus();
     return () => {
       mounted = false;
+      const sessionId = activeSessionIdRef.current;
+      activeSessionIdRef.current = null;
+      if (sessionId) {
+        void api.cancelAudioSession(sessionId).catch(() => {
+          // Cleanup must continue even if the backend is unavailable.
+        });
+      }
     };
   }, []);
 

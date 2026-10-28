@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shield, ShieldAlert, ShieldCheck, X, Key, LogOut } from 'lucide-react';
+import { Shield, ShieldAlert, ShieldCheck, X, LogOut } from 'lucide-react';
 import { api } from '../../api/client';
 import { OperatorSessionState } from '../../types';
 
@@ -20,7 +20,6 @@ export const PairingModal: React.FC<PairingModalProps> = ({
   const [approver, setApprover] = useState('human_operator');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -36,7 +35,6 @@ export const PairingModal: React.FC<PairingModalProps> = ({
       const updated = await api.pairOperator(code.trim(), approver);
       onSessionUpdate(updated);
       setCode('');
-      setGeneratedCode(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -57,19 +55,6 @@ export const PairingModal: React.FC<PairingModalProps> = ({
     }
   };
 
-  const handleRequestLocalCode = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.requestPairingCode();
-      setGeneratedCode(res.code);
-      setCode(res.code);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pairing-modal-title">
@@ -146,40 +131,8 @@ export const PairingModal: React.FC<PairingModalProps> = ({
             </div>
 
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Run the terminal command below to generate a secure pairing code on this machine:
+              Pairing codes must be generated outside the browser. The CLI pairing workflow is currently unavailable.
             </p>
-
-            <div
-              style={{
-                padding: '8px 12px',
-                borderRadius: 'var(--radius-sm)',
-                backgroundColor: 'var(--bg-canvas)',
-                border: '1px solid var(--border-subtle)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.825rem',
-                color: 'var(--text-primary)',
-              }}
-            >
-              python -m pico.cli.pair
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={handleRequestLocalCode}
-                disabled={loading}
-                style={{ fontSize: '0.8rem' }}
-              >
-                <Key style={{ width: 14, height: 14 }} />
-                Generate Code (Loopback)
-              </button>
-              {generatedCode && (
-                <span style={{ fontSize: '0.8rem', color: 'var(--success)' }}>
-                  Code generated: <strong>{generatedCode}</strong>
-                </span>
-              )}
-            </div>
 
             <form onSubmit={handlePair} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>

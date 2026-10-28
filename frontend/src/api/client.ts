@@ -80,10 +80,6 @@ export const api = {
     return res;
   },
 
-  async requestPairingCode(): Promise<{ code: string; expires_at: string; approver: string }> {
-    return request('/api/operator/pairing-code', { method: 'POST' });
-  },
-
   async pairOperator(code: string, approver = 'human_operator'): Promise<OperatorSessionState> {
     const res = await request<{ status: string; csrf_token: string; expires_at: string; approver: string }>(
       '/api/operator/pair',

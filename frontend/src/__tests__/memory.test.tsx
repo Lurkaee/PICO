@@ -19,6 +19,28 @@ describe('MemoryInspector Component', () => {
     vi.clearAllMocks();
   });
 
+  it('refreshes the current search and clears to an unfiltered list', async () => {
+    vi.mocked(api.getSemanticFacts).mockResolvedValue([]);
+    vi.mocked(api.searchSemanticFacts).mockResolvedValue([]);
+    render(<MemoryInspector />);
+    await waitFor(() => expect(screen.getByText('Refresh')).not.toBeDisabled());
+
+    const input = screen.getByPlaceholderText(/Search semantic memory/);
+    fireEvent.change(input, { target: { value: '  Python  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await waitFor(() => expect(api.searchSemanticFacts).toHaveBeenCalledWith('Python', 20));
+    await waitFor(() => expect(screen.getByText('Refresh')).not.toBeDisabled());
+    fireEvent.click(screen.getByText('Refresh'));
+    await waitFor(() => expect(api.searchSemanticFacts).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('Refresh')).not.toBeDisabled());
+
+    fireEvent.click(screen.getByText('Clear'));
+    await waitFor(() => expect(api.getSemanticFacts).toHaveBeenCalledTimes(2));
+    expect(api.getSemanticFacts).toHaveBeenLastCalledWith(50, 0);
+    expect(api.searchSemanticFacts).toHaveBeenCalledTimes(2);
+    expect(input).toHaveValue('');
+  });
+
   it('renders semantic facts and distinguishes observed truth from inferred hypotheses', async () => {
     vi.mocked(api.getSemanticFacts).mockResolvedValueOnce([
       {

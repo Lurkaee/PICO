@@ -1,8 +1,13 @@
 """Tests for PICO local operator pairing, HttpOnly session lifecycle, and CSRF protection."""
 
+from concurrent.futures import ThreadPoolExecutor
+from itertools import count
+from threading import Barrier
+
 import pytest
 from fastapi.testclient import TestClient
 
+from pico.core.errors import AuthorizationError
 from pico.core.config import settings
 from pico.main import app
 from pico.services.operator_session import OperatorSessionService
@@ -15,15 +20,13 @@ def reset_operator_session():
     OperatorSessionService.reset_instance()
 
 
-def test_pairing_code_generation_loopback():
+def test_pairing_code_generation_is_out_of_band_only():
     client = TestClient(app)
-    response = client.post("/api/operator/pairing-code")
-    assert response.status_code == 200
-    data = response.json()
-    assert "code" in data
-    assert len(data["code"]) == 6
-    assert data["code"].isdigit()
-    assert data["approver"] == "human_operator"
+    assert client.post("/api/operator/pairing-code").status_code == 404
+    pairing = OperatorSessionService.get_instance().generate_pairing_code()
+    assert len(pairing.code) == 6
+    assert pairing.code.isdigit()
+    assert pairing.approver == "human_operator"
 
 
 def test_pair_with_invalid_code():
@@ -42,8 +45,7 @@ def test_pair_and_session_lifecycle():
     assert res.json()["paired"] is False
 
     # 2. Generate code
-    code_res = client.post("/api/operator/pairing-code")
-    code = code_res.json()["code"]
+    code = OperatorSessionService.get_instance().generate_pairing_code().code
 
     # 3. Pair
     pair_res = client.post("/api/operator/pair", json={"code": code})
@@ -85,8 +87,7 @@ def test_csrf_protection_on_mutating_requests():
     client = TestClient(app)
 
     # Generate code and pair
-    code_res = client.post("/api/operator/pairing-code")
-    code = code_res.json()["code"]
+    code = OperatorSessionService.get_instance().generate_pairing_code().code
     pair_res = client.post("/api/operator/pair", json={"code": code})
     assert pair_res.status_code == 200
     csrf_token = pair_res.json()["csrf_token"]
@@ -105,11 +106,9 @@ def test_csrf_protection_on_mutating_requests():
     assert ok_res.status_code == 200
 
 
-def test_operator_session_can_approve_consequential_execution(monkeypatch):
+def test_operator_session_can_approve_consequential_execution(monkeypatch, client):
     # Set APPROVAL_SECRET_TOKEN on backend to ensure strict mode is active
     monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "super_secret_server_token_12345")
-
-    client = TestClient(app)
 
     # Submit a consequential execution (using a mock or registered capability)
     # Submit a consequential execution using test.consequential_action
@@ -133,8 +132,7 @@ def test_operator_session_can_approve_consequential_execution(monkeypatch):
     assert unauth_approve.status_code == 403
 
     # Now pair an operator session
-    code_res = client.post("/api/operator/pairing-code")
-    code = code_res.json()["code"]
+    code = OperatorSessionService.get_instance().generate_pairing_code().code
     pair_res = client.post("/api/operator/pair", json={"code": code})
     assert pair_res.status_code == 200
     csrf_token = pair_res.json()["csrf_token"]
@@ -190,3 +188,166 @@ def test_spa_fallback_serving_and_api_isolation(tmp_path, monkeypatch):
     api_post = client.post("/api/nonexistent_route", json={"foo": "bar"})
     assert api_post.status_code == 404
     assert '<div id="root">' not in api_post.text
+
+
+@pytest.mark.parametrize("client_host", ["192.0.2.1", "203.0.113.2"])
+def test_pair_rejects_non_loopback_before_header_validation(client_host, monkeypatch):
+    service = OperatorSessionService.get_instance()
+    code = service.generate_pairing_code().code
+
+    def unexpected_header_validation(*args):
+        pytest.fail("Non-loopback request reached header validation")
+
+    monkeypatch.setattr(service, "validate_origin_and_host", unexpected_header_validation)
+    client = TestClient(app, client=(client_host, 50000))
+    response = client.post("/api/operator/pair", json={"code": code})
+    assert response.status_code == 403
+    assert "loopback" in response.json()["detail"]
+    # Refused remote traffic must not consume the code.
+    assert service.pair(code).is_active
+
+
+@pytest.mark.parametrize("client_host", ["127.0.0.1", "::1"])
+def test_pair_accepts_loopback(client_host):
+    code = OperatorSessionService.get_instance().generate_pairing_code().code
+    client = TestClient(app, client=(client_host, 50000))
+    assert client.post("/api/operator/pair", json={"code": code}).status_code == 200
+
+
+def test_pairing_attempt_limit_retires_outstanding_codes():
+    service = OperatorSessionService()
+    pairing = service.generate_pairing_code()
+    for _ in range(service.MAX_PAIRING_ATTEMPTS):
+        with pytest.raises(AuthorizationError, match="Invalid or expired"):
+            service.pair("000000")
+    with pytest.raises(AuthorizationError, match="Invalid or expired"):
+        service.pair(pairing.code)
+    assert service.get_active_pairing_code() is None
+    replacement = service.generate_pairing_code(approver="replacement")
+    assert service.pair(replacement.code).approver == "replacement"
+
+
+def test_successful_pairing_below_attempt_limit_and_expiry():
+    service = OperatorSessionService()
+    pairing = service.generate_pairing_code(approver="local_operator")
+    for _ in range(service.MAX_PAIRING_ATTEMPTS - 1):
+        with pytest.raises(AuthorizationError):
+            service.pair("000000")
+    assert service.pair(" " + pairing.code + " ").approver == "local_operator"
+    expired = service.generate_pairing_code(ttl_seconds=-1)
+    with pytest.raises(AuthorizationError, match="Invalid or expired"):
+        service.pair(expired.code)
+
+
+def test_concurrent_pairing_consumes_code_once():
+    service = OperatorSessionService()
+    code = service.generate_pairing_code().code
+    barrier = Barrier(8)
+
+    def pair_once(_):
+        barrier.wait(timeout=5)
+        try:
+            return service.pair(code)
+        except AuthorizationError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(pair_once, range(8)))
+    assert sum(result is not None for result in results) == 1
+
+
+def test_concurrent_generation_and_pairing_preserve_codes(monkeypatch):
+    sequence = count()
+    monkeypatch.setattr("pico.services.operator_session.secrets.randbelow", lambda _: next(sequence))
+    service = OperatorSessionService()
+    initial = service.generate_pairing_code(ttl_seconds=600)
+    expired = service.generate_pairing_code(ttl_seconds=-1)
+
+    def generate(_):
+        return service.generate_pairing_code()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pairing_result = pool.submit(service.pair, initial.code)
+        generated = list(pool.map(generate, range(64)))
+        assert pairing_result.result().is_active
+    assert service.get_active_pairing_code() is not None
+    assert expired.code not in service._active_codes
+    for pairing in generated:
+        assert service.pair(pairing.code).is_active
+
+
+@pytest.mark.parametrize("origin", ["http://localhost:5173", "http://127.0.0.1:5173"])
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+def test_cors_allows_frontend_requests(origin, method):
+    response = TestClient(app).options("/api/operator/pair", headers={
+        "Origin": origin,
+        "Access-Control-Request-Method": method,
+        "Access-Control-Request-Headers": "Accept, Content-Type, X-CSRF-Token",
+    })
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert "*" not in response.headers["access-control-allow-methods"]
+    assert "*" not in response.headers["access-control-allow-headers"]
+
+
+@pytest.mark.parametrize("origin,method,header", [
+    ("http://localhost:3000", "POST", "Content-Type"),
+    ("http://127.0.0.1:3000", "POST", "Content-Type"),
+    ("http://localhost:8000", "POST", "Content-Type"),
+    ("http://127.0.0.1:8000", "POST", "Content-Type"),
+    ("https://example.com", "POST", "Content-Type"),
+    ("http://localhost:5173", "TRACE", "Content-Type"),
+    ("http://localhost:5173", "POST", "X-Untrusted"),
+])
+def test_cors_rejects_unneeded_origins_methods_and_headers(origin, method, header):
+    response = TestClient(app).options("/api/operator/pair", headers={
+        "Origin": origin,
+        "Access-Control-Request-Method": method,
+        "Access-Control-Request-Headers": header,
+    })
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("escape_path", [
+    "%2e%2e/outside.txt",
+    "%2e%2e/%2e%2e/outside.txt",
+    "C:/outside.txt",
+    "C:outside.txt",
+    "C:%5coutside.txt",
+])
+def test_spa_fallback_rejects_escape_paths(tmp_path, monkeypatch, escape_path):
+    import pico.main as pico_main
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("SPA shell", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private outside file", encoding="utf-8")
+    monkeypatch.setattr(pico_main, "frontend_dist", dist)
+    response = TestClient(app).get("/" + escape_path)
+    assert response.status_code == 404
+    assert outside.read_text(encoding="utf-8") not in response.text
+
+
+def test_spa_fallback_rejects_symlink_escape(tmp_path, monkeypatch):
+    import pico.main as pico_main
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("SPA shell", encoding="utf-8")
+    outside = tmp_path / "private"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("private outside file", encoding="utf-8")
+    link = dist / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        if __import__("os").name != "nt":
+            raise
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(link))
+    monkeypatch.setattr(pico_main, "frontend_dist", dist)
+    response = TestClient(app).get("/linked/secret.txt")
+    assert response.status_code == 404
+    assert "private outside file" not in response.text

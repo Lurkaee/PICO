@@ -9,6 +9,7 @@ local storage, or client-side JavaScript.
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import secrets
+from threading import Lock
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -34,6 +35,7 @@ class PairingCode:
     code: str
     expires_at: datetime
     approver: str = "human_operator"
+    failed_attempts: int = 0
 
 
 @dataclass
@@ -51,9 +53,11 @@ class OperatorSession:
 
 class OperatorSessionService:
     _instance: Optional["OperatorSessionService"] = None
+    MAX_PAIRING_ATTEMPTS = 5
 
     def __init__(self):
         self._active_codes: dict[str, PairingCode] = {}
+        self._codes_lock = Lock()
         self._sessions: dict[str, OperatorSession] = {}
 
     @classmethod
@@ -74,28 +78,35 @@ class OperatorSessionService:
         pairing = PairingCode(code=code, expires_at=expires_at, approver=approver)
         # Clean expired codes
         now = datetime.now(timezone.utc)
-        self._active_codes = {c: p for c, p in self._active_codes.items() if p.expires_at > now}
-        self._active_codes[code] = pairing
+        with self._codes_lock:
+            self._active_codes = {c: p for c, p in self._active_codes.items() if p.expires_at > now}
+            self._active_codes[code] = pairing
         return pairing
 
     def get_active_pairing_code(self) -> Optional[PairingCode]:
         """Returns the most recent valid active pairing code if one exists."""
         now = datetime.now(timezone.utc)
-        valid = [p for p in self._active_codes.values() if p.expires_at > now]
-        if not valid:
-            return None
-        return sorted(valid, key=lambda p: p.expires_at, reverse=True)[0]
+        with self._codes_lock:
+            valid = [p for p in self._active_codes.values() if p.expires_at > now]
+            if not valid:
+                return None
+            return sorted(valid, key=lambda p: p.expires_at, reverse=True)[0]
 
     def pair(self, code: str, approver: Optional[str] = None, session_ttl_seconds: int = 3600) -> OperatorSession:
         now = datetime.now(timezone.utc)
         clean_code = (code or "").strip()
-        pairing = self._active_codes.get(clean_code)
-
-        if not pairing or pairing.expires_at <= now:
-            raise AuthorizationError("Invalid or expired pairing code.")
-
-        # Consume code (one-time use)
-        del self._active_codes[clean_code]
+        with self._codes_lock:
+            pairing = self._active_codes.pop(clean_code, None)
+            if not pairing or pairing.expires_at <= now:
+                # A wrong guess cannot identify its intended code, so count it
+                # against every outstanding code and retire each at the limit.
+                for active in self._active_codes.values():
+                    active.failed_attempts += 1
+                self._active_codes = {
+                    c: p for c, p in self._active_codes.items()
+                    if p.expires_at > now and p.failed_attempts < self.MAX_PAIRING_ATTEMPTS
+                }
+                raise AuthorizationError("Invalid or expired pairing code.")
 
         effective_approver = approver or pairing.approver or "human_operator"
         session_id = secrets.token_urlsafe(32)

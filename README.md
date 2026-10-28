@@ -100,11 +100,13 @@ pnpm run typecheck      # TypeScript strict type check
 Consequential tool-execution approvals require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is transmitted to the browser.
 
 ```powershell
-# With the backend running, generate a one-time pairing code:
+# CLI-only code generation (see the current limitation below):
 python -m pico.cli.pair
 # Enter the 6-digit code shown in the desktop UI's pairing modal.
 # The HttpOnly session cookie is set; CSRF token is returned to the browser.
 ```
+
+Pairing-code generation is unavailable over HTTP. The current CLI stores codes only in its own process, so these codes cannot pair with a separately running backend. A private inter-process flow is required to restore that CLI workflow.
 
 ---
 

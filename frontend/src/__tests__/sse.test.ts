@@ -1,5 +1,24 @@
-import { describe, it, expect, vi } from 'vitest';
-import { SSEParser } from '../api/sse';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { SSEParser, streamChat } from '../api/sse';
+
+describe('streamChat request', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(['PUBLIC', 'INTERNAL', 'SENSITIVE', 'SECRET', undefined])(
+    'serializes selected classification %s under the backend field',
+    async (classification) => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        body: new ReadableStream({ start: (controller) => controller.close() }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      await streamChat({ message: 'hello', classification }, {});
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.data_classification).toBe(classification || 'INTERNAL');
+      expect(body).not.toHaveProperty('classification');
+    }
+  );
+});
 
 describe('SSEParser', () => {
   it('parses well-formed SSE stream with meta, token, and done events', () => {

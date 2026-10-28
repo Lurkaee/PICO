@@ -119,6 +119,7 @@ Before PICO is authorized to execute real external actions (file writing outside
    - `APPROVAL_SECRET_TOKEN` is a server-side-only secret; it is never injected into `VITE_*` environment variables, never embedded in the JavaScript bundle, never returned in API responses, never stored in browser `localStorage` / `sessionStorage`, and never logged.
    - Local operator pairing is available exclusively over the loopback interface (`127.0.0.1` / `::1`); the `/api/operator/pair` endpoint returns `403 Forbidden` for non-loopback clients.
    - The pairing code is a 6-digit CSPRNG-sourced token with a 300-second TTL; it can only be consumed once.
+   - Codes cannot be generated through HTTP. Each failed pairing attempt counts against all outstanding codes; five failed attempts invalidate a code. Code generation and consumption are synchronized across request threads.
    - After successful pairing the server issues an `HttpOnly; SameSite=Strict; Path=/api` cookie (`pico_operator_session`) and returns a separate CSRF token in the JSON body; the cookie is inaccessible to JavaScript.
    - Every mutating request guarded by operator-session authorization must present the CSRF token in the `X-CSRF-Token` header; validation uses `hmac.compare_digest` to prevent timing oracle attacks.
    - Session expiry is enforced server-side; the browser cannot extend session lifetime.

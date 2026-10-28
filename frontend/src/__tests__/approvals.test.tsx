@@ -11,7 +11,6 @@ vi.mock('../api/client', () => ({
     cancelExecution: vi.fn(),
     pairOperator: vi.fn(),
     logoutOperator: vi.fn(),
-    requestPairingCode: vi.fn(),
   },
 }));
 
@@ -109,7 +108,8 @@ describe('ApprovalInbox & Operator Session Security', () => {
     );
 
     expect(screen.getByText('Local Operator Session')).toBeInTheDocument();
-    expect(screen.getByText('python -m pico.cli.pair')).toBeInTheDocument();
+    expect(screen.getByText(/Pairing codes must be generated outside the browser/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Generate Code/ })).not.toBeInTheDocument();
 
     // Verify raw secret keywords or tokens never appear in rendered HTML
     const domHtml = document.body.innerHTML;

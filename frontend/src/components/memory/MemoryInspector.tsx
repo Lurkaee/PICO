@@ -15,13 +15,13 @@ export const MemoryInspector: React.FC = () => {
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [confirmForgetFactId, setConfirmForgetFactId] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = async (query = searchQuery) => {
     setLoading(true);
     setErrorNotice(null);
     try {
       if (activeTab === 'semantic') {
-        if (searchQuery.trim()) {
-          const results = await api.searchSemanticFacts(searchQuery.trim(), 20);
+        if (query.trim()) {
+          const results = await api.searchSemanticFacts(query.trim(), 20);
           setSemanticFacts(results);
         } else {
           const items = await api.getSemanticFacts(50, 0);
@@ -80,7 +80,7 @@ export const MemoryInspector: React.FC = () => {
             Inspect synthesized working, episodic, semantic, and procedural knowledge with provenance.
           </p>
         </div>
-        <button className="btn btn-secondary" onClick={loadData} disabled={loading}>
+        <button className="btn btn-secondary" onClick={() => loadData()} disabled={loading}>
           <RefreshCw className={loading ? 'animate-spin' : ''} style={{ width: 14, height: 14 }} />
           Refresh
         </button>
@@ -179,7 +179,7 @@ export const MemoryInspector: React.FC = () => {
                 className="btn btn-secondary"
                 onClick={() => {
                   setSearchQuery('');
-                  loadData();
+                  loadData('');
                 }}
               >
                 Clear
