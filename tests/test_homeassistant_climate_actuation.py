@@ -1174,6 +1174,112 @@ async def test_persistent_replay_prevention_across_restarts_and_instances(
         assert final_exec.approved_by == "authenticated_token_holder"
 
 
+@pytest.mark.anyio
+async def test_concurrent_climate_execution_attempts_atomic_claim_boundary(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Launch two concurrent execution attempts for the same approved climate setpoint execution.
+
+    Asserts that the database compare-and-set claim results in a single winner:
+    exactly one succeeds with independent verification, the other fails closed with
+    AuthorizationError from the atomic-claim conflict, an authorization_denied event is
+    persisted with reason 'Execution claim collision or ticket invalidation', and exactly
+    one physical mutation request is dispatched.
+    """
+    transport, state_box = make_mock_climate_transport()
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+
+        # Disjoint service and capability instances to guarantee database CAS (not in-memory lock) governs
+        service1 = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        service2 = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        assert service1._dispatched_executions is not service2._dispatched_executions
+
+        cap1 = HomeAssistantClimateActuationCapability(service=service1)
+        cap2 = HomeAssistantClimateActuationCapability(service=service2)
+
+        reg1 = CapabilityRegistry()
+        reg1.register(cap1)
+        reg2 = CapabilityRegistry()
+        reg2.register(cap2)
+
+        engine1 = ToolExecutionEngine(db_session, reg1)
+        engine2 = ToolExecutionEngine(db_session, reg2)
+        perms = {"homeassistant:actuate"}
+
+        # Target climate A initially reports temperature=21.0, requested target is 22.5 (differs)
+        item = engine1.submit(
+            capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temperature": 22.5,
+                "target_unit": "°C",
+            },
+            caller_permissions=perms,
+        )
+        approved = engine1.approve(
+            item.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+        assert approved.status == "queued"
+        assert len(state_box["mutation_calls"]) == 0
+
+        # Concurrently attempt execution across engine1 and engine2 with claim boundary synchronization
+        barrier = asyncio.Barrier(2)
+        res1, res2 = await asyncio.gather(
+            engine1.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+            engine2.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+            return_exceptions=True,
+        )
+
+        results = [res1, res2]
+        succeeded = [r for r in results if isinstance(r, ToolExecution) and r.status == "succeeded"]
+        failed = [r for r in results if isinstance(r, AuthorizationError)]
+
+        # Exact single winner: exactly one succeeded with verified status
+        assert len(succeeded) == 1, f"Expected exactly 1 succeeded, got {len(succeeded)}: {results}"
+        assert succeeded[0].verification_status == "passed"
+        assert succeeded[0].output_json.get("verification_status") == "verified"
+        assert succeeded[0].output_json.get("dispatch_status") == "accepted"
+
+        # Exactly one competing attempt fails closed with AuthorizationError from atomic claim collision
+        assert len(failed) == 1, f"Expected exactly 1 AuthorizationError, got {len(failed)}: {results}"
+        err_msg = str(failed[0]).lower()
+        assert "could not be claimed" in err_msg or "concurrent dispatch conflict" in err_msg
+
+        # Losing attempt records authorization_denied event with atomic claim collision reason
+        ledger_repo = EventLedgerRepository(db_session)
+        events = ledger_repo.list_events(execution_id=item.id)
+        denied_events = [e for e in events if e.event_type == "authorization_denied"]
+        assert len(denied_events) == 1
+        assert denied_events[0].payload_json.get("reason") == (
+            "Atomic claim failed: concurrent dispatch conflict, stale input, or already consumed ticket"
+        )
+
+        # Exactly ONE physical mutation request dispatched to Home Assistant!
+        assert len(state_box["mutation_calls"]) == 1
+        assert state_box["mutation_calls"][0]["body"] == {
+            "entity_id": TEST_CLIMATE_A,
+            "temperature": 22.5,
+        }
+
+        # Persistent execution record and approval metadata remain consistent
+        exec_repo = ToolExecutionRepository(db_session)
+        final_exec = exec_repo.get_by_id(item.id)
+        assert final_exec is not None
+        assert final_exec.status == "succeeded"
+        assert final_exec.metadata_json.get("dispatch_consumed") is True
+        assert final_exec.approval_input_digest == item.input_digest
+        assert final_exec.approved_by == "authenticated_token_holder"
+
+
 # =====================================================================
 # 6. Regressions: Light & Switch Actuation Boundaries Unaffected
 # =====================================================================
