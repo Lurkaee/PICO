@@ -591,3 +591,109 @@ def get_climate_actuation_status(
     if not execution or execution.capability_id != "homeassistant.allowlisted_climate_setpoint_actuate":
         raise EntityNotFoundError("ClimateActuationExecution", execution_id)
     return ToolExecutionResponse.model_validate(execution)
+
+
+class ClimateDualSetpointProposeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_entity_id: str = Field(
+        description="Exact climate entity ID in Stage D climate allowlist.",
+    )
+    target_temp_low: float = Field(
+        allow_inf_nan=False,
+        description="Explicit lower target temperature setpoint.",
+    )
+    target_temp_high: float = Field(
+        allow_inf_nan=False,
+        description="Explicit upper target temperature setpoint.",
+    )
+    target_unit: str | None = Field(
+        default=None,
+        description="Optional explicit temperature unit (e.g. '°C', '°F').",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Optional operator reason for dual-setpoint actuation proposal.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_untrusted_fields_and_nonfinites(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "grid_origin" in data:
+                raise ValueError(
+                    "Client-supplied 'grid_origin' is forbidden. Grid origins are server-side "
+                    "operator configurations and cannot be supplied or overridden in client requests."
+                )
+            for field in ("target_temp_low", "target_temp_high"):
+                if field in data:
+                    val = data[field]
+                    if isinstance(val, bool):
+                        raise ValueError(f"'{field}' cannot be a boolean.")
+                    if isinstance(val, str):
+                        s = val.strip().lower()
+                        if s in ("nan", "+nan", "-nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity") or "e" in s:
+                            try:
+                                parsed = float(val)
+                                if not math.isfinite(parsed):
+                                    raise ValueError(f"'{field}' must be a finite number.")
+                            except ValueError:
+                                raise ValueError(f"'{field}' must be a valid finite number.")
+        return data
+
+
+@router.post(
+    "/climate/dual-setpoint/propose",
+    response_model=ToolExecutionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Propose a climate dual-setpoint actuation execution (created in awaiting_approval status)",
+)
+def propose_climate_dual_setpoint_actuation(
+    payload: ClimateDualSetpointProposeRequest,
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Propose an actuation of an allowlisted climate entity dual setpoints (low and high).
+
+    Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
+    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    """
+    if (
+        not settings.APPROVAL_SECRET_TOKEN
+        or not x_approval_token
+        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
+    ):
+        raise AuthorizationError(
+            "Physical climate dual-setpoint actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
+        )
+
+    engine = ToolExecutionEngine(db, registry)
+    execution = engine.submit(
+        capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+        input_data={
+            "target_entity_id": payload.target_entity_id,
+            "target_temp_low": payload.target_temp_low,
+            "target_temp_high": payload.target_temp_high,
+            "target_unit": payload.target_unit,
+            "reason": payload.reason,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+    return ToolExecutionResponse.model_validate(execution)
+
+
+@router.get(
+    "/climate/dual-setpoint/execution/{execution_id}",
+    response_model=ToolExecutionResponse,
+    summary="Inspect approval and verification status of a climate dual-setpoint actuation execution",
+)
+def get_climate_dual_setpoint_actuation_status(
+    execution_id: str,
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Inspect the execution record, human approval ticket, and independent verification outcome for a climate dual-setpoint actuation."""
+    repo = ToolExecutionRepository(db)
+    execution = repo.get_by_id(execution_id)
+    if not execution or execution.capability_id != "homeassistant.allowlisted_climate_dual_setpoint_actuate":
+        raise EntityNotFoundError("ClimateDualSetpointActuationExecution", execution_id)
+    return ToolExecutionResponse.model_validate(execution)

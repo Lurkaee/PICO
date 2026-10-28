@@ -217,6 +217,7 @@ class ToolExecutionEngine:
                         "homeassistant.test_light_actuate",
                         "homeassistant.allowlisted_switch_actuate",
                         "homeassistant.allowlisted_climate_setpoint_actuate",
+                        "homeassistant.allowlisted_climate_dual_setpoint_actuate",
                     )
                     else "Application launch"
                     if execution.capability_id == "os.launch_application"
@@ -407,7 +408,10 @@ class ToolExecutionEngine:
                     )
 
             # Climate actuation verification at execution boundary
-            elif execution.capability_id == "homeassistant.allowlisted_climate_setpoint_actuate":
+            elif execution.capability_id in (
+                "homeassistant.allowlisted_climate_setpoint_actuate",
+                "homeassistant.allowlisted_climate_dual_setpoint_actuate",
+            ):
                 from pico.homeassistant.climate import (
                     validate_climate_allowlist,
                     validate_climate_grid_origins,

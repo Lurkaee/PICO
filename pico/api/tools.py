@@ -121,6 +121,7 @@ async def submit_execution(
             "homeassistant.test_light_actuate",
             "homeassistant.allowlisted_switch_actuate",
             "homeassistant.allowlisted_climate_setpoint_actuate",
+            "homeassistant.allowlisted_climate_dual_setpoint_actuate",
         ):
             effective_perms.add("homeassistant:actuate")
         elif payload.capability_id == "os.inspect_windows":
@@ -236,6 +237,7 @@ async def run_execution(
             "homeassistant.test_light_actuate",
             "homeassistant.allowlisted_switch_actuate",
             "homeassistant.allowlisted_climate_setpoint_actuate",
+            "homeassistant.allowlisted_climate_dual_setpoint_actuate",
         ):
             effective_perms.add("homeassistant:actuate")
         elif item.capability_id == "os.inspect_windows":
