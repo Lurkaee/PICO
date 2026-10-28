@@ -190,6 +190,8 @@ class ClimateObservation(BaseModel):
     state: str
     current_temperature: float | None = None
     target_temperature: float | None = None
+    target_temp_low: float | None = None
+    target_temp_high: float | None = None
     min_temp: float | None = None
     max_temp: float | None = None
     target_temp_step: float | None = None
@@ -233,6 +235,40 @@ class ClimateSetpointPlan(BaseModel):
     is_mutation_performed: bool = False
     input_digest: str
     data_classification: str = "INTERNAL"
+
+
+class ClimateDualSetpointPlan(BaseModel):
+    """Milestone P7.4.2.3: Read-only feasibility assessment for a requested dual-setpoint temperature range.
+
+    This plan is an assessment only. It is not an approval ticket, executable command,
+    or authorization to actuate or alter physical climate state.
+    """
+    __test__ = False
+    plan_id: str
+    entity_id: str
+    target_temp_low: float
+    target_temp_high: float
+    requested_unit: str | None = None
+    grid_origin: float | None = None
+    grid_origin_unit: str | None = None
+    current_temperature: float | None = None
+    current_target_temp_low: float | None = None
+    current_target_temp_high: float | None = None
+    current_target_temperature: float | None = None
+    min_temp: float | None = None
+    max_temp: float | None = None
+    target_temp_step: float | None = None
+    supported_features: int | None = None
+    temperature_unit: str | None = None
+    hvac_mode: str | None = None
+    hvac_modes: list[str] = Field(default_factory=list)
+    is_feasible: bool = False
+    feasibility_status: str
+    reasons: list[str] = Field(default_factory=list)
+    is_mutation_performed: bool = False
+    input_digest: str
+    data_classification: str = "INTERNAL"
+
 
 
 class ClimateReadinessReport(BaseModel):

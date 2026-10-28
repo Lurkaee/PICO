@@ -11,6 +11,7 @@ from pico.core.config import settings
 from pico.core.errors import EntityNotFoundError, ValidationError
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.contracts import (
+    ClimateDualSetpointPlan,
     ClimateObservation,
     ClimateSetpointPlan,
 )
@@ -325,6 +326,98 @@ def validate_mode_compatibility(
     return (True, "ready", None)
 
 
+def validate_dual_temperature_capability(
+    supported_features: int | None,
+    raw_supported_features: Any = None,
+) -> tuple[bool, str, str | None]:
+    """Validate whether the climate entity supports dual target temperature setpoints.
+
+    Verified Home Assistant contract:
+    - TARGET_TEMPERATURE (bit 0, value 1): single setpoint support.
+    - TARGET_TEMPERATURE_RANGE (bit 1, value 2): dual low/high setpoint range support.
+
+    Returns (is_supported, status, reason).
+    """
+    if raw_supported_features is None and supported_features is None:
+        return (
+            False,
+            "capability_unknown",
+            "Entity does not report trustworthy supported_features capability metadata; setpoint capability cannot be reliably established.",
+        )
+    if supported_features is None or supported_features < 0:
+        display_feat = raw_supported_features if raw_supported_features is not None else supported_features
+        return (
+            False,
+            "capability_unknown",
+            f"Entity reported invalid supported_features capability metadata ({display_feat!r}).",
+        )
+
+    # Check for dual target temperature range support (Bit 1, value 2)
+    if (supported_features & HA_CLIMATE_FEATURE_TARGET_TEMPERATURE_RANGE) != 0:
+        return (True, "ready", None)
+
+    # If Bit 1 is not set, check if it only supports single setpoint (Bit 0, value 1)
+    if (supported_features & HA_CLIMATE_FEATURE_TARGET_TEMPERATURE) != 0:
+        return (
+            False,
+            "unsupported_capability",
+            f"Entity does not support dual-setpoint temperature range (supported_features={supported_features}); entity only advertises single-setpoint target temperature capability.",
+        )
+
+    return (
+        False,
+        "unsupported_capability",
+        f"Entity does not support target temperature range operations (supported_features={supported_features}).",
+    )
+
+
+def validate_dual_mode_compatibility(
+    hvac_mode: str | None,
+) -> tuple[bool, str, str | None]:
+    """Check if reported HVAC mode permits dual target temperature range planning.
+
+    Home Assistant ClimateEntity contract:
+    - Only 'heat_cool' mode uses a dual target temperature range (target_temp_low / target_temp_high).
+    - 'heat' and 'cool' only support a single target temperature setpoint.
+    - 'off', 'fan_only', 'auto', 'dry' do not permit dual-setpoint planning.
+
+    Returns (is_compatible, status, reason).
+    """
+    if not hvac_mode:
+        return (
+            False,
+            "state_unknown",
+            "Entity reports empty or missing operating mode.",
+        )
+
+    mode_lower = hvac_mode.strip().lower()
+
+    if mode_lower == "heat_cool":
+        return (True, "ready", None)
+
+    if mode_lower in ("heat", "cool"):
+        return (
+            False,
+            "mode_incompatible",
+            f"Entity is reported in '{mode_lower}' mode which only supports a single target temperature setpoint; "
+            "dual-setpoint range requests require 'heat_cool' mode.",
+        )
+
+    if mode_lower in MODE_INCOMPATIBILITY_REASONS:
+        return (
+            False,
+            "mode_incompatible",
+            f"{MODE_INCOMPATIBILITY_REASONS[mode_lower]} Dual-setpoint range requests require 'heat_cool' mode.",
+        )
+
+    return (
+        False,
+        "mode_incompatible",
+        f"Reported operating mode '{hvac_mode}' is not compatible with dual-setpoint temperature range requests; 'heat_cool' mode is required.",
+    )
+
+
+
 def parse_temperature_unit(raw_unit: Any) -> str | None:
     """Parse and canonicalize temperature units into standard representation ('°C', '°F', 'K')."""
     if not isinstance(raw_unit, str):
@@ -594,6 +687,8 @@ class HomeAssistantClimateService:
 
         current_temp = parse_temperature(clean_attrs.get("current_temperature"))
         target_temp = parse_temperature(clean_attrs.get("temperature"))
+        target_temp_low = parse_temperature(clean_attrs.get("target_temp_low"))
+        target_temp_high = parse_temperature(clean_attrs.get("target_temp_high"))
         min_temp = parse_temperature(clean_attrs.get("min_temp"))
         max_temp = parse_temperature(clean_attrs.get("max_temp"))
         target_temp_step = parse_temperature_step(clean_attrs.get("target_temp_step"))
@@ -636,6 +731,8 @@ class HomeAssistantClimateService:
             state=state_str,
             current_temperature=current_temp,
             target_temperature=target_temp,
+            target_temp_low=target_temp_low,
+            target_temp_high=target_temp_high,
             min_temp=min_temp,
             max_temp=max_temp,
             target_temp_step=target_temp_step,
@@ -1197,4 +1294,363 @@ class HomeAssistantClimateService:
             is_mutation_performed=False,
             input_digest=input_digest,
             data_classification=obs.data_classification,
+        )
+
+    async def assess_dual_setpoint_feasibility(
+        self,
+        target_entity_id: str,
+        target_temp_low: float,
+        target_temp_high: float,
+        requested_unit: str | None = None,
+    ) -> ClimateDualSetpointPlan:
+        """Assess the feasibility of a requested dual-setpoint temperature range without executing mutations.
+
+        A plan is an assessment only. It is not an approval ticket, executable command,
+        or authorization to actuate the device. Physical mutation is strictly forbidden.
+        """
+        clean_id = target_entity_id.strip() if isinstance(target_entity_id, str) else str(target_entity_id)
+        plan_id = f"plan_climate_dual_{uuid.uuid4().hex[:12]}"
+
+        # Resolve effective server-configured grid origin for this entity
+        effective_origin: float | None = None
+        effective_origin_unit: str | None = None
+        grid_config_error: str | None = None
+
+        try:
+            current_allowlist = validate_climate_allowlist()
+            origins_map = validate_climate_grid_origins(
+                raw_config=self._trusted_grid_origins_raw,
+                allowlist=current_allowlist,
+            )
+            if clean_id in origins_map:
+                effective_origin = origins_map[clean_id]["origin"]
+                effective_origin_unit = origins_map[clean_id]["unit"]
+        except ValidationError as exc:
+            grid_config_error = str(exc)
+        except Exception as exc:
+            grid_config_error = f"Failed to load trusted grid origin configuration: {exc}"
+
+        # Canonical SHA-256 digest binding exact entity ID, target_temp_low, target_temp_high, requested unit, and effective origin + unit
+        origin_digest_str = f"{effective_origin}:{effective_origin_unit}" if effective_origin is not None else "none:none"
+        digest_input = f"{clean_id}:{target_temp_low}:{target_temp_high}:{requested_unit or ''}:{origin_digest_str}"
+        input_digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+        # Reject non-finite, boolean, or malformed numeric inputs
+        is_low_valid = (
+            isinstance(target_temp_low, (int, float))
+            and not isinstance(target_temp_low, bool)
+            and math.isfinite(target_temp_low)
+        )
+        is_high_valid = (
+            isinstance(target_temp_high, (int, float))
+            and not isinstance(target_temp_high, bool)
+            and math.isfinite(target_temp_high)
+        )
+
+        safe_low = target_temp_low if is_low_valid else float("nan")
+        safe_high = target_temp_high if is_high_valid else float("nan")
+
+        if not is_low_valid or not is_high_valid:
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=safe_low,
+                target_temp_high=safe_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                is_feasible=False,
+                feasibility_status="state_unknown",
+                reasons=["Requested lower and upper temperatures must be finite numeric values."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+            )
+
+        # Range ordering check: lower target must be strictly less than upper target
+        if target_temp_low >= target_temp_high:
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=target_temp_low,
+                target_temp_high=target_temp_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                is_feasible=False,
+                feasibility_status="target_out_of_range",
+                reasons=[
+                    f"Requested lower target temperature ({target_temp_low}) must be strictly less than upper target temperature ({target_temp_high})."
+                ],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+            )
+
+        # Integration & climate awareness enablement checks
+        if not settings.HOME_ASSISTANT_ENABLED:
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=target_temp_low,
+                target_temp_high=target_temp_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                is_feasible=False,
+                feasibility_status="disabled",
+                reasons=["Home Assistant integration is disabled by policy (HOME_ASSISTANT_ENABLED=false)."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+            )
+
+        if not getattr(settings, "HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED", False):
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=target_temp_low,
+                target_temp_high=target_temp_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                is_feasible=False,
+                feasibility_status="disabled",
+                reasons=["Climate awareness is disabled by policy (HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=false)."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+            )
+
+        # Allowlist check
+        try:
+            allowlist = validate_climate_allowlist()
+        except ValidationError as exc:
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=target_temp_low,
+                target_temp_high=target_temp_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                is_feasible=False,
+                feasibility_status="not_allowlisted",
+                reasons=[str(exc)],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+            )
+
+        if clean_id not in allowlist:
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=target_temp_low,
+                target_temp_high=target_temp_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                is_feasible=False,
+                feasibility_status="not_allowlisted",
+                reasons=[f"Target entity '{clean_id}' is not in HOME_ASSISTANT_CLIMATE_ALLOWLIST."],
+                is_mutation_performed=False,
+                input_digest=input_digest,
+            )
+
+        # Observe entity state (read-only GET)
+        obs = await self.get_climate_observation(clean_id)
+
+        # Helper to construct plan with current observation attributes
+        def make_plan(feasibility_status: str, reasons: list[str], is_feasible: bool = False) -> ClimateDualSetpointPlan:
+            return ClimateDualSetpointPlan(
+                plan_id=plan_id,
+                entity_id=clean_id,
+                target_temp_low=target_temp_low,
+                target_temp_high=target_temp_high,
+                requested_unit=requested_unit,
+                grid_origin=effective_origin,
+                grid_origin_unit=effective_origin_unit,
+                current_temperature=obs.current_temperature,
+                current_target_temp_low=obs.target_temp_low,
+                current_target_temp_high=obs.target_temp_high,
+                current_target_temperature=obs.target_temperature,
+                min_temp=obs.min_temp,
+                max_temp=obs.max_temp,
+                target_temp_step=obs.target_temp_step,
+                supported_features=obs.supported_features,
+                temperature_unit=obs.temperature_unit,
+                hvac_mode=obs.hvac_mode,
+                hvac_modes=obs.hvac_modes,
+                is_feasible=is_feasible,
+                feasibility_status=feasibility_status,
+                reasons=reasons,
+                is_mutation_performed=False,
+                input_digest=input_digest,
+                data_classification=obs.data_classification,
+            )
+
+        # If observation is not ready, inherit the honest uncertainty status
+        if obs.state_readiness != "ready":
+            return make_plan(
+                feasibility_status=obs.state_readiness,
+                reasons=obs.reasons or [f"Entity is not ready for planning ({obs.state_readiness})."],
+            )
+
+        # 1. Dual-setpoint capability check (supported_features)
+        raw_feat = obs.attributes.get("supported_features")
+        is_cap_ok, cap_status, cap_reason = validate_dual_temperature_capability(
+            supported_features=obs.supported_features,
+            raw_supported_features=raw_feat,
+        )
+        if not is_cap_ok:
+            return make_plan(
+                feasibility_status=cap_status,
+                reasons=[cap_reason] if cap_reason else ["Capability validation failed."],
+            )
+
+        # 2. Operating mode compatibility check (must be 'heat_cool'; planner never switches mode)
+        is_mode_ok, mode_status, mode_reason = validate_dual_mode_compatibility(obs.hvac_mode)
+        if not is_mode_ok:
+            return make_plan(
+                feasibility_status=mode_status,
+                reasons=[mode_reason] if mode_reason else ["Operating mode is incompatible with dual-setpoint planning."],
+            )
+
+        # 3. Check unit consistency
+        if requested_unit is not None:
+            norm_requested_unit = parse_temperature_unit(requested_unit)
+            if norm_requested_unit is None:
+                return make_plan(
+                    feasibility_status="unit_unknown",
+                    reasons=[f"Requested temperature unit '{requested_unit}' is unrecognized or unsupported."],
+                )
+            if norm_requested_unit != obs.temperature_unit:
+                return make_plan(
+                    feasibility_status="unit_unknown",
+                    reasons=[
+                        f"Requested unit '{requested_unit}' conflicts with entity's reported unit '{obs.temperature_unit}'."
+                    ],
+                )
+
+        # 4. Validate temperature limits for both low and high
+        min_temp = obs.min_temp
+        max_temp = obs.max_temp
+        unit_str = obs.temperature_unit or ""
+
+        if min_temp is None or max_temp is None:
+            return make_plan(
+                feasibility_status="state_unknown",
+                reasons=["Missing supported minimum or maximum temperature bounds."],
+            )
+
+        if target_temp_low < min_temp:
+            return make_plan(
+                feasibility_status="target_out_of_range",
+                reasons=[
+                    f"Requested lower temperature {target_temp_low}{unit_str} is below minimum supported setpoint {min_temp}{unit_str}."
+                ],
+            )
+
+        if target_temp_low > max_temp:
+            return make_plan(
+                feasibility_status="target_out_of_range",
+                reasons=[
+                    f"Requested lower temperature {target_temp_low}{unit_str} is above maximum supported setpoint {max_temp}{unit_str}."
+                ],
+            )
+
+        if target_temp_high < min_temp:
+            return make_plan(
+                feasibility_status="target_out_of_range",
+                reasons=[
+                    f"Requested upper temperature {target_temp_high}{unit_str} is below minimum supported setpoint {min_temp}{unit_str}."
+                ],
+            )
+
+        if target_temp_high > max_temp:
+            return make_plan(
+                feasibility_status="target_out_of_range",
+                reasons=[
+                    f"Requested upper temperature {target_temp_high}{unit_str} is above maximum supported setpoint {max_temp}{unit_str}."
+                ],
+            )
+
+        # 5. Target temperature step & grid origin check
+        raw_step = obs.attributes.get("target_temp_step")
+        if raw_step is None and obs.target_temp_step is None:
+            return make_plan(
+                feasibility_status="step_unknown",
+                reasons=["Entity does not report target_temp_step metadata; step compatibility cannot be reliably established."],
+            )
+
+        if (
+            obs.target_temp_step is None
+            or obs.target_temp_step <= 0
+            or not math.isfinite(obs.target_temp_step)
+            or isinstance(raw_step, bool)
+        ):
+            display_step = raw_step if raw_step is not None else obs.target_temp_step
+            return make_plan(
+                feasibility_status="step_unknown",
+                reasons=[f"Entity reported invalid target_temp_step ({display_step!r}); step metadata must be a positive, finite number."],
+            )
+
+        # Step is valid. Check grid origin configuration.
+        if grid_config_error:
+            return make_plan(
+                feasibility_status="step_alignment_unknown",
+                reasons=[f"Server-side climate grid origin configuration error: {grid_config_error}"],
+            )
+
+        if effective_origin is None:
+            return make_plan(
+                feasibility_status="step_alignment_unknown",
+                reasons=[
+                    f"Entity reports target_temp_step={obs.target_temp_step}, but no trusted server-side step-grid origin is configured for '{clean_id}' "
+                    "(HOME_ASSISTANT_CLIMATE_GRID_ORIGINS). Feasibility planner cannot verify step alignment without operator-verified grid origin configuration."
+                ],
+            )
+
+        if effective_origin_unit != obs.temperature_unit:
+            return make_plan(
+                feasibility_status="step_alignment_unknown",
+                reasons=[
+                    f"Configured grid origin unit '{effective_origin_unit}' does not match entity's reported temperature unit '{obs.temperature_unit}'."
+                ],
+            )
+
+        # Validate alignment of target_temp_low
+        is_step_low_ok, step_low_status, step_low_reason = validate_temperature_step(
+            requested_temperature=target_temp_low,
+            step=obs.target_temp_step,
+            raw_step=raw_step,
+            grid_origin=effective_origin,
+        )
+        if not is_step_low_ok:
+            return make_plan(
+                feasibility_status=step_low_status,
+                reasons=[step_low_reason] if step_low_reason else ["Lower target temperature step validation failed."],
+            )
+
+        # Validate alignment of target_temp_high
+        is_step_high_ok, step_high_status, step_high_reason = validate_temperature_step(
+            requested_temperature=target_temp_high,
+            step=obs.target_temp_step,
+            raw_step=raw_step,
+            grid_origin=effective_origin,
+        )
+        if not is_step_high_ok:
+            return make_plan(
+                feasibility_status=step_high_status,
+                reasons=[step_high_reason] if step_high_reason else ["Upper target temperature step validation failed."],
+            )
+
+        # All checks passed: dual-setpoint plan is ready (feasibility assessment only, no mutation)
+        origin_desc = f" from trusted server-configured grid origin {effective_origin}{effective_origin_unit}"
+        return make_plan(
+            is_feasible=True,
+            feasibility_status="ready",
+            reasons=[
+                f"Requested dual-setpoint temperature range [{target_temp_low}, {target_temp_high}]{unit_str} is feasible: "
+                f"both targets align with reported step ({obs.target_temp_step}{unit_str}){origin_desc}, "
+                f"fall within operating bounds [{min_temp}, {max_temp}]{unit_str}, entity advertises dual-setpoint range capability (features={obs.supported_features}), "
+                f"and active mode '{obs.hvac_mode}' supports dual-setpoint regulation. "
+                "Guarantees metadata feasibility only; does not claim physical device connectivity or guarantee subsequent actuation success."
+            ],
         )

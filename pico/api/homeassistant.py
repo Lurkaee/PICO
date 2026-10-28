@@ -1,3 +1,4 @@
+import math
 import secrets
 from typing import Any, Literal
 from fastapi import APIRouter, Depends, Header, Query, Request, status
@@ -16,6 +17,7 @@ from pico.homeassistant.actuation import (
 from pico.homeassistant.climate import HomeAssistantClimateService
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
+    ClimateDualSetpointPlan,
     ClimateObservation,
     ClimateReadinessReport,
     ClimateSetpointPlan,
@@ -400,6 +402,66 @@ async def plan_climate_setpoint(
         requested_temperature=payload.target_temperature,
         requested_unit=payload.target_unit,
     )
+
+
+class ClimateDualSetpointPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_entity_id: str = Field(
+        description="Exact climate entity ID. Must belong to the Stage D allowlist.",
+    )
+    target_temp_low: float = Field(
+        description="Explicit requested lower target temperature setpoint.",
+    )
+    target_temp_high: float = Field(
+        description="Explicit requested upper target temperature setpoint.",
+    )
+    target_unit: str | None = Field(
+        default=None,
+        description="Optional explicit temperature unit (e.g. '°C', '°F').",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_request_inputs(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "grid_origin" in data:
+                raise ValueError(
+                    "Client-supplied 'grid_origin' is forbidden. Grid origins are server-side "
+                    "operator configurations and cannot be supplied or overridden in client requests."
+                )
+            for field in ("target_temp_low", "target_temp_high"):
+                val = data.get(field)
+                if isinstance(val, bool):
+                    raise ValueError(f"Field '{field}' must be a numeric temperature; boolean values are strictly forbidden.")
+                if val is not None and isinstance(val, (int, float)):
+                    if not math.isfinite(float(val)):
+                        raise ValueError(f"Field '{field}' must be a finite numeric temperature.")
+        return data
+
+
+@router.post(
+    "/climate/dual-setpoint/plan",
+    response_model=ClimateDualSetpointPlan,
+    summary="Assess feasibility of a requested dual-setpoint temperature range (read-only, no mutation)",
+)
+async def plan_climate_dual_setpoint(
+    payload: ClimateDualSetpointPlanRequest,
+) -> ClimateDualSetpointPlan:
+    """Create a structured dual-setpoint feasibility assessment plan for an allowlisted climate entity.
+
+    Performs read-only inspection of the current entity state, dual-setpoint capability,
+    operating mode, and temperature bounds.
+    NEVER causes physical action, service dispatch, or state mutation.
+    """
+    service = HomeAssistantClimateService()
+    return await service.assess_dual_setpoint_feasibility(
+        target_entity_id=payload.target_entity_id,
+        target_temp_low=payload.target_temp_low,
+        target_temp_high=payload.target_temp_high,
+        requested_unit=payload.target_unit,
+    )
+
 
 
 @router.get(
