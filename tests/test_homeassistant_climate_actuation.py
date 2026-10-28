@@ -1698,8 +1698,8 @@ async def test_dual_setpoint_read_after_write_verification_requires_both_targets
     """Verification fails if only one target temperature matches."""
     monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
 
-    dual_state = make_dual_setpoint_state()
-    # mutate_on_service=False so device state remains low=18.0, high=24.0 (does not update to 19.0/23.0)
+    dual_state = make_dual_setpoint_state(low=19.0, high=24.0)
+    # mutate_on_service=False so device state remains low=19.0, high=24.0 (lower matches requested 19.0, upper 24.0 != 23.0)
     transport, state_box = make_mock_climate_transport(
         initial_states={TEST_CLIMATE_A: dual_state},
         mutate_on_service=False,
