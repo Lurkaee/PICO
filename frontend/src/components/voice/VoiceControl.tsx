@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Square, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
 import { api } from '../../api/client';
 import { PerceptionStatus } from '../../types';
@@ -26,6 +26,11 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
   const [ambiguousSession, setAmbiguousSession] = useState<AmbiguousVoiceOperation | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
+  const activeSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
   useEffect(() => {
     let mounted = true;
     const fetchStatus = async () => {
@@ -39,6 +44,13 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
     fetchStatus();
     return () => {
       mounted = false;
+      const sessionId = activeSessionIdRef.current;
+      activeSessionIdRef.current = null;
+      if (sessionId && typeof api.cancelAudioSession === 'function') {
+        void Promise.resolve(api.cancelAudioSession(sessionId)).catch(() => {
+          // Cleanup must continue even if the backend is unavailable.
+        });
+      }
     };
   }, []);
 
@@ -77,6 +89,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
       const res = await api.stopAudioSession(activeSessionId);
       setIsRecording(false);
       setActiveSessionId(null);
+      activeSessionIdRef.current = null;
       if (res.transcription && res.transcription.trim()) {
         onTranscription(res.transcription.trim());
       } else {
@@ -94,6 +107,9 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
         setErrorNotice('Outcome unknown: network interrupted while stopping audio session. Backend state is unconfirmed.');
       } else {
         setErrorNotice(err instanceof Error ? err.message : String(err));
+        setIsRecording(false);
+        setActiveSessionId(null);
+        activeSessionIdRef.current = null;
       }
     } finally {
       setProcessing(false);
@@ -112,6 +128,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
       await api.cancelAudioSession(activeSessionId);
       setIsRecording(false);
       setActiveSessionId(null);
+      activeSessionIdRef.current = null;
       setErrorNotice('Audio capture session cancelled.');
     } catch (err) {
       const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
@@ -125,6 +142,9 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
         setErrorNotice('Outcome unknown: network interrupted while cancelling audio session. Backend session state is unconfirmed.');
       } else {
         setErrorNotice(err instanceof Error ? err.message : String(err));
+        setIsRecording(false);
+        setActiveSessionId(null);
+        activeSessionIdRef.current = null;
       }
     } finally {
       setProcessing(false);
@@ -142,11 +162,13 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
           setAmbiguousSession(null);
           setIsRecording(false);
           setActiveSessionId(null);
+          activeSessionIdRef.current = null;
           setErrorNotice('Audio session cancellation confirmed by server.');
         } else if (status.state === 'completed' || status.state === 'failed') {
           setAmbiguousSession(null);
           setIsRecording(false);
           setActiveSessionId(null);
+          activeSessionIdRef.current = null;
           setErrorNotice(`Audio session resolved as ${status.state} on server.`);
         } else {
           setErrorNotice(
@@ -158,11 +180,13 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
           setAmbiguousSession(null);
           setIsRecording(false);
           setActiveSessionId(null);
+          activeSessionIdRef.current = null;
           setErrorNotice('Audio session stop confirmed by server.');
         } else if (status.state === 'cancelled' || status.state === 'failed') {
           setAmbiguousSession(null);
           setIsRecording(false);
           setActiveSessionId(null);
+          activeSessionIdRef.current = null;
           setErrorNotice(`Audio session resolved as ${status.state} on server.`);
         } else {
           setErrorNotice(

@@ -125,7 +125,7 @@ export async function streamChat(
       body: JSON.stringify({
         message: payload.message,
         conversation_id: payload.conversation_id || null,
-        classification: payload.classification || 'INTERNAL',
+        data_classification: payload.classification || 'INTERNAL',
         stream: true,
       }),
       signal,

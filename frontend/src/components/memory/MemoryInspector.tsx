@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Search, Trash2, RefreshCw, AlertCircle, CheckCircle, Info, Clock } from 'lucide-react';
 import { api } from '../../api/client';
 import { ProceduralMemoryItem, SemanticFact, WorkingMemoryItem } from '../../types';
@@ -19,17 +19,22 @@ export const MemoryInspector: React.FC = () => {
   const [ambiguousFactIds, setAmbiguousFactIds] = useState<Record<string, string>>({});
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
+  const semanticRequestSeq = useRef(0);
 
-  const loadData = async () => {
+  const loadData = async (query: string = searchQuery) => {
+    const isSemantic = activeTab === 'semantic';
+    const seq = isSemantic ? ++semanticRequestSeq.current : 0;
     setLoading(true);
     setErrorNotice(null);
     try {
-      if (activeTab === 'semantic') {
-        if (searchQuery.trim()) {
-          const results = await api.searchSemanticFacts(searchQuery.trim(), 20);
+      if (isSemantic) {
+        if (query.trim()) {
+          const results = await api.searchSemanticFacts(query.trim(), 20);
+          if (seq !== semanticRequestSeq.current) return;
           setSemanticFacts(results);
         } else {
           const items = await api.getSemanticFacts(50, 0);
+          if (seq !== semanticRequestSeq.current) return;
           setSemanticFacts(items);
         }
       } else if (activeTab === 'working') {
@@ -45,15 +50,19 @@ export const MemoryInspector: React.FC = () => {
       setLastSuccessfulFetch(new Date());
       setIsStale(false);
     } catch (err) {
+      if (isSemantic && seq !== semanticRequestSeq.current) return;
       setErrorNotice(err instanceof Error ? err.message : String(err));
       // Retain in-memory records during transient failure
       setIsStale(true);
     } finally {
-      setLoading(false);
+      if (!isSemantic || seq === semanticRequestSeq.current) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
+    semanticRequestSeq.current++;
     loadData();
   }, [activeTab]);
 
@@ -145,7 +154,7 @@ export const MemoryInspector: React.FC = () => {
             Inspect synthesized working, episodic, semantic, and procedural knowledge with provenance.
           </p>
         </div>
-        <button className="btn btn-secondary" onClick={loadData} disabled={loading}>
+        <button className="btn btn-secondary" onClick={() => loadData()} disabled={loading}>
           <RefreshCw className={loading ? 'animate-spin' : ''} style={{ width: 14, height: 14 }} />
           Refresh
         </button>
@@ -244,7 +253,7 @@ export const MemoryInspector: React.FC = () => {
                 className="btn btn-secondary"
                 onClick={() => {
                   setSearchQuery('');
-                  loadData();
+                  loadData('');
                 }}
               >
                 Clear

@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -73,14 +73,10 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Accept", "Content-Type", "X-CSRF-Token"],
 )
 
 
@@ -265,13 +261,21 @@ async def spa_fallback_middleware(request: Request, call_next):
     if response.status_code == 404 and request.method in ("GET", "HEAD"):
         path = request.url.path.lstrip("/")
         if not (path.startswith("api") or path in ("health", "docs", "redoc", "openapi.json")):
-            target_file = frontend_dist / path
+            dist_root = frontend_dist.resolve()
+            if PureWindowsPath(path).drive or "\0" in path:
+                return response
+            try:
+                target_file = (dist_root / path).resolve()
+            except (ValueError, OSError):
+                return response
+            if not target_file.is_relative_to(dist_root):
+                return response
             if target_file.is_file():
                 from starlette.responses import FileResponse
 
                 return FileResponse(str(target_file))
-            index_file = frontend_dist / "index.html"
-            if index_file.is_file():
+            index_file = (dist_root / "index.html").resolve()
+            if index_file.is_relative_to(dist_root) and index_file.is_file():
                 from starlette.responses import FileResponse
 
                 return FileResponse(str(index_file))

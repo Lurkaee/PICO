@@ -18,6 +18,27 @@ describe('VoiceControl Push-to-Talk Lifecycle', () => {
     vi.clearAllMocks();
   });
 
+  it('cancels the tracked session on unmount even if cancellation fails', async () => {
+    vi.mocked(api.getPerceptionStatus).mockResolvedValueOnce({
+      enabled: true, audio_capture_enabled: true, vision_enabled: false,
+      motion_enabled: false, environmental_enabled: false, adapter_mode: 'mock',
+      active_audio_sessions: 0,
+    });
+    vi.mocked(api.startAudioSession).mockResolvedValueOnce({
+      session_id: 'unmounted_session', status: 'active',
+    });
+    vi.mocked(api.cancelAudioSession).mockRejectedValueOnce(new Error('Backend unavailable'));
+    const onTranscription = vi.fn();
+    const { unmount } = render(<VoiceControl onTranscription={onTranscription} />);
+    const start = screen.getByLabelText('Start voice capture session');
+    await waitFor(() => expect(start).not.toBeDisabled());
+    fireEvent.click(start);
+    await screen.findByLabelText('Stop recording and transcribe');
+    unmount();
+    await waitFor(() => expect(api.cancelAudioSession).toHaveBeenCalledWith('unmounted_session'));
+    expect(onTranscription).not.toHaveBeenCalled();
+  });
+
   it('renders disabled state when perception subsystem is unavailable', async () => {
     vi.mocked(api.getPerceptionStatus).mockResolvedValueOnce({
       enabled: false,

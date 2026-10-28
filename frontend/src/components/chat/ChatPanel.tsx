@@ -32,6 +32,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const activeConversationIdRef = useRef<string | null>(activeConversation?.id ?? null);
+  const activeStreamIdRef = useRef<number>(0);
+  const streamConversationIdRef = useRef<string | null>(null);
+
+  activeConversationIdRef.current = activeConversation?.id ?? streamConversationIdRef.current ?? null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
@@ -55,13 +60,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   // Load message history when active conversation changes
   useEffect(() => {
+    activeConversationIdRef.current = activeConversation?.id ?? null;
     if (!activeConversation) {
       setMessages([]);
+      setStreaming(false);
+      setStreamingContent('');
+      setCurrentRouting(null);
+      setIsCancelled(false);
+      streamConversationIdRef.current = null;
       return;
     }
 
+    // Immediately filter local messages to retain only those matching the newly active conversation.
+    // This prevents previous conversation messages from lingering while history loads or if the request fails,
+    // while preserving unpersisted local messages for the newly active conversation.
+    setMessages((prev) => prev.filter((m) => m.conversation_id === activeConversation.id));
+
     let isMounted = true;
     setLoadingHistory(true);
+    if (streamConversationIdRef.current !== activeConversation.id) {
+      setStreaming(false);
+      setStreamingContent('');
+      setCurrentRouting(null);
+      setIsCancelled(false);
+    }
     setStreamError(null);
     setAmbiguousOutcome(false);
 
@@ -73,7 +95,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           setMessages((prev) => {
             if (prev.length === 0) return sorted;
             const existingIds = new Set(sorted.map((m) => m.id));
-            const newLocal = prev.filter((m) => !existingIds.has(m.id));
+            const newLocal = prev.filter(
+              (m) => m.conversation_id === activeConversation.id && !existingIds.has(m.id)
+            );
             return [...sorted, ...newLocal];
           });
         }
@@ -122,8 +146,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       try {
         const title = trimmed.slice(0, 30) + (trimmed.length > 30 ? '...' : '');
         const newConv = await api.createConversation(title);
-        onConversationCreated(newConv);
         convId = newConv.id;
+        activeConversationIdRef.current = newConv.id;
+        streamConversationIdRef.current = newConv.id;
+        onConversationCreated(newConv);
       } catch (err) {
         // Do not clear the draft before the required conversation-creation request succeeds
         setStreamError(`Failed to initialize session: ${err instanceof Error ? err.message : String(err)}. Message retained in input.`);
@@ -145,6 +171,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setMessages((prev) => [...prev, userMessage]);
 
     // Prepare streaming
+    const streamId = ++activeStreamIdRef.current;
+    streamConversationIdRef.current = convId ?? null;
     setStreaming(true);
     setStreamingContent('');
     setCurrentRouting(null);
@@ -156,101 +184,116 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     let finalRouting: RoutingMetadata | null = null;
     let completionSuccessful = false;
 
-    await streamChat(
-      {
-        message: trimmed,
-        conversation_id: convId,
-        classification,
-        stream: true,
-      },
-      {
-        onMeta: (meta) => {
-          if (meta.provider && meta.model) {
-            const routing: RoutingMetadata = {
-              provider: meta.provider,
-              model: meta.model,
-              effective_classification: meta.classification || classification,
-              decision_rule: meta.decision_rule,
-            };
-            setCurrentRouting(routing);
-            finalRouting = routing;
-          }
+    try {
+      await streamChat(
+        {
+          message: trimmed,
+          conversation_id: convId,
+          classification,
+          stream: true,
         },
-        onToken: (token) => {
-          accumulated += token;
-          setStreamingContent(accumulated);
+        {
+          onMeta: (meta) => {
+            if (activeConversationIdRef.current !== convId || activeStreamIdRef.current !== streamId) {
+              return;
+            }
+            if (meta.provider && meta.model) {
+              const routing: RoutingMetadata = {
+                provider: meta.provider,
+                model: meta.model,
+                effective_classification: meta.classification || classification,
+                decision_rule: meta.decision_rule,
+              };
+              setCurrentRouting(routing);
+              finalRouting = routing;
+            }
+          },
+          onToken: (token) => {
+            accumulated += token;
+            if (activeConversationIdRef.current === convId && activeStreamIdRef.current === streamId) {
+              setStreamingContent(accumulated);
+            }
+          },
+          onDone: (done) => {
+            completionSuccessful = true;
+            if (done.routing_metadata) {
+              finalRouting = done.routing_metadata;
+            }
+            if (activeConversationIdRef.current === convId && activeStreamIdRef.current === streamId) {
+              if (done.routing_metadata) {
+                setCurrentRouting(done.routing_metadata);
+              }
+              const assistantMessage: Message = {
+                id: `asst_${Date.now()}`,
+                conversation_id: convId!,
+                role: 'assistant',
+                content: accumulated,
+                created_at: new Date().toISOString(),
+                routing_metadata: finalRouting,
+              };
+              setMessages((prev) => [...prev, assistantMessage]);
+              setStreamingContent('');
+            }
+          },
+          onError: (err) => {
+            if (activeConversationIdRef.current !== convId || activeStreamIdRef.current !== streamId) {
+              return;
+            }
+            const isNetworkInterruption =
+              err.error === 'NetworkError' ||
+              err.error === 'TimeoutError' ||
+              !isBackendReachable ||
+              (err.detail && err.detail.toLowerCase().includes('network'));
+
+            if (isNetworkInterruption) {
+              setAmbiguousOutcome(true);
+              setStreamError(
+                'Stream connection lost. Outcome uncertain: check conversation history before resubmitting. Automatic retry is prevented to protect against duplicate actions.'
+              );
+            } else {
+              setStreamError(err.detail ? `${err.error}: ${err.detail}` : err.error);
+            }
+          },
         },
-        onDone: (done) => {
-          completionSuccessful = true;
-          if (done.routing_metadata) {
-            finalRouting = done.routing_metadata;
-            setCurrentRouting(done.routing_metadata);
-          }
-          const assistantMessage: Message = {
-            id: `asst_${Date.now()}`,
+        controller.signal
+      );
+    } catch (err) {
+      if (activeConversationIdRef.current === convId && activeStreamIdRef.current === streamId) {
+        if (!controller.signal.aborted) {
+          setStreamError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    } finally {
+      const isCurrentStreamInstance = activeStreamIdRef.current === streamId;
+      const isCurrentConv = activeConversationIdRef.current === convId;
+
+      if (isCurrentStreamInstance) {
+        setStreaming(false);
+        streamConversationIdRef.current = null;
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
+        setStreamingContent('');
+      }
+
+      if (!completionSuccessful && isCurrentConv && isCurrentStreamInstance) {
+        const cancelled = controller.signal.aborted;
+        if (cancelled) {
+          setIsCancelled(true);
+        } else {
+          setStreamError((previous) => previous || 'Response stream interrupted before completion.');
+        }
+        if (accumulated) {
+          const partialMessage: Message = {
+            id: `asst_interrupted_${Date.now()}`,
             conversation_id: convId!,
             role: 'assistant',
-            content: accumulated,
+            content: `${accumulated}\n\n[${cancelled ? 'Generation stopped by user' : 'Response stream interrupted'}]`,
             created_at: new Date().toISOString(),
             routing_metadata: finalRouting,
           };
-          setMessages((prev) => [...prev, assistantMessage]);
-          setStreamingContent('');
-          setStreaming(false);
-          abortControllerRef.current = null;
-        },
-        onError: (err) => {
-          setStreaming(false);
-          abortControllerRef.current = null;
-          const isNetworkInterruption =
-            err.error === 'NetworkError' ||
-            err.error === 'TimeoutError' ||
-            !isBackendReachable ||
-            (err.detail && err.detail.toLowerCase().includes('network'));
-
-          if (accumulated && !completionSuccessful) {
-            // Keep the partial message labeled as interrupted, never completed
-            const interruptedMsg: Message = {
-              id: `asst_interrupted_${Date.now()}`,
-              conversation_id: convId!,
-              role: 'assistant',
-              content: `${accumulated}\n\n[Response stream interrupted]`,
-              created_at: new Date().toISOString(),
-              routing_metadata: finalRouting,
-            };
-            setMessages((prev) => [...prev, interruptedMsg]);
-            setStreamingContent('');
-          }
-
-          if (isNetworkInterruption) {
-            setAmbiguousOutcome(true);
-            setStreamError(
-              'Stream connection lost. Outcome uncertain: check conversation history before resubmitting. Automatic retry is prevented to protect against duplicate actions.'
-            );
-          } else {
-            setStreamError(err.detail ? `${err.error}: ${err.detail}` : err.error);
-          }
-        },
-      },
-      controller.signal
-    );
-
-    // If abort was triggered by user stop control
-    if (controller.signal.aborted) {
-      setIsCancelled(true);
-      setStreaming(false);
-      abortControllerRef.current = null;
-      if (accumulated) {
-        const cancelledMsg: Message = {
-          id: `asst_cancelled_${Date.now()}`,
-          conversation_id: convId!,
-          role: 'assistant',
-          content: `${accumulated}\n\n[Generation stopped by user]`,
-          created_at: new Date().toISOString(),
-          routing_metadata: finalRouting,
-        };
-        setMessages((prev) => [...prev, cancelledMsg]);
-        setStreamingContent('');
+          setMessages((prev) => [...prev, partialMessage]);
+        }
       }
     }
   };

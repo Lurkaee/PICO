@@ -132,13 +132,57 @@ class OperatorSessionService:
 
         return PairingCode(code=code, expires_at=expires_at, approver=LOCAL_OPERATOR_IDENTITY)
 
+    def _increment_failed_attempts(
+        self,
+        now: datetime,
+        db: Optional[Session] = None,
+        max_retries: int = 5,
+    ) -> int:
+        """Atomically increment failed_attempts on active, unconsumed, non-locked challenges.
+
+        Uses an atomic SQL update expression failed_attempts = failed_attempts + 1.
+        Handles transient SQLite busy/locked errors with bounded retries without bypassing lockout.
+        """
+        import time
+        from sqlalchemy.exc import OperationalError
+
+        stmt = (
+            update(OperatorPairingChallenge)
+            .where(
+                OperatorPairingChallenge.consumed_at.is_(None),
+                OperatorPairingChallenge.expires_at > now,
+                OperatorPairingChallenge.failed_attempts < OperatorPairingChallenge.max_attempts,
+            )
+            .values(
+                failed_attempts=OperatorPairingChallenge.failed_attempts + 1
+            )
+        )
+
+        for attempt in range(max_retries):
+            with self._get_db(db) as write_session:
+                try:
+                    res = write_session.execute(stmt)
+                    write_session.commit()
+                    return res.rowcount
+                except OperationalError as exc:
+                    write_session.rollback()
+                    err_msg = str(exc).lower()
+                    if "locked" not in err_msg and "busy" not in err_msg:
+                        raise
+                    if attempt < max_retries - 1:
+                        time.sleep(0.01 * (2**attempt))
+                        continue
+                    raise AuthorizationError(
+                        "Database busy during operator pairing verification. Please retry your request."
+                    ) from exc
+        return 0
+
     def pair(
         self,
         code: str,
         session_ttl_seconds: int = 3600,
         db: Optional[Session] = None,
     ) -> OperatorSession:
-
         """
         Validate pairing code against active unconsumed challenges.
         Atomically consumes the code and creates an authenticated OperatorSession.
@@ -181,15 +225,22 @@ class OperatorSessionService:
                     break
 
             if not matched_ch:
-                # Increment failed attempts on active non-locked challenges
-                for ch in challenges:
-                    if ch.failed_attempts < ch.max_attempts:
-                        ch.failed_attempts += 1
-                s.commit()
+                # End the read transaction so SQLite does not suffer from lock-upgrade deadlocks
+                s.rollback()
+                self._increment_failed_attempts(now=now, db=db)
                 raise AuthorizationError("Invalid or expired pairing code.")
 
-            # Atomically consume the matching challenge
-            result = s.execute(
+            # Rollback the read transaction before acquiring write lock to avoid lock-upgrade deadlocks
+            s.rollback()
+
+            import time
+            from sqlalchemy.exc import OperationalError
+
+            session_id = secrets.token_urlsafe(32)
+            csrf_token = secrets.token_urlsafe(32)
+            session_expires_at = now + timedelta(seconds=session_ttl_seconds)
+
+            consume_stmt = (
                 update(OperatorPairingChallenge)
                 .where(
                     OperatorPairingChallenge.id == matched_ch.id,
@@ -199,30 +250,45 @@ class OperatorSessionService:
                 .values(consumed_at=now)
             )
 
-            if result.rowcount == 0:
-                s.rollback()
+            consumed = False
+            for attempt in range(5):
+                with self._get_db(db) as write_session:
+                    try:
+                        result = write_session.execute(consume_stmt)
+                        if result.rowcount == 0:
+                            write_session.rollback()
+                            raise AuthorizationError("Pairing code has already been consumed or locked.")
+
+                        session_model = OperatorSessionModel(
+                            id=session_id,
+                            approver=matched_ch.approver,
+                            csrf_token=csrf_token,
+                            created_at=now,
+                            expires_at=session_expires_at,
+                            is_active=True,
+                        )
+                        write_session.add(session_model)
+                        write_session.commit()
+                        consumed = True
+                        break
+                    except OperationalError as exc:
+                        write_session.rollback()
+                        err_msg = str(exc).lower()
+                        if "locked" not in err_msg and "busy" not in err_msg:
+                            raise
+                        if attempt < 4:
+                            time.sleep(0.01 * (2**attempt))
+                            continue
+                        raise AuthorizationError(
+                            "Database busy during operator pairing verification. Please retry your request."
+                        ) from exc
+
+            if not consumed:
                 raise AuthorizationError("Pairing code has already been consumed or locked.")
-
-            # Session approver identity is bound to the challenge created by the CLI
-            bound_approver = matched_ch.approver
-            session_id = secrets.token_urlsafe(32)
-            csrf_token = secrets.token_urlsafe(32)
-            session_expires_at = now + timedelta(seconds=session_ttl_seconds)
-
-            session_model = OperatorSessionModel(
-                id=session_id,
-                approver=bound_approver,
-                csrf_token=csrf_token,
-                created_at=now,
-                expires_at=session_expires_at,
-                is_active=True,
-            )
-            s.add(session_model)
-            s.commit()
 
             return OperatorSession(
                 session_id=session_id,
-                approver=bound_approver,
+                approver=matched_ch.approver,
                 csrf_token=csrf_token,
                 created_at=now,
                 expires_at=session_expires_at,
