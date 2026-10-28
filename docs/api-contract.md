@@ -18,6 +18,23 @@
   ```
   Validation errors return HTTP 422 with field-level breakdown.
 
+### 1.1 Client Error Taxonomy & Resilience Contract (Milestone P10.2)
+
+The desktop client implements a structured error model mapping transport, timeout, and HTTP envelopes:
+- **`NetworkError`**: Transport-level failure (DNS resolution, connection refused, offline host). `is_offline = true`.
+- **`TimeoutError`**: Bounded client-side request timeout (15 seconds default via `AbortController`).
+- **`AuthenticationError`**: HTTP 401 Unauthorized or HTTP 403 Forbidden. Operator session expired, revoked, or missing.
+- **`ProviderUnavailableError`**: HTTP 503 with error codes `PROVIDER_CONNECTION_ERROR`, `PROVIDER_UNAVAILABLE`, or `SCHEDULER_QUEUE_FULL`. Indicates backend is healthy but inference runtime is unavailable.
+- **`ApiError`**: General HTTP errors (400, 404, 409, 422, 500) carrying parsed server error envelopes.
+
+#### Recovery & Ambiguity Rules:
+1. **Zero Blind Retries on Mutating Endpoints**: Requests to mutating endpoints (`POST`, `PUT`, `DELETE`) resulting in network timeout or transport interruption are classified as **"Outcome unknown"**. The client strictly never automatically replays these mutations.
+2. **Single-Flight Health Probing**: Health probes against `/health` are single-flighted, preventing redundant concurrent probes. Backoff begins at 3 seconds, scales by 1.5x, and caps at 30 seconds with jitter.
+3. **Session Revalidation**: When backend connectivity recovers, the client immediately probes `GET /api/operator/status` before re-enabling consequential approval controls.
+4. **Entity-Scoped Ambiguous Mutation Locks (Milestone P10.2.1)**: When a mutation (`POST`, `PUT`, `DELETE`) encounters network timeout or transport failure, the affected entity is locked in an ambiguous state in client memory. All further mutation actions on the entity are disabled until an explicit `Reconcile` action performs an authoritative `GET` query to synchronize real server state.
+5. **Service Worker Cache Boundary (Milestone P10.2.1)**: Cache storage is strictly restricted to static shell assets (`/`, `/index.html`, `/favicon.ico`, `/manifest.webmanifest`, `/manifest.json`, `/vite.svg`, `/assets/*`). All non-GET methods, cross-origin requests, `/api/*`, `/health`, and schema/doc endpoints (`/openapi.json`, `/docs`, `/redoc`) strictly bypass the cache.
+6. **Connectivity Lifecycle & StrictMode Safety (Milestone P10.2.1)**: Disposed `ConnectivityManager` instances are never restarted during React StrictMode effect replay; a fresh viable manager is cleanly instantiated. Reconnection triggers operator session revalidation on confirmed backend reachability (`online` or `degraded`) regardless of local inference provider status.
+
 ---
 
 ## 2. Active Endpoints (Phase 1, Slice 1)
@@ -482,6 +499,11 @@
   - **Description**: Cooperatively aborts an active audio recording session, immediately releasing all transient audio buffers.
   - **Response (200 OK)**: `AudioSessionStartResponse`
 
+- **`GET /api/perception/audio/session/{session_id}`**
+  - **Description**: Read-only status query for an audio capture session. Exposes only essential session metadata (`session_id`, `state`, `started_at`, `completed_at`, `microphone_active`, `source_device`) without leaking raw audio samples, PCM buffers, or speech transcriptions. Enables authoritative client reconciliation following ambiguous network failures without compromising privacy.
+  - **Response (200 OK)**: `AudioSessionStatusResponse`
+  - **Response (404 Not Found)**: If `session_id` does not exist or has expired.
+
 - **`POST /api/perception/audio/synthesize`**
   - **Description**: Local text-to-speech synthesis through provider-neutral TTS adapter.
   - **Request Body**: `AudioSynthesisRequest` (`text`, optional `voice_id`, `speed`).
@@ -580,6 +602,116 @@
   - **Security Invariant**: Never calls Home Assistant service endpoints, mutates device state, automatically enables actuation, exposes secrets, or claims physical connectivity unless explicitly observed via read-only check.
   - **Response (200 OK)**: `ActuationReadinessReport` (`ready_for_commissioning`, `target_entity_id`, `live_check_performed`, `live_passed`, `reported_state`, `actuation_enabled`, `checks`, `summary`).
 
+---
+
+### 2.9.1 Stage C Switch/Plug Control (Milestone P7.4.1 & P7.4.1.2)
+
+- **`POST /api/homeassistant/switch/plan`**
+  - **Description**: Create a structured action plan for an allowlisted switch without causing any physical action (strictly read-only).
+  - **Request Body**: `SwitchPlanRequest` (`target_state: Literal["on", "off"]`, `target_entity_id: str`).
+  - **Response (200 OK)**: `SwitchActuationPlan` (`plan_id`, `entity_id`, `requested_state`, `current_state`, `state_readiness`, `service`, `is_mutation_needed`, `input_digest`, `is_mutation_performed=false`).
+
+- **`POST /api/homeassistant/switch/propose`**
+  - **Description**: Propose an actuation execution for an allowlisted switch. Creates a `ToolExecution` in `awaiting_approval` status bound to SHA-256 digest. Fails closed without valid `X-Pico-Approval-Token`.
+  - **Request Body**: `SwitchProposeRequest` (`target_state: Literal["on", "off"]`, `target_entity_id: str`, optional `reason`).
+  - **Headers**: `X-Pico-Approval-Token` (mandatory).
+  - **Response (201 Created)**: `ToolExecutionResponse` (status: `awaiting_approval`).
+
+- **`GET /api/homeassistant/switch/readiness`**
+  - **Description**: Evaluate commissioning and physical action readiness for allowlisted switch entities without executing mutations.
+  - **Query Parameters**: `check_live: bool` (default: `false`), `target_entity_id: str | None` (optional).
+  - **Response (200 OK)**: `SwitchActuationReadinessReport`.
+
+- **`GET /api/homeassistant/switch/{execution_id}`**
+  - **Description**: Inspect approval state, execution status, and verification outcome of a switch actuation execution.
+  - **Response (200 OK)**: `ToolExecutionResponse`.
+
+---
+
+### 2.9.2 Stage D Read-Only Climate Awareness & Safe Setpoint Feasibility (Milestones P7.4.2.1, P7.4.2.1.1, P7.4.2.1.2)
+
+**Operational Invariants & Safety Constraints**:
+- **Strictly Read-Only Awareness & Planning**: Under no circumstances does Milestone P7.4.2.1 change thermostat setpoints, adjust HVAC modes, toggle fan modes, activate presets, or dispatch mutations. `is_mutation_performed=false` is guaranteed. Physical actuation remains strictly disabled.
+- **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_ENABLED=true` and `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true` (disabled by default). Does NOT enable physical actuation.
+- **Exact String Allowlist**: `HOME_ASSISTANT_CLIMATE_ALLOWLIST` must be a JSON array of exact `climate.*` entity IDs. Wildcards (`*`), prefixes, regex, empty allowlist, whitespace variations, and non-climate domains fail closed with `ValidationError`.
+- **Bounded Sanitized Attributes**: State payloads pass through `sanitize_entity_attributes` and expose only trustworthy bounded fields (`current_temperature`, `temperature`, `min_temp`, `max_temp`, `target_temp_step`, `supported_features`, `temperature_unit`, `hvac_mode`, `hvac_modes`). Unvetted attributes, tokens, and GPS coordinates are dropped. Booleans are strictly rejected for all numeric attributes.
+- **Single-Setpoint Operating Mode Semantics (Milestone P7.4.2.1.2)**:
+  Single-temperature feasibility planning assesses feasibility for setting a single target temperature. It does not switch modes or create dual-setpoint ranges:
+  - `heat` and `cool`: Fully compatible operating modes when the entity supports single setpoints (`ClimateEntityFeature.TARGET_TEMPERATURE`).
+  - `auto`: Incompatible (`mode_incompatible`). Home Assistant core documentation explicitly specifies: *"The temperature cannot be set in this mode."*
+  - `heat_cool`: Incompatible (`mode_incompatible`). This mode operates via a dual-setpoint range (`target_temp_low` and `target_temp_high`); single setpoint planning must not claim feasibility.
+  - `dry`: Fails closed as `mode_incompatible`. Dehumidification mode does not establish universal single-temperature compatibility across integrations.
+  - `off` and `fan_only`: Incompatible (`mode_incompatible`). The entity is off or running fan-only without temperature regulation.
+  - Feature bitmask precedence: A `supported_features` bitmask declaring single-temperature capability cannot override an incompatible current operating mode.
+- **Step-Grid Alignment Semantics & Trusted Grid Origin (Milestones P7.4.2.1.2 & P7.4.2.1.3)**:
+  Home Assistant documents `target_temp_step` as the step increment without establishing an authoritative grid origin (neither 0.0 nor `min_temp` can be assumed as a universal origin).
+  - **Removal of Caller Authority (Milestone P7.4.2.1.3)**: Callers and client requests must NOT establish, supply, or override grid origins. Client-supplied `grid_origin` in `ClimatePlanRequest` is strictly forbidden and rejected with HTTP 422 (`extra="forbid"` with explicit validator).
+  - **Server-Controlled Per-Entity Configuration**: Trusted step-grid origins live exclusively in server-side operator configuration (`HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`, default `"{}"`).
+    - Format: `{"climate.entity_id": {"origin": 16.0, "unit": "°C"}}`.
+    - Operator Verification: Operators must verify device step-grid origins from authoritative manufacturer/integration specifications before configuring them. Never inferred automatically from `min_temp`, current temperature, requested setpoint, friendly names, or model proposals.
+    - Fail-Closed Validation: Exact `climate.*` entity IDs, must be present in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`, no wildcards or special characters, exactly `{"origin", "unit"}` fields, finite non-negative non-boolean numeric origin, and canonical unit matching the entity's observed unit.
+  - When an entity lacks a configured server origin, step alignment fails closed as `step_alignment_unknown` (`is_feasible=false`).
+  - When a verified server origin is configured and unit-compatible, alignment is evaluated via decimal-safe arithmetic: `abs(requested - origin) % step == 0`.
+  - Misaligned setpoint returns `target_step_mismatch`. Missing, zero, negative, boolean, or invalid `target_temp_step` returns `step_unknown`.
+  - Canonical SHA-256 plan digest binds exact entity ID, requested temperature, requested unit, and effective trusted origin + unit.
+  - Never silently round or modify the requested temperature.
+- **Fail-Closed Feasibility Planning & Status Taxonomy (Milestones P7.4.2.1.1, P7.4.2.1.2 & P7.4.2.1.3)**:
+  Requested target temperatures are evaluated against reported device limits, step alignment, capability bitmasks, and operating mode compatibility. Structured outcomes include:
+  - `ready`: All reported constraints satisfied (unit match, numerical range, step alignment under established grid origin, single setpoint capability, compatible operating mode). Certifies metadata feasibility only; never claims physical device connectivity or guarantees subsequent actuation success.
+  - `target_out_of_range`: Requested setpoint is below reported `min_temp` or above reported `max_temp`.
+  - `target_step_mismatch`: Requested setpoint conflicts with reported `target_temp_step` increment relative to an established grid origin.
+  - `step_alignment_unknown`: Step increment is reported, but the step-grid origin is unverified/unknown; fails closed to prevent unverified alignment claims.
+  - `step_unknown`: Entity reports missing, zero, negative, boolean, or invalid `target_temp_step`.
+  - `mode_incompatible`: Current reported operating mode (`off`, `fan_only`, `auto`, `heat_cool`, `dry`, or unrecognized) does not support single-temperature regulation.
+  - `unsupported_capability`: Entity does not support single target temperature setpoints (e.g. only supports dual-setpoint range `TARGET_TEMPERATURE_RANGE` or lacks temperature features).
+  - `capability_unknown`: Reliable capability metadata cannot be established from reported `supported_features`.
+  - `unit_unknown`: Reported or requested temperature unit is missing, unrecognized, or mismatched.
+  - `state_unavailable`: Entity is unreachable or reported as `unavailable`.
+  - `state_unknown`: Entity state is reported as `unknown` or bounds are missing/contradictory.
+  - `not_allowlisted`: Target entity is not present in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`.
+  - `disabled`: Integration or climate awareness is disabled by policy.
+
+- **`POST /api/homeassistant/climate/plan`**
+  - **Description**: Evaluates the feasibility of a requested temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
+  - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str | None = None`). Any client attempt to supply `grid_origin` or extra fields is rejected with HTTP 422.
+  - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `grid_origin: float | None`, `grid_origin_unit: str | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
+
+- **`GET /api/homeassistant/climate/observe/{entity_id}`**
+  - **Description**: Inspects the current reported state and operating bounds of an allowlisted climate entity. Guaranteed read-only GET.
+  - **Path Parameters**: `entity_id: str` (must match exact allowlisted `climate.*` entity).
+  - **Response (200 OK)**: `ClimateObservation` (`entity_id: str`, `domain: str = "climate"`, `state: str`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `state_readiness: str`, `reasons: list[str]`, `attributes: dict`, `is_mutation_performed: bool = false`, `physical_device_connectivity_claimed: bool = false`).
+
+- **`GET /api/homeassistant/climate/readiness`**
+  - **Description**: Evaluates Stage D climate awareness and observation readiness. Offline preflight performs zero network requests. Live read-only check (`check_live=true`) probes the target climate entity without mutations.
+  - **Query Parameters**: `check_live: bool` (default: `false`), `target_entity_id: str | None` (optional).
+  - **Response (200 OK)**: `ClimateReadinessReport` (`ready_for_observation`, `target_entity_id`, `allowlisted_entities`, `climate_awareness_enabled`, `actuation_enabled: bool`, `live_check_performed`, `live_passed`, `state_readiness`, `observation`, `checks`, `summary`).
+
+---
+
+### 2.9.3 Stage D Allowlisted Single-Setpoint Climate Actuation (Milestone P7.4.2.2)
+
+**Operational Invariants & Safety Constraints**:
+- **Single Operation Supported**: Setting target temperature on an explicitly allowlisted `climate.*` entity. The entity must already be in a compatible operating mode (`heat` or `cool`). Automatic mode changes, fan mode adjustments, preset activation, `heat_cool` dual-range setpoints, and generic service calls (`call_service`) are strictly prohibited.
+- **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true` (default: `False`). All parent gates must also be satisfied: `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true`, non-empty `HOME_ASSISTANT_CLIMATE_ALLOWLIST`, valid server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`, `APPROVAL_SECRET_TOKEN`, and `homeassistant:actuate` permission.
+- **Fail-Closed Target Allowlist**: Target entity must match an exact string in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`. Wildcards, regex, prefixes, and non-climate domains fail closed with `ValidationError`.
+- **Server-Controlled Grid Origins**: Client requests cannot supply or override `grid_origin`. Setting `grid_origin` or extra properties is forbidden and rejected with HTTP 422. Step alignment is computed strictly against server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`.
+- **Mandatory Pre-Dispatch Verification**: Authoritative fresh read immediately before mutation validates entity availability, mode compatibility (`heat` or `cool`), range bounds (`min_temp <= target <= max_temp`), step alignment, single-use approval ticket validity, and triple-digest agreement (`recomputed == persisted == approved`).
+- **Idempotency & State Satisfaction**: If the reported target setpoint (`temperature` attribute) already equals the requested setpoint, physical dispatch is skipped (`dispatch_status='already_satisfied'`) and verified independently.
+- **Single Dispatch Boundary**: Exactly one HTTP `POST /api/services/climate/set_temperature` call with `{"entity_id": target_id, "temperature": target_temp}`. Strictly zero automatic retries (`max_retries=0`, `idempotent=False`, `consequential=True`) on timeouts or failures.
+- **Independent Read-After-Write Verification**: Post-dispatch state is independently observed via read-only `GET /api/states/{id}`. Never claims physical device connectivity (`physical_device_connectivity_claimed=False`).
+
+- **`POST /api/homeassistant/climate/propose`**
+  - **Description**: Proposes a single-setpoint climate actuation execution for an allowlisted climate entity. Creates a `ToolExecution` in `awaiting_approval` status bound to SHA-256 digest. Fails closed without valid `X-Pico-Approval-Token` or `homeassistant:actuate` permission.
+  - **Request Body**: `ClimateProposeRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str | None = None`, optional `reason: str | None = None`). Extra fields (including `grid_origin`) are forbidden.
+  - **Headers**: `X-Pico-Approval-Token` (mandatory).
+  - **Response (201 Created)**: `ToolExecutionResponse` (status: `awaiting_approval`).
+
+- **`GET /api/homeassistant/climate/execution/{execution_id}`**
+  - **Description**: Inspect approval state, execution status, and verification outcome of a climate actuation execution.
+  - **Path Parameters**: `execution_id: str`.
+  - **Response (200 OK)**: `ToolExecutionResponse`.
+
+---
 
 ### 2.10 OS & Desktop Application Automation Capabilities (Milestone P8.1)
 
@@ -1114,10 +1246,11 @@ Workflow-level verification engine gating the release of step outputs to downstr
 
 #### `POST /api/workflows/{workflow_id}/compensate`
 - **Description**: Triggers reverse-dependency compensation for completed workflow steps having registered compensation definitions. Consequential compensations pause in `awaiting_approval` and require explicit human operator approval before execution.
+- **Authorization Note (Milestone P10.1.1)**: `caller_permissions` in the request body is untrusted client input and is strictly ignored by the server. Effective permissions are authoritatively derived on the server from the operator session cookie (`pico_operator_session`) or the `X-Pico-Approval-Token` header.
 - **Request Body**:
   ```json
   {
-    "caller_permissions": ["test:execute"],
+    "caller_permissions": [],
     "reason": "Operator requested compensation rollback."
   }
   ```
@@ -1146,6 +1279,155 @@ Workflow-level verification engine gating the release of step outputs to downstr
     }
   ]
   ```
+
+---
+
+### 2.18 Operator Session & Pairing API (Milestones P10.1 & P10.1.1)
+
+Local-first desktop operator authentication and consequential action approval boundary.
+
+#### Design Invariants:
+- **Loopback-Only Bound**: Endpoints are restricted strictly to loopback interfaces (`127.0.0.1`, `::1`). Non-loopback requests are rejected with `403 Forbidden`.
+- **Cross-Process SQLite Persistence**: One-time 6-digit challenges are generated exclusively via the trusted local CLI (`python -m pico.cli.pair`) and persisted in SQLite (`operator_pairing_challenges`). The server validates incoming codes against this store.
+- **No Self-Service Browser Minting**: The previous self-service code generation endpoint (`POST /api/operator/pairing-code`) has been removed to preserve the separate operator ceremony.
+- **Single-Use & Rate-Limited**: Challenges expire in 300 seconds and are consumed atomically. Failed attempts increment an attempt counter; 5 failed attempts trigger lockout.
+- **Bound Operator Identity**: Operator identity is bound to challenge issuance on the server; caller-supplied `approver` parameters cannot override it.
+- **HttpOnly Cookies & CSRF Protection**: Upon successful pairing, the backend sets an `HttpOnly; SameSite=Strict; Path=/api` cookie (`pico_operator_session`) and returns a separate CSRF token in JSON. Mutating operations require matching `X-CSRF-Token` headers.
+
+#### `POST /api/operator/pair`
+- **Description**: Verifies a one-time 6-digit pairing code issued by `python -m pico.cli.pair` and establishes an authenticated operator session.
+- **Request Body**:
+  ```json
+  {
+    "pairing_code": "482910"
+  }
+  ```
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "paired",
+    "approver": "local_operator",
+    "csrf_token": "csrf_f4b7c890123456789abcdef...",
+    "expires_at": "2026-10-25T19:00:00Z"
+  }
+  ```
+- **Response Headers**: `Set-Cookie: pico_operator_session=...; HttpOnly; SameSite=Strict; Path=/api`
+- **Response (400 Bad Request)**: Invalid code format (must be 6 digits).
+- **Response (401 Unauthorized)**: Expired code, already consumed code, invalid code, or lockout threshold exceeded.
+- **Response (403 Forbidden)**: Request originated from non-loopback address.
+
+#### `GET /api/operator/status`
+- **Description**: Inspects whether the calling browser context holds an active, unexpired operator session.
+- **Response (200 OK)**:
+  ```json
+  {
+    "paired": true,
+    "approver": "local_operator",
+    "expires_at": "2026-10-25T19:00:00Z"
+  }
+  ```
+
+#### `POST /api/operator/logout`
+- **Description**: Invalidates the active operator session in SQLite and clears the session cookie.
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "unpaired"
+  }
+  ```
+- **Response Headers**: Clears `pico_operator_session` cookie.
+
+---
+
+### 2.19 Home Assistant Integration & Physical Actuation Endpoints (Milestones P7.1–P7.4.1)
+
+#### `GET /api/homeassistant/status`
+- **Description**: Inspects Home Assistant hub integration connection state and configuration.
+- **Response (200 OK)**: `HomeAssistantStatus` object.
+
+#### `GET /api/homeassistant/entities`
+- **Description**: Read-only discovery of available smart-home entities with optional domain filter.
+- **Query Parameters**: `domain` (optional string, e.g. `switch`, `light`, `sensor`).
+- **Response (200 OK)**: `EntityListOutput` object.
+
+#### `GET /api/homeassistant/entities/{entity_id}`
+- **Description**: Read current reported state and attributes of a specific entity.
+- **Response (200 OK)**: `EntityState` object.
+
+#### `GET /api/homeassistant/overview`
+- **Description**: Bounded overview of smart-home state suitable for situational awareness.
+- **Response (200 OK)**: `EntityOverviewOutput` object.
+
+#### `POST /api/homeassistant/actuation/plan`
+- **Description**: Structured, read-only preflight plan for configured P7.3 test light.
+- **Request Body**: `{"target_state": "on"|"off", "target_entity_id": "light.test_light"}`.
+- **Response (200 OK)**: `TestLightActuationPlan` object.
+
+#### `POST /api/homeassistant/actuation/propose`
+- **Description**: Propose physical actuation for the single configured test light. Creates execution in `awaiting_approval`.
+- **Headers**: `X-Pico-Approval-Token` matching server-side `APPROVAL_SECRET_TOKEN`.
+- **Response (201 Created)**: `ToolExecutionResponse` object.
+
+#### `GET /api/homeassistant/actuation/readiness`
+- **Description**: Commissioning and readiness report for P7.3 test light. Strictly read-only; offline by default.
+- **Query Parameters**: `check_live` (boolean, default: false).
+- **Response (200 OK)**: `ActuationReadinessReport` object.
+
+#### `GET /api/homeassistant/actuation/{execution_id}`
+- **Description**: Inspect execution status, approval ticket, and independent verification proof for test light actuation.
+- **Response (200 OK)**: `ToolExecutionResponse` object.
+
+#### `POST /api/homeassistant/switch/plan` (Milestones P7.4.1 & P7.4.1.2 Stage C)
+- **Description**: Structured, read-only preflight plan for an allowlisted switch entity. Never causes physical dispatch or state mutation.
+- **Request Body**:
+  ```json
+  {
+    "target_entity_id": "switch.desk_lamp_plug",
+    "target_state": "on"
+  }
+  ```
+- **Response (200 OK)**: `SwitchActuationPlan` object:
+  - `target_entity_id` (string): Switch entity ID.
+  - `target_state` (string): Desired state (`on` or `off`).
+  - `current_state` (string): Current observed state (`on`, `off`, `unknown`, `unavailable`, etc.).
+  - `state_readiness` (string, P7.4.1.2): 4-way classification:
+    - `"ready"`: target is reachable and in opposite state; action is actionable (`is_mutation_needed=True`).
+    - `"already_satisfied"`: authoritative read confirms target is already in desired state (`is_mutation_needed=False`).
+    - `"state_unavailable"`: entity state could not be read or timed out (`is_mutation_needed=False`).
+    - `"state_unknown"`: entity state returned a value other than `on` or `off` (`is_mutation_needed=False`).
+  - `is_mutation_needed` (boolean): `true` only when `state_readiness == "ready"`. Clients must inspect `state_readiness` for actionable certainty.
+  - `input_digest` (string): SHA-256 canonical digest of target and state.
+
+#### `POST /api/homeassistant/switch/propose` (Milestone P7.4.1 Stage C)
+- **Description**: Propose switch physical actuation for an explicitly allowlisted switch entity. Creates execution in `awaiting_approval`.
+- **Headers**: `X-Pico-Approval-Token` matching server-side `APPROVAL_SECRET_TOKEN`.
+- **Request Body**:
+  ```json
+  {
+    "target_entity_id": "switch.desk_lamp_plug",
+    "target_state": "on",
+    "reason": "Operator testing plug power control"
+  }
+  ```
+- **Response (201 Created)**: `ToolExecutionResponse` in `awaiting_approval` status.
+- **Response (400/422 Bad Request)**: Target entity not in `HOME_ASSISTANT_SWITCH_ALLOWLIST`, non-switch domain, or invalid state.
+- **Response (403 Forbidden)**: Missing or invalid `X-Pico-Approval-Token`.
+
+#### `GET /api/homeassistant/switch/readiness` (Milestones P7.4.1 & P7.4.1.2 Stage C)
+- **Description**: Stage C commissioning and readiness report. Inspects allowlist configuration, switch domain validity, and optional live reachability.
+- **Query Parameters**:
+  - `check_live` (boolean, default: false)
+  - `target_entity_id` (optional string)
+- **Response (200 OK)**: `SwitchActuationReadinessReport` object:
+  - `all_checks_passed` (boolean)
+  - `state_readiness` (string | null, P7.4.1.2): `"ready"`, `"already_satisfied"`, `"state_unavailable"`, or `"state_unknown"` when `check_live=true`.
+  - `checks` (list of `ReadinessCheckItem`): If target switch reports `unknown` or `unavailable`, reports `FAIL` with `STATE_UNKNOWN` or `STATE_UNAVAILABLE` error category.
+
+#### `GET /api/homeassistant/switch/{execution_id}` (Milestones P7.4.1 & P7.4.1.2 Stage C)
+- **Description**: Inspect execution status, approval ticket, and independent verification outcome for a switch actuation execution. Isolated to `homeassistant.allowlisted_switch_actuate`.
+- **Output Diagnostics**: When pre-dispatch validation fails, `output_data` preserves `dispatch_status="blocked_precondition"` and `verification_status="blocked"` with zero physical mutations.
+- **Response (200 OK)**: `ToolExecutionResponse` object.
+- **Response (404 Not Found)**: If execution does not exist or belongs to a different capability.
 
 ---
 

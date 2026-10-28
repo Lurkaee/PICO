@@ -78,6 +78,16 @@ class Settings(BaseSettings):
     HOME_ASSISTANT_VERIFICATION_TIMEOUT_SECONDS: float = 5.0
     HOME_ASSISTANT_VERIFICATION_POLL_INTERVAL_SECONDS: float = 0.5
 
+    # Home Assistant Stage C Allowlisted Switch Actuation Settings (Milestone P7.4.1)
+    HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED: bool = False
+    HOME_ASSISTANT_SWITCH_ALLOWLIST: str = "[]"
+
+    # Home Assistant Stage D Climate Awareness & Actuation Settings (Milestones P7.4.2.1 & P7.4.2.2)
+    HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED: bool = False
+    HOME_ASSISTANT_CLIMATE_ALLOWLIST: str = "[]"
+    HOME_ASSISTANT_CLIMATE_GRID_ORIGINS: str = "{}"
+    HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED: bool = False
+
     # OS & Desktop Application Automation Settings (Milestone P8.1)
     OS_AUTOMATION_ENABLED: bool = True
     OS_APPLICATION_ALLOWLIST: str = "{}"

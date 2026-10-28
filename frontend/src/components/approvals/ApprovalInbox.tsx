@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { ShieldCheck, ShieldAlert, Check, X, AlertTriangle, RefreshCw, Lock } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ShieldCheck, ShieldAlert, Check, X, AlertTriangle, RefreshCw, Lock, Clock } from 'lucide-react';
 import { api } from '../../api/client';
 import { OperatorSessionState, ToolExecution } from '../../types';
+import { useConnectivity } from '../../context/ConnectivityContext';
 
 interface ApprovalInboxProps {
   sessionState: OperatorSessionState;
@@ -9,25 +10,42 @@ interface ApprovalInboxProps {
 }
 
 export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOpenPairingModal }) => {
+  const { isBackendReachable } = useConnectivity();
   const [executions, setExecutions] = useState<ToolExecution[]>([]);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [approvalNote, setApprovalNote] = useState('');
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [reconcilingId, setReconcilingId] = useState<string | null>(null);
+  const [ambiguousExecutions, setAmbiguousExecutions] = useState<
+    Record<string, { reason: string; timestamp: string; action: 'approve' | 'reject' }>
+  >({});
+  const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
+  const [isStale, setIsStale] = useState(false);
+  const requestSeq = useRef(0);
 
-  const fetchAwaitingApprovals = async () => {
+  const fetchAwaitingApprovals = async (clearError = false) => {
+    const seq = ++requestSeq.current;
     setLoading(true);
-    setActionError(null);
+    if (clearError) {
+      setActionError(null);
+    }
     try {
       const items = await api.listExecutions('awaiting_approval');
+      if (seq !== requestSeq.current) return;
       setExecutions(items || []);
+      setLastSuccessfulFetch(new Date());
+      setIsStale(false);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       setActionError(err instanceof Error ? err.message : String(err));
-      setExecutions([]);
+      // Retain in-memory items during transient network failure; do not wipe array
+      setIsStale(true);
     } finally {
-
-      setLoading(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -37,7 +55,47 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     return () => clearInterval(timer);
   }, []);
 
+  const reconcileExecution = async (id: string) => {
+    setReconcilingId(id);
+    setActionError(null);
+    try {
+      const execution = await api.getExecution(id);
+      if (execution.status !== 'awaiting_approval') {
+        // Authoritative resolution confirmed: mutation applied or entity advanced
+        setAmbiguousExecutions((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setExecutions((prev) => prev.filter((item) => item.id !== id));
+        setActionError(`Reconciliation confirmed: execution ${id} is now ${execution.status}.`);
+      } else {
+        // Confirmed server state is still awaiting approval (mutation was not applied)
+        setAmbiguousExecutions((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setActionError(`Reconciliation confirmed: execution ${id} is still awaiting approval. Controls unlocked.`);
+      }
+    } catch (err) {
+      setActionError(
+        `Reconciliation inconclusive: could not verify execution state (${err instanceof Error ? err.message : String(err)}). Controls remain locked.`
+      );
+    } finally {
+      setReconcilingId(null);
+    }
+  };
+
   const handleApprove = async (id: string) => {
+    if (!isBackendReachable) {
+      setActionError('Consequential approval controls are locked while backend is offline.');
+      return;
+    }
+    if (ambiguousExecutions[id]) {
+      setActionError('Execution outcome is unconfirmed. Reconcile with backend before retrying.');
+      return;
+    }
     if (!sessionState.paired) {
       onOpenPairingModal();
       return;
@@ -50,13 +108,34 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       setApprovalNote('');
       await fetchAwaitingApprovals();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setAmbiguousExecutions((prev) => ({
+          ...prev,
+          [id]: {
+            reason: 'Network interrupted during approval submission; outcome is unconfirmed.',
+            timestamp: new Date().toLocaleTimeString(),
+            action: 'approve',
+          },
+        }));
+        setActionError('Outcome unknown: network interrupted during approval submission. Controls locked until authoritative reconciliation.');
+      } else {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setProcessingId(null);
     }
   };
 
   const handleCancel = async (id: string) => {
+    if (!isBackendReachable) {
+      setActionError('Consequential rejection controls are locked while backend is offline.');
+      return;
+    }
+    if (ambiguousExecutions[id]) {
+      setActionError('Execution outcome is unconfirmed. Reconcile with backend before retrying.');
+      return;
+    }
     setProcessingId(id);
     setActionError(null);
     try {
@@ -64,7 +143,20 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       setConfirmingId(null);
       await fetchAwaitingApprovals();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      if (isNet) {
+        setAmbiguousExecutions((prev) => ({
+          ...prev,
+          [id]: {
+            reason: 'Network interrupted during rejection submission; outcome is unconfirmed.',
+            timestamp: new Date().toLocaleTimeString(),
+            action: 'reject',
+          },
+        }));
+        setActionError('Outcome unknown: network interrupted during rejection submission. Controls locked until authoritative reconciliation.');
+      } else {
+        setActionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setProcessingId(null);
     }
@@ -74,16 +166,43 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     <div className="panel-view">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Consequential Approval Inbox</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Consequential Approval Inbox</h2>
+            {isStale && lastSuccessfulFetch && (
+              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
+                <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
+              </span>
+            )}
+          </div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             Actions with side effects (OS automation, physical actuation, filesystem mutations) require explicit operator confirmation.
           </p>
         </div>
-        <button className="btn btn-secondary" onClick={fetchAwaitingApprovals} disabled={loading}>
+        <button className="btn btn-secondary" onClick={() => fetchAwaitingApprovals(true)} disabled={loading}>
           <RefreshCw className={loading ? 'animate-spin' : ''} style={{ width: 14, height: 14 }} />
           Refresh
         </button>
       </div>
+
+      {!isBackendReachable && (
+        <div
+          style={{
+            padding: '12px 16px',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            color: '#fca5a5',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            fontSize: '0.85rem',
+          }}
+          role="alert"
+        >
+          <Lock style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <span>Backend offline: consequential controls are locked until connectivity and session state are revalidated.</span>
+        </div>
+      )}
 
       {!sessionState.paired && (
         <div
@@ -152,6 +271,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
 
             const isConfirming = confirmingId === item.id;
             const isBusy = processingId === item.id;
+            const isAmbiguous = Boolean(ambiguousExecutions[item.id]);
+            const isReconciling = reconcilingId === item.id;
 
             return (
               <div key={item.id} className="card" style={{ borderLeft: '4px solid var(--warning)' }}>
@@ -176,6 +297,42 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                     ID: {item.id}
                   </span>
                 </div>
+
+                {isAmbiguous && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: 'var(--radius-sm)',
+                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      color: 'var(--warning)',
+                      fontSize: '0.825rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      marginBottom: 12,
+                    }}
+                    role="alert"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+                      <span>
+                        <strong>Outcome unknown:</strong> {ambiguousExecutions[item.id].reason} Actions are locked to prevent duplicate execution.
+                      </span>
+                    </div>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => reconcileExecution(item.id)}
+                      disabled={isReconciling || !isBackendReachable}
+                      style={{ padding: '4px 10px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                      title="Reconcile authoritative execution state from backend"
+                    >
+                      <RefreshCw className={isReconciling ? 'animate-spin' : ''} style={{ width: 12, height: 12 }} />
+                      Reconcile
+                    </button>
+                  </div>
+                )}
 
                 <div style={{ fontSize: '0.85rem', marginBottom: 12 }}>
                   <p style={{ color: 'var(--text-secondary)', marginBottom: 6 }}>
@@ -238,8 +395,15 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                       <button
                         className="btn btn-danger"
                         onClick={() => handleCancel(item.id)}
-                        disabled={isBusy}
+                        disabled={isBusy || isAmbiguous || !isBackendReachable}
                         style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                        title={
+                          isAmbiguous
+                            ? 'Controls locked: outcome is unconfirmed. Reconcile with backend first.'
+                            : !isBackendReachable
+                            ? 'Controls locked: backend offline'
+                            : 'Reject execution'
+                        }
                       >
                         <X style={{ width: 14, height: 14 }} />
                         Reject & Cancel
@@ -247,8 +411,17 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                       <button
                         className="btn btn-primary"
                         onClick={() => handleApprove(item.id)}
-                        disabled={isBusy || !sessionState.paired}
+                        disabled={isBusy || isAmbiguous || !sessionState.paired || !isBackendReachable}
                         style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                        title={
+                          isAmbiguous
+                            ? 'Controls locked: outcome is unconfirmed. Reconcile with backend first.'
+                            : !isBackendReachable
+                            ? 'Controls locked: backend offline'
+                            : !sessionState.paired
+                            ? 'Pair operator session to approve'
+                            : 'Confirm execution'
+                        }
                       >
                         <Check style={{ width: 14, height: 14 }} />
                         {isBusy ? 'Submitting...' : 'Confirm Approval'}
@@ -260,7 +433,14 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                     <button
                       className="btn btn-secondary"
                       onClick={() => handleCancel(item.id)}
-                      disabled={isBusy}
+                      disabled={isBusy || isAmbiguous || !isBackendReachable}
+                      title={
+                        isAmbiguous
+                          ? 'Controls locked: outcome is unconfirmed. Reconcile with backend first.'
+                          : !isBackendReachable
+                          ? 'Controls locked: backend offline'
+                          : 'Reject execution'
+                      }
                       style={{ fontSize: '0.8rem' }}
                     >
                       <X style={{ width: 14, height: 14 }} />
@@ -269,8 +449,16 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                     <button
                       className="btn btn-primary"
                       onClick={() => setConfirmingId(item.id)}
-                      disabled={isBusy || !sessionState.paired}
-                      title={!sessionState.paired ? 'Pair operator session to approve' : 'Approve execution'}
+                      disabled={isBusy || isAmbiguous || !sessionState.paired || !isBackendReachable}
+                      title={
+                        isAmbiguous
+                          ? 'Controls locked: outcome is unconfirmed. Reconcile with backend first.'
+                          : !isBackendReachable
+                          ? 'Controls locked: backend offline'
+                          : !sessionState.paired
+                          ? 'Pair operator session to approve'
+                          : 'Approve execution'
+                      }
                       style={{ fontSize: '0.8rem' }}
                     >
                       <Check style={{ width: 14, height: 14 }} />

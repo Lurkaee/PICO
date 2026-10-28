@@ -2,8 +2,10 @@
 
 from typing import Optional
 from fastapi import APIRouter, Depends, Header, Request, Response, status
+from sqlalchemy.orm import Session
 
 from pico.core.errors import AuthorizationError
+from pico.db.session import get_db
 from pico.schemas.operator import (
     OperatorSessionResponse,
     PairRequest,
@@ -19,6 +21,7 @@ COOKIE_NAME = "pico_operator_session"
 def get_operator_session_optional(
     request: Request,
     x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
+    db: Session = Depends(get_db),
 ) -> Optional[OperatorSession]:
     """Dependency to retrieve and validate an operator session if present."""
     session_id = request.cookies.get(COOKIE_NAME)
@@ -26,7 +29,7 @@ def get_operator_session_optional(
         return None
 
     service = OperatorSessionService.get_instance()
-    session = service.get_session(session_id)
+    session = service.get_session(session_id, db=db)
     if not session:
         return None
 
@@ -63,10 +66,12 @@ def pair_operator(
     payload: PairRequest,
     request: Request,
     response: Response,
+    db: Session = Depends(get_db),
 ) -> PairResponse:
+    # Verify request originates from local loopback
     client_host = request.client.host if request.client else "unknown"
     if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
-        raise AuthorizationError("Operator pairing is only available from local loopback.")
+        raise AuthorizationError("Operator pairing is restricted to local loopback.")
 
     # Origin and host validation
     service = OperatorSessionService.get_instance()
@@ -76,7 +81,7 @@ def pair_operator(
     if not service.validate_origin_and_host(host, origin, referer):
         raise AuthorizationError("Untrusted origin or host for operator pairing.")
 
-    session = service.pair(code=payload.code, approver=payload.approver)
+    session = service.pair(code=payload.code, db=db)
 
     # Set secure HttpOnly cookie (strict same-site, local path)
     response.set_cookie(
@@ -104,10 +109,11 @@ def pair_operator(
 )
 def check_session(
     request: Request,
+    db: Session = Depends(get_db),
 ) -> OperatorSessionResponse:
     session_id = request.cookies.get(COOKIE_NAME)
     service = OperatorSessionService.get_instance()
-    session = service.get_session(session_id)
+    session = service.get_session(session_id, db=db)
     if not session:
         return OperatorSessionResponse(paired=False)
 
@@ -127,8 +133,9 @@ def logout_operator(
     request: Request,
     response: Response,
     session: Optional[OperatorSession] = Depends(get_operator_session_optional),
+    db: Session = Depends(get_db),
 ) -> dict[str, str]:
     if session:
-        OperatorSessionService.get_instance().invalidate_session(session.session_id)
+        OperatorSessionService.get_instance().invalidate_session(session.session_id, db=db)
     response.delete_cookie(key=COOKIE_NAME, path="/")
     return {"status": "logged_out"}

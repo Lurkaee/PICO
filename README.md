@@ -91,22 +91,76 @@ uvicorn pico.main:app --host 127.0.0.1 --port 8000
 
 ```powershell
 cd frontend
-pnpm run test           # Vitest — all 20 frontend tests
+pnpm run test           # Vitest — all 38 frontend tests
 pnpm run typecheck      # TypeScript strict type check
 ```
 
 ### Local operator pairing (for consequential approvals)
 
-Consequential tool-execution approvals require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is transmitted to the browser.
+Consequential tool-execution approvals and privileged workflow operations require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is ever transmitted to the browser.
 
 ```powershell
-# CLI-only code generation (see the current limitation below):
+# In a separate terminal with the backend running, generate a single-use 6-digit challenge:
 python -m pico.cli.pair
-# Enter the 6-digit code shown in the desktop UI's pairing modal.
-# The HttpOnly session cookie is set; CSRF token is returned to the browser.
+
+# Output:
+# ============================================================
+# PICO Local Operator Pairing
+# ============================================================
+# Pairing Code: 482910
+# Expires in:   300 seconds
+# ============================================================
 ```
 
-Pairing-code generation is unavailable over HTTP. The current CLI stores codes only in its own process, so these codes cannot pair with a separately running backend. A private inter-process flow is required to restore that CLI workflow.
+Enter the 6-digit code shown into the desktop UI's pairing modal.
+- Challenges are persisted in the local SQLite store (`operator_pairing_challenges`), bridging CLI and backend processes.
+- Codes are single-use, hashed with salt, expire in 300 seconds, and lock out after 5 consecutive failed attempts.
+- Browser-side code minting (`POST /api/operator/pairing-code`) is completely removed to maintain a strict local-operator trust boundary.
+- The approved identity (`local_operator`) is bound to the challenge at CLI generation; caller-supplied approver values cannot override it.
+- Upon successful verification, the backend issues an `HttpOnly; SameSite=Strict` session cookie (`pico_operator_session`) and returns a separate CSRF token in JSON.
+
+#### UI Authorization & Operator States
+The PICO desktop interface accurately distinguishes six operator and action states:
+1. **Unpaired / Read-Only**: The desktop interface can inspect conversation history, view active workflows, search memories, and execute safe non-consequential tools.
+2. **Pairing Required**: Consequential action proposals halt in `awaiting_approval`; approval buttons in the Approval Inbox are locked until an operator pairs via the CLI.
+3. **Authenticated Operator Session**: A verified operator session exists. Consequential actions can be reviewed and approved by the human operator using the cryptographic digest.
+4. **Expired or Revoked Session**: The session has passed its expiration window or was explicitly revoked via logout; approval actions re-lock until a new CLI code is paired.
+5. **Unauthorized Action**: A client or workflow step requested a privileged capability without possessing the required capability permissions; execution fails closed with zero side effects.
+6. **Authorized Pending Approval**: A consequential capability step is authorized to run once approved by the human operator, bound to the SHA-256 canonical input digest.
+
+### Offline Resilience & Safe Recovery (Phase 10.2)
+
+PICO features an offline-resilient desktop shell and safe recovery architecture engineered to withstand backend disconnections, inference/model failures, and interrupted streams without leaking private data or causing duplicate side effects.
+
+#### 1. Application Shell & Caching Architecture
+- **Offline Shell**: The service worker (`sw.js`) caches only the static application shell (`/`, `/index.html`) and immutable build bundles (`/assets/*`), allowing the UI to reopen when the backend is offline.
+- **Strict Data Exclusion**: In adherence to PICO's local-first privacy rules, the service worker and browser persistent storage (`localStorage`, `sessionStorage`, `IndexedDB`) strictly **never** cache:
+  - Private conversations, messages, or drafts
+  - Semantic/episodic memory records
+  - Tool execution inputs, logs, or results
+  - Operator pairing tokens, session cookies, or CSRF tokens
+  - Approval tickets or workflow state
+- **Network-Only API Transport**: All `/api/*` and dynamic endpoints bypass the service worker cache entirely. Failed API calls return genuine network errors rather than falling back to SPA HTML.
+- **Zero Mutating Interception**: The service worker never intercepts, queues, or replays `POST`, `PUT`, or `DELETE` requests.
+
+#### 2. In-Memory Draft Outbox (Zero Auto-Submit)
+- **Draft Outbox**: If a message cannot be dispatched due to backend unavailability or conversation creation failure, it is preserved in an in-memory draft queue (bounded to 25 items).
+- **Explicit Dispatch Only**: Drafts are **never automatically transmitted** upon reconnection. Users can review, edit, discard, or explicitly send pending drafts once connectivity is restored.
+- **Ephemeral Lifecycle**: Drafts reside strictly in active application memory; refreshing or closing the browser window discards them, preventing unencrypted persistence of sensitive drafts on disk.
+
+#### 3. Ambiguous Outcomes & Zero Auto-Replay
+- **Interrupted Chat Streams**: SSE streams cut short by network interruption or backend failure are visibly tagged as `[Response stream interrupted]` and marked with an ambiguous outcome notice. They are never marked as completed, and chat requests are never automatically retried.
+- **Consequential Mutations**: Approvals, tool execution submissions, workflow advances, compensations, memory forget requests, and audio session operations with ambiguous network outcomes are marked **"Outcome unknown"**. The UI never performs blind retries.
+- **Truthful Reconciliation**: Upon reconnection, users inspect actual server state and choose whether to re-dispatch or cancel.
+
+#### 4. Operator Session Revalidation on Reconnect
+- When the backend recovers from an offline state, the frontend immediately revalidates the operator session against `GET /api/operator/status`.
+- Consequential approval controls remain locked in `pairing_required` until the backend confirms that the session cookie and CSRF token remain valid.
+
+#### 5. Local Testing of Offline & Degraded Scenarios
+- **Backend Disconnection**: Stop the FastAPI backend (`Ctrl+C` in the backend terminal). The UI displays a calm offline banner with the time since the last successful check, retains current in-memory views labeled with a stale badge, preserves drafts, and locks consequential controls.
+- **Model/Provider Failure**: If Ollama is stopped or the model is missing while the backend is online, the UI enters a `Degraded` state. The system accurately reports backend reachability while flagging inference as unavailable, avoiding misleading full-system "offline" alerts.
+- **Frontend Test Suite**: Run `pnpm run test` in `frontend/` to execute all 38 unit and integration tests (including connectivity manager, context outbox, offline shell, and resilience tests).
 
 ---
 
@@ -332,23 +386,19 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
 
 ## Automated Tests
 
-Run the full automated test suite (offline, no external network calls):
+Run the full automated test suite (offline, zero external network calls):
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -v
+# Run backend pytest suite (470 tests across all subsystems)
+.\.venv\Scripts\pytest.exe
+
+# Run frontend test suite (38 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell)
+cd frontend
+pnpm run test
+pnpm run typecheck
+pnpm run build
+cd ..
+
+# Comprehensive verification script (executes all unit, integration, and security checks)
+powershell -ExecutionPolicy Bypass -File .\scripts\pico-verify.ps1
 ```
-All 89 unit, integration, and automation tests execute using mock transports and isolated SQLite databases:
-- `tests/test_automation_scripts.py` (5 tests)
-- `tests/test_bench_runner.py` (9 tests)
-- `tests/test_chat_stream_api.py` (11 tests)
-- `tests/test_cloud_provider.py` (10 tests)
-- `tests/test_conversations.py` (4 tests)
-- `tests/test_foreign_keys.py` (2 tests)
-- `tests/test_health.py` (1 test)
-- `tests/test_messages.py` (5 tests)
-- `tests/test_mock_provider.py` (4 tests)
-- `tests/test_ollama_provider.py` (17 tests)
-- `tests/test_persistence_reopen.py` (1 test)
-- `tests/test_projects.py` (5 tests)
-- `tests/test_routing_persistence.py` (1 test)
-- `tests/test_routing_service.py` (9 tests)
-- `tests/test_tasks.py` (5 tests)
+All tests execute using deterministic mock transports, synthetic OS/filesystem/browser adapters, and isolated temporary SQLite databases.

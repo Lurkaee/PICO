@@ -194,12 +194,10 @@ class ToolExecutionEngine:
             raise EntityNotFoundError("ToolExecution", execution_id)
 
         # Derive honest server-defined approval principal
-        if execution.capability_id in (
-            "homeassistant.test_light_actuate",
-            "os.launch_application",
-            "filesystem.apply_staged_diff",
-            "filesystem.rollback_staged_diff",
-        ):
+        capability = self.registry.get(execution.capability_id, version=execution.capability_version)
+        is_consequential = bool(capability.metadata.consequential) if capability else True
+
+        if is_consequential:
             configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
             if authenticated_principal == "local_operator":
                 recorded_principal = "local_operator"
@@ -210,18 +208,24 @@ class ToolExecutionEngine:
                     task_id=execution.task_id,
                     correlation_id=correlation_id,
                     capability_id=execution.capability_id,
-                    payload_json={"reason": "Missing or invalid server approval secret token"},
+                    payload_json={"reason": "Missing or invalid server approval secret token or operator session"},
                     data_classification=execution.data_classification,
                 )
                 action_desc = (
                     "Physical actuation"
-                    if execution.capability_id == "homeassistant.test_light_actuate"
+                    if execution.capability_id in (
+                        "homeassistant.test_light_actuate",
+                        "homeassistant.allowlisted_switch_actuate",
+                        "homeassistant.allowlisted_climate_setpoint_actuate",
+                    )
                     else "Application launch"
                     if execution.capability_id == "os.launch_application"
                     else "Filesystem modification"
+                    if "filesystem" in execution.capability_id
+                    else "Consequential action"
                 )
                 raise AuthorizationError(
-                    f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN."
+                    f"{action_desc} approval fails closed without valid server-side APPROVAL_SECRET_TOKEN or active Operator Session."
                 )
             else:
                 recorded_principal = "authenticated_token_holder"
@@ -230,7 +234,7 @@ class ToolExecutionEngine:
         elif approval_token and settings.APPROVAL_SECRET_TOKEN and secrets.compare_digest(approval_token, settings.APPROVAL_SECRET_TOKEN):
             recorded_principal = "authenticated_token_holder"
         else:
-            # Fallback for internal direct-engine test invocations
+            # Fallback for internal direct-engine non-consequential invocations
             clean_approver = (approver or "").strip()
             if not clean_approver or clean_approver not in settings.TRUSTED_APPROVER_IDENTITIES:
                 self.ledger_repo.append(
@@ -400,6 +404,99 @@ class ToolExecutionEngine:
                     )
                     raise AuthorizationError(
                         f"Approval invalidated: Launch profile for alias '{alias}' was modified after approval was granted."
+                    )
+
+            # Climate actuation verification at execution boundary
+            elif execution.capability_id == "homeassistant.allowlisted_climate_setpoint_actuate":
+                from pico.homeassistant.climate import (
+                    validate_climate_allowlist,
+                    validate_climate_grid_origins,
+                )
+
+                target_entity = validated_input_snapshot.get("target_entity_id", "")
+                bound_origin = validated_input_snapshot.get("expected_grid_origin")
+                bound_origin_unit = validated_input_snapshot.get("expected_grid_origin_unit")
+
+                # 1. Re-verify target entity remains allowlisted at dispatch
+                try:
+                    current_allowlist = validate_climate_allowlist()
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Approval invalidated: Climate allowlist invalid or unconfigured at dispatch ({exc})",
+                            "target_entity_id": target_entity,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Climate allowlist is invalid or unconfigured at dispatch: {exc}"
+                    )
+
+                if target_entity not in current_allowlist:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Target entity missing or removed from climate allowlist at dispatch",
+                            "target_entity_id": target_entity,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Target climate entity '{target_entity}' is not allowlisted at dispatch."
+                    )
+
+                # 2. Re-verify trusted grid origin and unit configuration at dispatch
+                try:
+                    current_origins = validate_climate_grid_origins(allowlist=current_allowlist)
+                    current_entry = current_origins.get(target_entity)
+                    curr_origin = current_entry["origin"] if current_entry else None
+                    curr_origin_unit = current_entry["unit"] if current_entry else None
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Approval invalidated: Climate grid origin configuration invalid at dispatch ({exc})",
+                            "target_entity_id": target_entity,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Climate grid origin configuration is invalid at dispatch: {exc}"
+                    )
+
+                if curr_origin != bound_origin or curr_origin_unit != bound_origin_unit:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": "Approval invalidated: Climate grid origin configuration modified after approval",
+                            "target_entity_id": target_entity,
+                            "bound_origin": bound_origin,
+                            "bound_origin_unit": bound_origin_unit,
+                            "current_origin": curr_origin,
+                            "current_origin_unit": curr_origin_unit,
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise AuthorizationError(
+                        f"Approval invalidated: Climate grid origin configuration for entity '{target_entity}' "
+                        f"was modified after approval was granted (bound: {bound_origin}:{bound_origin_unit}, current: {curr_origin}:{curr_origin_unit})."
                     )
 
             # Filesystem staged diff verification at execution boundary
@@ -774,7 +871,7 @@ class ToolExecutionEngine:
 
         if not result.success:
             return await self._handle_execution_failure(
-                execution, capability, result.error_message or "Handler reported failure.", correlation_id, caller_permissions=effective_perms
+                execution, capability, result.error_message or "Handler reported failure.", correlation_id, caller_permissions=effective_perms, output_json=result.output_data
             )
 
         # Transition to verifying
@@ -849,6 +946,7 @@ class ToolExecutionEngine:
         error_msg: str,
         correlation_id: str | None,
         caller_permissions: set[str] | None = None,
+        output_json: dict[str, Any] | None = None,
     ) -> ToolExecution:
         # Check retry eligibility: capability must be idempotent and retry limit not reached
         can_retry = capability.metadata.idempotent and execution.retry_count < execution.max_retries
@@ -885,6 +983,7 @@ class ToolExecutionEngine:
                 execution.id,
                 status="failed",
                 error_message=error_msg,
+                output_json=output_json,
             )
 
     def cancel(

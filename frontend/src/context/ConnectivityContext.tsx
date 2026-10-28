@@ -1,0 +1,250 @@
+/**
+ * Connectivity Context & In-Memory Draft Outbox (Milestone P10.2).
+ *
+ * Provides shared, typed connectivity state across the entire application,
+ * manages in-memory drafts (strictly non-persistent, bounded), and coordinates
+ * operator session revalidation on reconnection.
+ */
+
+import React, { createContext, useContext, useEffect, useState, useMemo, useRef } from 'react';
+import {
+  ConnectivityManager,
+  ConnectivityState,
+  ConnectivityStatus,
+} from '../api/connectivity';
+import { DataClassification } from '../types';
+
+export interface DraftMessage {
+  id: string;
+  conversationId: string | null;
+  text: string;
+  classification: DataClassification;
+  createdAt: string;
+}
+
+export interface ConnectivityContextValue extends ConnectivityState {
+  connectivity: ConnectivityStatus;
+  isBackendReachable: boolean;
+  checkNow: () => Promise<boolean>;
+  reportInferenceDegraded: (reason: string) => void;
+  clearInferenceDegraded: () => void;
+  drafts: DraftMessage[];
+  saveDraft: (text: string, conversationId: string | null, classification: DataClassification) => DraftMessage;
+  addDraft: (text: string, conversationId?: string | null, classification?: DataClassification) => DraftMessage;
+  updateDraft: (id: string, text: string) => void;
+  removeDraft: (id: string) => void;
+  clearDrafts: () => void;
+  onRecovered?: () => void;
+}
+
+const ConnectivityContext = createContext<ConnectivityContextValue | null>(null);
+
+const MAX_IN_MEMORY_DRAFTS = 25;
+
+export interface ConnectivityProviderProps {
+  children: React.ReactNode;
+  manager?: ConnectivityManager;
+  onReconnected?: () => void;
+}
+
+export const ConnectivityProvider: React.FC<ConnectivityProviderProps> = ({
+  children,
+  manager: customManager,
+  onReconnected,
+}) => {
+  const onReconnectedRef = useRef(onReconnected);
+  useEffect(() => {
+    onReconnectedRef.current = onReconnected;
+  });
+
+  // Track the internally owned manager (lazy initialization to avoid orphaned instances on rerender).
+  const internalManagerRef = useRef<ConnectivityManager | null>(null);
+
+  // If no customManager is passed, ensure we have an internal manager instance.
+  // Note: ConnectivityManager constructor is completely side-effect-free (no listeners, no timers, no probes).
+  // Disposal of any prior internal manager when customManager is passed is strictly deferred to useEffect.
+  if (!customManager) {
+    if (!internalManagerRef.current || internalManagerRef.current.disposed) {
+      internalManagerRef.current = new ConnectivityManager();
+    }
+  }
+
+  const activeManager = customManager ?? internalManagerRef.current!;
+  const activeManagerRef = useRef<ConnectivityManager>(activeManager);
+  activeManagerRef.current = activeManager;
+
+  const [state, setState] = useState<ConnectivityState>(() => activeManager.getState());
+  const [drafts, setDrafts] = useState<DraftMessage[]>([]);
+  const previousReachableRef = useRef<boolean>(
+    activeManager.getState().isOnline || activeManager.getState().isDegraded
+  );
+
+  useEffect(() => {
+    let currentManager: ConnectivityManager;
+    let isInternal = false;
+
+    if (customManager) {
+      // If a customManager was provided and we previously held an internal manager,
+      // dispose the internal manager cleanly at the effect boundary, NOT during render.
+      if (internalManagerRef.current) {
+        internalManagerRef.current.dispose();
+        internalManagerRef.current = null;
+      }
+      currentManager = customManager;
+    } else {
+      if (!internalManagerRef.current || internalManagerRef.current.disposed) {
+        internalManagerRef.current = new ConnectivityManager();
+      }
+      currentManager = internalManagerRef.current;
+      isInternal = true;
+    }
+
+    activeManagerRef.current = currentManager;
+    setState(currentManager.getState());
+    previousReachableRef.current = currentManager.getState().isOnline || currentManager.getState().isDegraded;
+
+    const unsubscribe = currentManager.subscribe((newState) => {
+      const wasReachable = previousReachableRef.current;
+      const isNowReachable = newState.isOnline || newState.isDegraded;
+      previousReachableRef.current = isNowReachable;
+
+      setState(newState);
+
+      // Trigger recovery callback when transitioning from offline/reconnecting to reachable (online or degraded)
+      if (!wasReachable && isNowReachable) {
+        onReconnectedRef.current?.();
+      }
+    });
+
+    currentManager.start();
+
+    return () => {
+      unsubscribe();
+      // Only dispose if we created the manager internally and it's our internal manager
+      if (isInternal) {
+        currentManager.dispose();
+        if (internalManagerRef.current === currentManager) {
+          internalManagerRef.current = null;
+        }
+      } else {
+        // An injected manager is externally owned, but the provider stops its listeners
+        // and owned timers when replaced or unmounted, without disposing the manager.
+        currentManager.stop();
+      }
+    };
+  }, [customManager]);
+
+  // Draft operations (Strictly in-memory!)
+  const saveDraft = (
+    text: string,
+    conversationId: string | null,
+    classification: DataClassification
+  ): DraftMessage => {
+    const trimmed = text.trim();
+    const newDraft: DraftMessage = {
+      id: `draft_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      conversationId,
+      text: trimmed,
+      classification,
+      createdAt: new Date().toISOString(),
+    };
+
+    setDrafts((prev) => {
+      // Avoid duplicate drafts with identical text & conversation
+      const filtered = prev.filter((d) => !(d.conversationId === conversationId && d.text === trimmed));
+      const next = [newDraft, ...filtered];
+      return next.slice(0, MAX_IN_MEMORY_DRAFTS);
+    });
+
+    return newDraft;
+  };
+
+  const updateDraft = (id: string, text: string) => {
+    setDrafts((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, text: text.trim() } : d))
+    );
+  };
+
+  const removeDraft = (id: string) => {
+    setDrafts((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  const clearDrafts = () => {
+    setDrafts([]);
+  };
+
+  const addDraft = (
+    text: string,
+    conversationId: string | null = null,
+    classification: DataClassification = 'INTERNAL'
+  ): DraftMessage => {
+    return saveDraft(text, conversationId, classification);
+  };
+
+  const isBackendReachable = state.isOnline || state.isDegraded;
+
+  const value: ConnectivityContextValue = useMemo(
+    () => ({
+      ...state,
+      connectivity: state.status,
+      isBackendReachable,
+      checkNow: () => activeManagerRef.current.probeHealth(),
+      reportInferenceDegraded: (reason: string) => activeManagerRef.current.reportInferenceDegraded(reason),
+      clearInferenceDegraded: () => activeManagerRef.current.clearInferenceDegraded(),
+      drafts,
+      saveDraft,
+      addDraft,
+      updateDraft,
+      removeDraft,
+      clearDrafts,
+    }),
+    [state, isBackendReachable, drafts]
+  );
+
+  return (
+    <ConnectivityContext.Provider value={value}>
+      {children}
+    </ConnectivityContext.Provider>
+  );
+};
+
+const defaultConnectivityValue: ConnectivityContextValue = {
+  status: 'online',
+  isOnline: true,
+  isOffline: false,
+  isReconnecting: false,
+  isDegraded: false,
+  lastSuccessfulCheck: null,
+  lastCheckAttempt: null,
+  errorMessage: null,
+  inferenceDegraded: false,
+  inferenceDegradedReason: null,
+  connectivity: 'online',
+  isBackendReachable: true,
+  checkNow: async () => true,
+  reportInferenceDegraded: () => {},
+  clearInferenceDegraded: () => {},
+  drafts: [],
+  saveDraft: (text, conversationId, classification) => ({
+    id: `draft_${Date.now()}`,
+    conversationId,
+    text,
+    classification,
+    createdAt: new Date().toISOString(),
+  }),
+  addDraft: (text, conversationId = null, classification = 'INTERNAL') => ({
+    id: `draft_${Date.now()}`,
+    conversationId,
+    text,
+    classification,
+    createdAt: new Date().toISOString(),
+  }),
+  updateDraft: () => {},
+  removeDraft: () => {},
+  clearDrafts: () => {},
+};
+
+export function useConnectivity(): ConnectivityContextValue {
+  const context = useContext(ConnectivityContext);
+  return context || defaultConnectivityValue;
+}

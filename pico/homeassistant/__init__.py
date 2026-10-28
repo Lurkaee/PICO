@@ -5,16 +5,38 @@ from pico.homeassistant.classification import (
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.actuation import (
     HomeAssistantActuationService,
+    HomeAssistantClimateActuationService,
+    HomeAssistantSwitchActuationService,
     validate_actuation_preconditions,
+    validate_climate_actuation_preconditions,
+    validate_switch_actuation_preconditions,
+    validate_switch_allowlist,
+)
+from pico.homeassistant.climate import (
+    HomeAssistantClimateService,
+    validate_climate_allowlist,
 )
 from pico.homeassistant.contracts import (
+    ActuationReadinessReport,
+    ClimateActuationPlan,
+    ClimateActuationResult,
+    ClimateObservation,
+    ClimateReadinessReport,
+    ClimateSetpointPlan,
     EntityListOutput,
     EntityOverviewOutput,
     EntityState,
     HomeAssistantConnectionState,
     HomeAssistantStatus,
+    SwitchActuationPlan,
+    SwitchActuationReadinessReport,
+    SwitchActuationResult,
     TestLightActuationPlan,
     TestLightActuationResult,
+)
+from pico.homeassistant.readiness import (
+    HomeAssistantClimateReadinessChecker,
+    evaluate_climate_readiness,
 )
 from pico.homeassistant.service import HomeAssistantService
 from pico.homeassistant.ws_client import (
@@ -28,7 +50,14 @@ __all__ = [
     "HomeAssistantClient",
     "HomeAssistantService",
     "HomeAssistantActuationService",
+    "HomeAssistantSwitchActuationService",
+    "HomeAssistantClimateActuationService",
+    "HomeAssistantClimateService",
     "validate_actuation_preconditions",
+    "validate_switch_actuation_preconditions",
+    "validate_climate_actuation_preconditions",
+    "validate_switch_allowlist",
+    "validate_climate_allowlist",
     "HomeAssistantWebSocketClient",
     "BaseWebSocketTransport",
     "AsyncioWebSocketTransport",
@@ -40,6 +69,17 @@ __all__ = [
     "EntityOverviewOutput",
     "TestLightActuationPlan",
     "TestLightActuationResult",
+    "ActuationReadinessReport",
+    "SwitchActuationPlan",
+    "SwitchActuationResult",
+    "SwitchActuationReadinessReport",
+    "ClimateObservation",
+    "ClimateSetpointPlan",
+    "ClimateActuationPlan",
+    "ClimateActuationResult",
+    "ClimateReadinessReport",
+    "HomeAssistantClimateReadinessChecker",
+    "evaluate_climate_readiness",
     "compute_trusted_ha_classification",
     "format_homeassistant_context_items",
 ]

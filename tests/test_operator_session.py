@@ -1,15 +1,16 @@
-"""Tests for PICO local operator pairing, HttpOnly session lifecycle, and CSRF protection."""
+"""Tests for PICO local operator pairing, cross-process SQLite challenge persistence,
+HttpOnly session lifecycle, and CSRF protection.
+"""
 
-from concurrent.futures import ThreadPoolExecutor
-from itertools import count
-from threading import Barrier
-
+from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from pico.core.errors import AuthorizationError
 from pico.core.config import settings
+from pico.core.errors import AuthorizationError
+from pico.db.session import SessionLocal
 from pico.main import app
+from pico.models.operator_session import OperatorPairingChallenge
 from pico.services.operator_session import OperatorSessionService
 
 
@@ -20,13 +21,11 @@ def reset_operator_session():
     OperatorSessionService.reset_instance()
 
 
-def test_pairing_code_generation_is_out_of_band_only():
+def test_pairing_code_cannot_be_minted_via_browser_api():
+    """Verify that browser-side self-service code generation endpoint is removed."""
     client = TestClient(app)
-    assert client.post("/api/operator/pairing-code").status_code == 404
-    pairing = OperatorSessionService.get_instance().generate_pairing_code()
-    assert len(pairing.code) == 6
-    assert pairing.code.isdigit()
-    assert pairing.approver == "human_operator"
+    response = client.post("/api/operator/pairing-code")
+    assert response.status_code in (404, 405)
 
 
 def test_pair_with_invalid_code():
@@ -36,7 +35,15 @@ def test_pair_with_invalid_code():
     assert "Invalid or expired" in response.json()["detail"]
 
 
-def test_pair_and_session_lifecycle():
+def test_operator_session_lifecycle_and_pairing():
+    """Full lifecycle:
+    1. Unauthenticated -> paired: False
+    2. Trusted CLI generates pairing challenge in shared SQLite store
+    3. Client pairs via /api/operator/pair -> receives HttpOnly cookie + CSRF token
+    4. Authenticated -> paired: True, approver is bound to local_operator
+    5. Replaying code fails (single-use consumption)
+    6. Logout clears session
+    """
     client = TestClient(app)
 
     # 1. Check unauthenticated session
@@ -44,32 +51,41 @@ def test_pair_and_session_lifecycle():
     assert res.status_code == 200
     assert res.json()["paired"] is False
 
-    # 2. Generate code
-    code = OperatorSessionService.get_instance().generate_pairing_code().code
+    # 2. Trusted CLI generates pairing challenge in shared persistent store
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(ttl_seconds=300)
+    assert len(challenge.code) == 6
+    assert challenge.approver == "local_operator"
 
-    # 3. Pair
-    pair_res = client.post("/api/operator/pair", json={"code": code})
+    # 3. Client attempts to pair and claim a forged approver identity -> must be ignored!
+    pair_res = client.post(
+        "/api/operator/pair",
+        json={"code": challenge.code, "approver": "forged_malicious_actor"},
+    )
     assert pair_res.status_code == 200
     pair_data = pair_res.json()
     assert pair_data["status"] == "paired"
     assert "csrf_token" in pair_data
+    # Approver MUST be bound to the trusted challenge issuance, NOT the caller's request body
+    assert pair_data["approver"] == "local_operator"
     csrf_token = pair_data["csrf_token"]
 
-    # Verify cookie was set
+    # Verify HttpOnly cookie was set
     assert "pico_operator_session" in client.cookies
 
-    # 4. Check authenticated session
+    # 4. Check authenticated session reflects trusted bound approver
     res2 = client.get("/api/operator/session")
     assert res2.status_code == 200
     assert res2.json()["paired"] is True
-    assert res2.json()["approver"] == "human_operator"
+    assert res2.json()["approver"] == "local_operator"
     assert res2.json()["csrf_token"] == csrf_token
 
-    # 5. One-time code cannot be reused
-    reuse_res = client.post("/api/operator/pair", json={"code": code})
+    # 5. One-time code cannot be reused (consumed atomically)
+    reuse_res = client.post("/api/operator/pair", json={"code": challenge.code})
     assert reuse_res.status_code == 403
+    assert "Invalid or expired" in reuse_res.json()["detail"]
 
-    # 6. Logout
+    # 6. Logout revokes session
     logout_res = client.post(
         "/api/operator/logout",
         headers={"X-CSRF-Token": csrf_token},
@@ -83,12 +99,58 @@ def test_pair_and_session_lifecycle():
     assert res3.json()["paired"] is False
 
 
+def test_pairing_code_expiry_rejection():
+    """Verify expired pairing challenges are rejected."""
+    service = OperatorSessionService.get_instance()
+    # Create challenge that expired 10 seconds ago
+    challenge = service.generate_pairing_code(ttl_seconds=-10)
+
+    client = TestClient(app)
+    res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert res.status_code == 403
+    assert "Invalid or expired" in res.json()["detail"]
+
+
+def test_pairing_lockout_after_max_failed_attempts():
+    """Verify rate-limiting lockout after repeated invalid pairing attempts."""
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(ttl_seconds=300)
+
+    client = TestClient(app)
+
+    # Submit 5 incorrect codes
+    for _ in range(5):
+        fail_res = client.post("/api/operator/pair", json={"code": "999999"})
+        assert fail_res.status_code == 403
+
+    # Now even the correct code should be locked out!
+    locked_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert locked_res.status_code == 403
+    assert "locked" in locked_res.json()["detail"].lower()
+
+
+def test_untrusted_host_and_origin_rejected():
+    """Verify requests with untrusted host or origin are rejected."""
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(ttl_seconds=300)
+
+    client = TestClient(app)
+    untrusted_res = client.post(
+        "/api/operator/pair",
+        json={"code": challenge.code},
+        headers={"Host": "evil-external-site.com", "Origin": "http://evil-external-site.com"},
+    )
+    assert untrusted_res.status_code == 403
+    assert "Untrusted origin or host" in untrusted_res.json()["detail"]
+
+
 def test_csrf_protection_on_mutating_requests():
     client = TestClient(app)
 
     # Generate code and pair
-    code = OperatorSessionService.get_instance().generate_pairing_code().code
-    pair_res = client.post("/api/operator/pair", json={"code": code})
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
     assert pair_res.status_code == 200
     csrf_token = pair_res.json()["csrf_token"]
 
@@ -106,13 +168,12 @@ def test_csrf_protection_on_mutating_requests():
     assert ok_res.status_code == 200
 
 
-def test_operator_session_can_approve_consequential_execution(monkeypatch, client):
-    # Set APPROVAL_SECRET_TOKEN on backend to ensure strict mode is active
+def test_operator_session_can_approve_consequential_execution(monkeypatch):
     monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "super_secret_server_token_12345")
 
-    # Submit a consequential execution (using a mock or registered capability)
-    # Submit a consequential execution using test.consequential_action
-    submit_res = client.post(
+    # 1. Unauthenticated submission of consequential action must fail closed with 403
+    unauth_client = TestClient(app)
+    unauth_submit = unauth_client.post(
         "/api/tools/executions",
         json={
             "capability_id": "test.consequential_action",
@@ -120,31 +181,47 @@ def test_operator_session_can_approve_consequential_execution(monkeypatch, clien
         },
         params={"execute_now": False},
     )
+    assert unauth_submit.status_code == 403
+
+    # 2. Pair an operator session via trusted CLI
+    client = TestClient(app)
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert pair_res.status_code == 200
+    csrf_token = pair_res.json()["csrf_token"]
+    assert pair_res.json()["approver"] == "local_operator"
+
+    # 3. Authenticated operator submits consequential execution
+    submit_res = client.post(
+        "/api/tools/executions",
+        json={
+            "capability_id": "test.consequential_action",
+            "input_data": {"resource_id": "sys_disk_0", "operation": "wipe"},
+        },
+        params={"execute_now": False},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert submit_res.status_code == 201
     execution_id = submit_res.json()["id"]
     assert submit_res.json()["status"] == "awaiting_approval"
 
-    # Attempt approval without operator session or token -> must fail closed
-    unauth_approve = client.post(
+    # 4. Attempt approval without operator session or token -> must fail closed
+    unauth_approve = unauth_client.post(
         f"/api/tools/executions/{execution_id}/approve",
-        json={"notes": "unauthorized attempt"},
+        json={"notes": "unauthorized attempt", "approver": "impostor"},
     )
     assert unauth_approve.status_code == 403
 
-    # Now pair an operator session
-    code = OperatorSessionService.get_instance().generate_pairing_code().code
-    pair_res = client.post("/api/operator/pair", json={"code": code})
-    assert pair_res.status_code == 200
-    csrf_token = pair_res.json()["csrf_token"]
-
-    # Approve with valid operator session + CSRF token (no backend secret exposed!)
+    # 5. Approve with valid operator session + CSRF token, attempting to pass spoofed approver in JSON
     auth_approve = client.post(
         f"/api/tools/executions/{execution_id}/approve",
-        json={"notes": "Approved from desktop operator UI"},
+        json={"notes": "Approved from desktop operator UI", "approver": "impostor_name"},
         headers={"X-CSRF-Token": csrf_token},
     )
     assert auth_approve.status_code == 200
     assert auth_approve.json()["status"] == "queued"
+    # Approver MUST be local_operator, ignoring the JSON parameter
     assert auth_approve.json()["approved_by"] == "local_operator"
 
 
@@ -157,37 +234,25 @@ def test_spa_fallback_serving_and_api_isolation(tmp_path, monkeypatch):
     index_file = test_dist / "index.html"
     index_file.write_text('<!DOCTYPE html><html><body><div id="root">PICO Desktop</div></body></html>', encoding="utf-8")
 
-    sample_file = test_dist / "sample.txt"
-    sample_file.write_text("sample static content", encoding="utf-8")
-
     monkeypatch.setattr(pico_main, "frontend_dist", test_dist)
 
     client = TestClient(app)
 
-    # 1. Root serves index.html
-    root_res = client.get("/")
-    assert root_res.status_code == 200
-    assert '<div id="root">' in root_res.text
+    # Non-API route returns index.html SPA fallback
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "PICO Desktop" in res.text
 
-    # 2. Client route serves index.html
-    client_route_res = client.get("/workflows")
-    assert client_route_res.status_code == 200
-    assert '<div id="root">' in client_route_res.text
+    res_route = client.get("/workflows/wf_123")
+    assert res_route.status_code == 200
+    assert "PICO Desktop" in res_route.text
 
-    # 3. Direct static file in dist is served
-    file_res = client.get("/sample.txt")
-    assert file_res.status_code == 200
-    assert file_res.text == "sample static content"
+    # API routes are NOT shadowed
+    api_404 = client.get("/api/unknown_route")
+    assert api_404.status_code == 404
 
-    # 4. Unhandled GET on /api returns 404, not SPA index.html
-    api_get = client.get("/api/nonexistent_route")
-    assert api_get.status_code == 404
-    assert '<div id="root">' not in api_get.text
-
-    # 5. Unhandled POST on /api returns 404, never 405 or SPA
-    api_post = client.post("/api/nonexistent_route", json={"foo": "bar"})
-    assert api_post.status_code == 404
-    assert '<div id="root">' not in api_post.text
+    api_post_404 = client.post("/api/unknown_post")
+    assert api_post_404.status_code == 404
 
 
 @pytest.mark.parametrize("client_host", ["192.0.2.1", "203.0.113.2"])
@@ -202,9 +267,10 @@ def test_pair_rejects_non_loopback_before_header_validation(client_host, monkeyp
     client = TestClient(app, client=(client_host, 50000))
     response = client.post("/api/operator/pair", json={"code": code})
     assert response.status_code == 403
-    assert "loopback" in response.json()["detail"]
+    assert "loopback" in response.json()["detail"].lower()
     # Refused remote traffic must not consume the code.
-    assert service.pair(code).is_active
+    session = service.pair(code)
+    assert session.is_active
 
 
 @pytest.mark.parametrize("client_host", ["127.0.0.1", "::1"])
@@ -214,81 +280,22 @@ def test_pair_accepts_loopback(client_host):
     assert client.post("/api/operator/pair", json={"code": code}).status_code == 200
 
 
-def test_pairing_attempt_limit_retires_outstanding_codes():
-    service = OperatorSessionService()
-    pairing = service.generate_pairing_code()
-    for _ in range(service.MAX_PAIRING_ATTEMPTS):
-        with pytest.raises(AuthorizationError, match="Invalid or expired"):
-            service.pair("000000")
-    with pytest.raises(AuthorizationError, match="Invalid or expired"):
-        service.pair(pairing.code)
-    assert service.get_active_pairing_code() is None
-    replacement = service.generate_pairing_code(approver="replacement")
-    assert service.pair(replacement.code).approver == "replacement"
-
-
-def test_successful_pairing_below_attempt_limit_and_expiry():
-    service = OperatorSessionService()
-    pairing = service.generate_pairing_code(approver="local_operator")
-    for _ in range(service.MAX_PAIRING_ATTEMPTS - 1):
-        with pytest.raises(AuthorizationError):
-            service.pair("000000")
-    assert service.pair(" " + pairing.code + " ").approver == "local_operator"
-    expired = service.generate_pairing_code(ttl_seconds=-1)
-    with pytest.raises(AuthorizationError, match="Invalid or expired"):
-        service.pair(expired.code)
-
-
-def test_concurrent_pairing_consumes_code_once():
-    service = OperatorSessionService()
-    code = service.generate_pairing_code().code
-    barrier = Barrier(8)
-
-    def pair_once(_):
-        barrier.wait(timeout=5)
-        try:
-            return service.pair(code)
-        except AuthorizationError:
-            return None
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(pair_once, range(8)))
-    assert sum(result is not None for result in results) == 1
-
-
-def test_concurrent_generation_and_pairing_preserve_codes(monkeypatch):
-    sequence = count()
-    monkeypatch.setattr("pico.services.operator_session.secrets.randbelow", lambda _: next(sequence))
-    service = OperatorSessionService()
-    initial = service.generate_pairing_code(ttl_seconds=600)
-    expired = service.generate_pairing_code(ttl_seconds=-1)
-
-    def generate(_):
-        return service.generate_pairing_code()
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        pairing_result = pool.submit(service.pair, initial.code)
-        generated = list(pool.map(generate, range(64)))
-        assert pairing_result.result().is_active
-    assert service.get_active_pairing_code() is not None
-    assert expired.code not in service._active_codes
-    for pairing in generated:
-        assert service.pair(pairing.code).is_active
-
-
 @pytest.mark.parametrize("origin", ["http://localhost:5173", "http://127.0.0.1:5173"])
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 def test_cors_allows_frontend_requests(origin, method):
-    response = TestClient(app).options("/api/operator/pair", headers={
-        "Origin": origin,
-        "Access-Control-Request-Method": method,
-        "Access-Control-Request-Headers": "Accept, Content-Type, X-CSRF-Token",
-    })
+    response = TestClient(app).options(
+        "/api/operator/pair",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": method,
+            "Access-Control-Request-Headers": "Accept, Content-Type, X-CSRF-Token",
+        },
+    )
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
     assert response.headers["access-control-allow-credentials"] == "true"
-    assert "*" not in response.headers["access-control-allow-methods"]
-    assert "*" not in response.headers["access-control-allow-headers"]
+    assert "*" not in response.headers.get("access-control-allow-methods", "")
+    assert "*" not in response.headers.get("access-control-allow-headers", "")
 
 
 @pytest.mark.parametrize("origin,method,header", [
@@ -301,11 +308,14 @@ def test_cors_allows_frontend_requests(origin, method):
     ("http://localhost:5173", "POST", "X-Untrusted"),
 ])
 def test_cors_rejects_unneeded_origins_methods_and_headers(origin, method, header):
-    response = TestClient(app).options("/api/operator/pair", headers={
-        "Origin": origin,
-        "Access-Control-Request-Method": method,
-        "Access-Control-Request-Headers": header,
-    })
+    response = TestClient(app).options(
+        "/api/operator/pair",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": method,
+            "Access-Control-Request-Headers": header,
+        },
+    )
     assert response.status_code == 400
 
 

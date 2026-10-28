@@ -11,6 +11,7 @@ import {
   ShieldX,
 } from 'lucide-react';
 import { Conversation, DataClassification, OperatorSessionState } from '../../types';
+import { ConnectivityBanner } from './ConnectivityBanner';
 
 interface AppLayoutProps {
   currentTab: 'chat' | 'workflows' | 'approvals' | 'memory' | 'status';
@@ -112,6 +113,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </button>
         </div>
       </header>
+      <ConnectivityBanner />
 
       {/* Main Split Layout */}
       <div className="main-content">

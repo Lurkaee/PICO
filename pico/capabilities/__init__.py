@@ -24,10 +24,14 @@ from pico.capabilities.filesystem import (
     StageDiffCapability,
 )
 from pico.capabilities.homeassistant.ha_actuation import (
+    HomeAssistantClimateActuationCapability,
+    HomeAssistantSwitchActuationCapability,
     HomeAssistantTestLightActuationCapability,
 )
 from pico.capabilities.homeassistant.ha_readiness import (
     HomeAssistantActuationReadinessCapability,
+    HomeAssistantClimateReadinessCapability,
+    HomeAssistantSwitchActuationReadinessCapability,
 )
 from pico.capabilities.browser import OpenPageCapability
 from pico.capabilities.os.inspect_windows import InspectWindowsCapability
@@ -71,6 +75,10 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(HomeAssistantOverviewCapability())
     reg.register(HomeAssistantTestLightActuationCapability())
     reg.register(HomeAssistantActuationReadinessCapability())
+    reg.register(HomeAssistantSwitchActuationCapability())
+    reg.register(HomeAssistantSwitchActuationReadinessCapability())
+    reg.register(HomeAssistantClimateReadinessCapability())
+    reg.register(HomeAssistantClimateActuationCapability())
     reg.register(InspectWindowsCapability())
     reg.register(LaunchApplicationCapability())
     reg.register(StageDiffCapability())
@@ -115,6 +123,10 @@ __all__ = [
     "HomeAssistantOverviewCapability",
     "HomeAssistantTestLightActuationCapability",
     "HomeAssistantActuationReadinessCapability",
+    "HomeAssistantSwitchActuationCapability",
+    "HomeAssistantSwitchActuationReadinessCapability",
+    "HomeAssistantClimateReadinessCapability",
+    "HomeAssistantClimateActuationCapability",
     "InspectWindowsCapability",
     "LaunchApplicationCapability",
     "StageDiffCapability",

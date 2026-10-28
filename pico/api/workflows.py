@@ -1,9 +1,15 @@
-"""REST API routes for workflow coordination (Milestone P9.1)."""
-
-from fastapi import APIRouter, Depends, Query, status
+import secrets
+from typing import Optional
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
+from pico.api.operator import get_operator_session_optional
+from pico.capabilities.registry import CapabilityRegistry, registry as default_registry
+from pico.core.config import settings
+from pico.core.errors import EntityNotFoundError
 from pico.db.session import get_db
+from pico.models.workflow import WorkflowRun
+from pico.models.workflow_compensation import WorkflowCompensation
 from pico.schemas.workflow import (
     WorkflowAdvanceRequest,
     WorkflowCancelRequest,
@@ -14,7 +20,98 @@ from pico.schemas.workflow import (
     WorkflowRunResponse,
     WorkflowVerificationResponse,
 )
+from pico.services.operator_session import OperatorSession
 from pico.workflow.service import WorkflowService
+
+SAFE_DEFAULT_PERMISSIONS: set[str] = {
+    "tools:calculate",
+    "tools:validate",
+    "projects:read",
+    "tasks:read",
+    "system:diagnostics",
+    "test:execute",
+}
+
+PRIVILEGED_OPERATOR_PERMISSIONS: set[str] = {
+    "homeassistant:actuate",
+    "os:inspect",
+    "os:launch",
+    "filesystem:write",
+    "browser:open",
+    "admin:consequential",
+}
+
+
+def extract_workflow_run_permissions(
+    run: WorkflowRun,
+    registry: CapabilityRegistry = default_registry,
+) -> set[str]:
+    """
+    Extracts the set of permissions required to execute the steps in a workflow run.
+    """
+    required: set[str] = set()
+    for step in run.steps:
+        try:
+            cap = registry.get(step.capability_id, version=step.capability_version)
+            if cap.metadata.required_permission:
+                required.add(cap.metadata.required_permission)
+            if cap.metadata.consequential:
+                required.add("admin:consequential")
+        except Exception:
+            pass
+    return required
+
+
+def extract_compensation_permissions(
+    compensations: list[WorkflowCompensation],
+    registry: CapabilityRegistry = default_registry,
+) -> set[str]:
+    """
+    Extracts the set of permissions required to execute compensations.
+    """
+    required: set[str] = set()
+    for comp in compensations:
+        try:
+            cap = registry.get(
+                comp.compensation_capability_id,
+                version=comp.compensation_capability_version,
+            )
+            if cap.metadata.required_permission:
+                required.add(cap.metadata.required_permission)
+            if cap.metadata.consequential:
+                required.add("admin:consequential")
+        except Exception:
+            pass
+    return required
+
+
+def derive_workflow_permissions(
+    operator_session: Optional[OperatorSession],
+    x_approval_token: Optional[str],
+    required_permissions: Optional[set[str]] = None,
+) -> set[str]:
+    """
+    Derives trusted server-side permissions for workflow execution.
+    Untrusted caller_permissions supplied in HTTP request bodies are strictly ignored.
+    If authenticated (operator session or approval token), grants SAFE_DEFAULT_PERMISSIONS
+    plus the minimum required privileged permissions needed for the workflow or compensation.
+    """
+    perms = set(SAFE_DEFAULT_PERMISSIONS)
+    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
+    has_token = bool(
+        configured_secret
+        and x_approval_token
+        and secrets.compare_digest(x_approval_token, configured_secret)
+    )
+    has_session = operator_session is not None
+    if has_token or has_session:
+        if required_permissions is not None:
+            # Grant only the intersection of required permissions and allowed privileged permissions
+            perms.update(required_permissions & PRIVILEGED_OPERATOR_PERMISSIONS)
+        else:
+            perms.update(PRIVILEGED_OPERATOR_PERMISSIONS)
+    return perms
+
 
 router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 
@@ -85,12 +182,21 @@ def get_workflow(
 async def advance_workflow(
     workflow_id: str,
     payload: WorkflowAdvanceRequest = WorkflowAdvanceRequest(),
+    operator_session: Optional[OperatorSession] = Depends(get_operator_session_optional),
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> WorkflowRunResponse:
     service = WorkflowService(db)
+    run = service.repo.get_by_id(workflow_id)
+    if not run:
+        raise EntityNotFoundError("WorkflowRun", workflow_id)
+    required_perms = extract_workflow_run_permissions(run, service.capability_registry)
+    effective_perms = derive_workflow_permissions(
+        operator_session, x_approval_token, required_permissions=required_perms
+    )
     return await service.advance_workflow(
         run_id=workflow_id,
-        caller_permissions=set(payload.caller_permissions),
+        caller_permissions=effective_perms,
         max_steps=payload.max_steps,
     )
 
@@ -148,13 +254,23 @@ def get_step_verification(
 async def compensate_workflow(
     workflow_id: str,
     payload: WorkflowCompensateRequest = WorkflowCompensateRequest(),
+    operator_session: Optional[OperatorSession] = Depends(get_operator_session_optional),
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
     db: Session = Depends(get_db),
 ) -> WorkflowRunResponse:
     service = WorkflowService(db)
+    run = service.repo.get_by_id(workflow_id)
+    if not run:
+        raise EntityNotFoundError("WorkflowRun", workflow_id)
+    comps = service.repo.get_compensations_for_run(workflow_id)
+    required_perms = extract_compensation_permissions(comps, service.capability_registry)
+    effective_perms = derive_workflow_permissions(
+        operator_session, x_approval_token, required_permissions=required_perms
+    )
     return await service.compensate_workflow(
         run_id=workflow_id,
         reason=payload.reason,
-        caller_permissions=set(payload.caller_permissions),
+        caller_permissions=effective_perms,
     )
 
 

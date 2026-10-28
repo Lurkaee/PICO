@@ -17,9 +17,20 @@ import {
   SystemHealth,
   ToolCapability,
   ToolExecution,
+  WorkflowCompensation,
   WorkflowRun,
   WorkingMemoryItem,
 } from '../types';
+
+import {
+  ApiError,
+  AuthenticationError,
+  NetworkError,
+  ProviderUnavailableError,
+  TimeoutError,
+} from './errors';
+
+export * from './errors';
 
 let currentCsrfToken: string | null = null;
 
@@ -31,7 +42,11 @@ export function getCsrfToken(): string | null {
   return currentCsrfToken;
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+export interface RequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   headers.set('Accept', 'application/json');
 
@@ -45,21 +60,75 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.set('X-CSRF-Token', currentCsrfToken);
   }
 
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    credentials: 'same-origin',
-  });
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  let combinedSignal: AbortSignal = controller.signal;
+  if (options.signal) {
+    if (options.signal.aborted) {
+      clearTimeout(timer);
+      throw new Error('Request aborted');
+    }
+    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers,
+      credentials: 'same-origin',
+      signal: combinedSignal,
+    });
+  } catch (err: unknown) {
+    clearTimeout(timer);
+    if (timedOut) {
+      throw new TimeoutError(`Request to ${path} timed out after ${timeoutMs}ms`);
+    }
+    if (options.signal?.aborted) {
+      throw err;
+    }
+    throw new NetworkError(
+      err instanceof Error ? err.message : 'Network connection failed or backend unreachable'
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     let errorDetail = `HTTP ${response.status} ${response.statusText}`;
+    let errorCode: string | undefined;
     try {
       const err = await response.json();
       errorDetail = err.detail || errorDetail;
+      errorCode = err.code;
     } catch {
       // not JSON
     }
-    throw new Error(errorDetail);
+
+    if (response.status === 401 || response.status === 403) {
+      throw new AuthenticationError(response.status as 401 | 403, errorDetail);
+    }
+    if (response.status === 503) {
+      throw new ProviderUnavailableError(errorDetail, errorCode);
+    }
+    if (response.status === 504) {
+      throw new TimeoutError(errorDetail);
+    }
+
+    throw new ApiError({
+      message: errorDetail,
+      status: response.status,
+      statusText: response.statusText,
+      detail: errorDetail,
+      code: errorCode,
+    });
   }
 
   // Handle empty bodies (e.g. 204 or void endpoints)
@@ -80,12 +149,12 @@ export const api = {
     return res;
   },
 
-  async pairOperator(code: string, approver = 'human_operator'): Promise<OperatorSessionState> {
+  async pairOperator(code: string): Promise<OperatorSessionState> {
     const res = await request<{ status: string; csrf_token: string; expires_at: string; approver: string }>(
       '/api/operator/pair',
       {
         method: 'POST',
-        body: JSON.stringify({ code, approver }),
+        body: JSON.stringify({ code }),
       }
     );
     setCsrfToken(res.csrf_token);
@@ -142,6 +211,17 @@ export const api = {
     return request(`/api/perception/audio/session/${sessionId}/cancel`, { method: 'POST' });
   },
 
+  async getAudioSessionStatus(sessionId: string): Promise<{
+    session_id: string;
+    state: 'capturing' | 'processing' | 'completed' | 'cancelled' | 'failed' | string;
+    started_at: string;
+    completed_at: string | null;
+    microphone_active: boolean;
+    source_device: string;
+  }> {
+    return request(`/api/perception/audio/session/${sessionId}`);
+  },
+
   // --- Memory Subsystem ---
   async getMemoryStatus(): Promise<Record<string, unknown>> {
     return request('/api/memory/status');
@@ -193,6 +273,20 @@ export const api = {
 
   async getWorkflowVerifications(workflowId: string): Promise<StepVerificationRecord[]> {
     return request<StepVerificationRecord[]>(`/api/workflows/${workflowId}/verifications`);
+  },
+
+  async compensateWorkflow(workflowId: string, reason?: string): Promise<WorkflowRun> {
+    return request<WorkflowRun>(
+      `/api/workflows/${workflowId}/compensate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason || 'Compensated by operator via workflow UI' }),
+      }
+    );
+  },
+
+  async getWorkflowCompensations(workflowId: string): Promise<WorkflowCompensation[]> {
+    return request<WorkflowCompensation[]>(`/api/workflows/${workflowId}/compensations`);
   },
 
   // --- Tool Capabilities & Executions ---

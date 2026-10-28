@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from './api/client';
 import { Conversation, DataClassification, OperatorSessionState } from './types';
+import { ConnectivityProvider } from './context/ConnectivityContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { WorkflowTimeline } from './components/workflows/WorkflowTimeline';
@@ -59,8 +60,22 @@ export const App: React.FC = () => {
     setActiveConversation(conv);
   };
 
+  const handleReconnected = React.useCallback(() => {
+    // Revalidate operator session status immediately upon confirmed backend recovery
+    api
+      .getOperatorSession()
+      .then(setSessionState)
+      .catch(() => setSessionState({ paired: false }));
+
+    // Refresh pending approvals
+    api
+      .listExecutions('awaiting_approval', 50)
+      .then((items) => setPendingApprovalsCount(items.length))
+      .catch(() => {});
+  }, []);
+
   return (
-    <>
+    <ConnectivityProvider onReconnected={handleReconnected}>
       <AppLayout
         currentTab={currentTab}
         onTabChange={setCurrentTab}
@@ -107,6 +122,6 @@ export const App: React.FC = () => {
           }
         }}
       />
-    </>
+    </ConnectivityProvider>
   );
 };

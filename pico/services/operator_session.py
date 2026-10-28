@@ -1,20 +1,28 @@
 """PICO Local Operator Session & Pairing Service.
 
-Provides short-lived one-time pairing codes and secure local operator sessions.
+Provides short-lived one-time pairing challenges persisted in SQLite and secure local operator sessions.
 Ensures consequential approval actions can be authorized by a verified local operator
 without ever exposing server-side secrets (like APPROVAL_SECRET_TOKEN) to frontend bundles,
 local storage, or client-side JavaScript.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import secrets
-from threading import Lock
-from typing import Optional
+from typing import Generator, Optional
 from urllib.parse import urlparse
 
-from pico.core.errors import AuthorizationError
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
+from pico.core.errors import AuthorizationError
+from pico.db.session import SessionLocal
+from pico.models.operator_session import (
+    OperatorPairingChallenge,
+    OperatorSessionModel,
+)
 
 ALLOWED_HOSTS = {
     "localhost",
@@ -29,13 +37,20 @@ ALLOWED_HOSTS = {
 }
 
 
+LOCAL_OPERATOR_IDENTITY: str = "local_operator"
+
+
+def ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 
 @dataclass
 class PairingCode:
     code: str
     expires_at: datetime
-    approver: str = "human_operator"
-    failed_attempts: int = 0
+    approver: str = LOCAL_OPERATOR_IDENTITY
 
 
 @dataclass
@@ -48,17 +63,14 @@ class OperatorSession:
     is_active: bool = True
 
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) >= self.expires_at
+        return datetime.now(timezone.utc) >= ensure_utc(self.expires_at)
 
 
 class OperatorSessionService:
     _instance: Optional["OperatorSessionService"] = None
-    MAX_PAIRING_ATTEMPTS = 5
 
     def __init__(self):
-        self._active_codes: dict[str, PairingCode] = {}
-        self._codes_lock = Lock()
-        self._sessions: dict[str, OperatorSession] = {}
+        pass
 
     @classmethod
     def get_instance(cls) -> "OperatorSessionService":
@@ -71,77 +83,197 @@ class OperatorSessionService:
         """For testing purposes."""
         cls._instance = None
 
-    def generate_pairing_code(self, approver: str = "human_operator", ttl_seconds: int = 300) -> PairingCode:
-        # Generate 6-digit code securely
+    @contextmanager
+    def _get_db(self, db: Optional[Session]) -> Generator[Session, None, None]:
+        if db is not None:
+            yield db
+        else:
+            session = SessionLocal()
+            try:
+                yield session
+            finally:
+                session.close()
+
+    def generate_pairing_code(
+        self,
+        ttl_seconds: int = 300,
+        db: Optional[Session] = None,
+    ) -> PairingCode:
+        """Generate a 6-digit one-time code and persist its challenge in the database bound to local_operator."""
         code = f"{secrets.randbelow(900000) + 100000:06d}"
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
-        pairing = PairingCode(code=code, expires_at=expires_at, approver=approver)
-        # Clean expired codes
-        now = datetime.now(timezone.utc)
-        with self._codes_lock:
-            self._active_codes = {c: p for c, p in self._active_codes.items() if p.expires_at > now}
-            self._active_codes[code] = pairing
-        return pairing
+        salt = secrets.token_hex(16)
+        code_hash = hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
 
-    def get_active_pairing_code(self) -> Optional[PairingCode]:
-        """Returns the most recent valid active pairing code if one exists."""
         now = datetime.now(timezone.utc)
-        with self._codes_lock:
-            valid = [p for p in self._active_codes.values() if p.expires_at > now]
-            if not valid:
-                return None
-            return sorted(valid, key=lambda p: p.expires_at, reverse=True)[0]
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        challenge_id = f"pair_{secrets.token_hex(16)}"
 
-    def pair(self, code: str, approver: Optional[str] = None, session_ttl_seconds: int = 3600) -> OperatorSession:
+        with self._get_db(db) as s:
+            # Clean up old expired challenges
+            expired_q = select(OperatorPairingChallenge).where(
+                OperatorPairingChallenge.expires_at < now
+            )
+            for old in s.scalars(expired_q).all():
+                s.delete(old)
+
+            challenge = OperatorPairingChallenge(
+                id=challenge_id,
+                code_hash=code_hash,
+                salt=salt,
+                approver=LOCAL_OPERATOR_IDENTITY,
+                failed_attempts=0,
+                max_attempts=5,
+                created_at=now,
+                expires_at=expires_at,
+                consumed_at=None,
+            )
+            s.add(challenge)
+            s.commit()
+
+        return PairingCode(code=code, expires_at=expires_at, approver=LOCAL_OPERATOR_IDENTITY)
+
+    def pair(
+        self,
+        code: str,
+        session_ttl_seconds: int = 3600,
+        db: Optional[Session] = None,
+    ) -> OperatorSession:
+
+        """
+        Validate pairing code against active unconsumed challenges.
+        Atomically consumes the code and creates an authenticated OperatorSession.
+        The session's approver identity is bound strictly from the challenge.
+        """
         now = datetime.now(timezone.utc)
         clean_code = (code or "").strip()
-        with self._codes_lock:
-            pairing = self._active_codes.pop(clean_code, None)
-            if not pairing or pairing.expires_at <= now:
-                # A wrong guess cannot identify its intended code, so count it
-                # against every outstanding code and retire each at the limit.
-                for active in self._active_codes.values():
-                    active.failed_attempts += 1
-                self._active_codes = {
-                    c: p for c, p in self._active_codes.items()
-                    if p.expires_at > now and p.failed_attempts < self.MAX_PAIRING_ATTEMPTS
-                }
+        if not clean_code:
+            raise AuthorizationError("Pairing code cannot be empty.")
+
+        with self._get_db(db) as s:
+            # Find active unconsumed challenges
+            challenges = s.scalars(
+                select(OperatorPairingChallenge)
+                .where(
+                    OperatorPairingChallenge.consumed_at.is_(None),
+                    OperatorPairingChallenge.expires_at > now,
+                )
+                .order_by(OperatorPairingChallenge.created_at.desc())
+            ).all()
+
+            if not challenges:
                 raise AuthorizationError("Invalid or expired pairing code.")
 
-        effective_approver = approver or pairing.approver or "human_operator"
-        session_id = secrets.token_urlsafe(32)
-        csrf_token = secrets.token_urlsafe(32)
-        expires_at = now + timedelta(seconds=session_ttl_seconds)
+            # Check if all active challenges are locked out
+            all_locked = all(ch.failed_attempts >= ch.max_attempts for ch in challenges)
+            if all_locked:
+                raise AuthorizationError(
+                    "Pairing code locked due to excessive failed attempts. Please generate a new code in the local terminal."
+                )
 
-        session = OperatorSession(
-            session_id=session_id,
-            approver=effective_approver,
-            csrf_token=csrf_token,
-            created_at=now,
-            expires_at=expires_at,
-            is_active=True,
-        )
-        self._sessions[session_id] = session
-        return session
+            # Test code against candidate challenges
+            matched_ch: Optional[OperatorPairingChallenge] = None
+            for ch in challenges:
+                if ch.failed_attempts >= ch.max_attempts:
+                    continue
+                candidate_hash = hashlib.sha256(f"{ch.salt}:{clean_code}".encode()).hexdigest()
+                if secrets.compare_digest(ch.code_hash, candidate_hash):
+                    matched_ch = ch
+                    break
 
-    def get_session(self, session_id: Optional[str]) -> Optional[OperatorSession]:
+            if not matched_ch:
+                # Increment failed attempts on active non-locked challenges
+                for ch in challenges:
+                    if ch.failed_attempts < ch.max_attempts:
+                        ch.failed_attempts += 1
+                s.commit()
+                raise AuthorizationError("Invalid or expired pairing code.")
+
+            # Atomically consume the matching challenge
+            result = s.execute(
+                update(OperatorPairingChallenge)
+                .where(
+                    OperatorPairingChallenge.id == matched_ch.id,
+                    OperatorPairingChallenge.consumed_at.is_(None),
+                    OperatorPairingChallenge.failed_attempts < OperatorPairingChallenge.max_attempts,
+                )
+                .values(consumed_at=now)
+            )
+
+            if result.rowcount == 0:
+                s.rollback()
+                raise AuthorizationError("Pairing code has already been consumed or locked.")
+
+            # Session approver identity is bound to the challenge created by the CLI
+            bound_approver = matched_ch.approver
+            session_id = secrets.token_urlsafe(32)
+            csrf_token = secrets.token_urlsafe(32)
+            session_expires_at = now + timedelta(seconds=session_ttl_seconds)
+
+            session_model = OperatorSessionModel(
+                id=session_id,
+                approver=bound_approver,
+                csrf_token=csrf_token,
+                created_at=now,
+                expires_at=session_expires_at,
+                is_active=True,
+            )
+            s.add(session_model)
+            s.commit()
+
+            return OperatorSession(
+                session_id=session_id,
+                approver=bound_approver,
+                csrf_token=csrf_token,
+                created_at=now,
+                expires_at=session_expires_at,
+                is_active=True,
+            )
+
+    def get_session(
+        self,
+        session_id: Optional[str],
+        db: Optional[Session] = None,
+    ) -> Optional[OperatorSession]:
+        """Retrieve and validate an active operator session by ID."""
         if not session_id:
             return None
-        session = self._sessions.get(session_id)
-        if not session:
-            return None
-        if session.is_expired() or not session.is_active:
-            self._sessions.pop(session_id, None)
-            return None
-        return session
 
-    def invalidate_session(self, session_id: Optional[str]) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._get_db(db) as s:
+            session_model = s.get(OperatorSessionModel, session_id)
+            if not session_model:
+                return None
+            if not session_model.is_active or ensure_utc(session_model.expires_at) <= now:
+                if session_model.is_active:
+                    session_model.is_active = False
+                    s.commit()
+                return None
+
+            return OperatorSession(
+                session_id=session_model.id,
+                approver=session_model.approver,
+                csrf_token=session_model.csrf_token,
+                created_at=session_model.created_at,
+                expires_at=session_model.expires_at,
+                is_active=session_model.is_active,
+            )
+
+    def invalidate_session(
+        self,
+        session_id: Optional[str],
+        db: Optional[Session] = None,
+    ) -> bool:
+        """Revoke an active operator session."""
         if not session_id:
             return False
-        if session_id in self._sessions:
-            del self._sessions[session_id]
-            return True
-        return False
+
+        with self._get_db(db) as s:
+            session_model = s.get(OperatorSessionModel, session_id)
+            if session_model and session_model.is_active:
+                session_model.is_active = False
+                s.commit()
+                return True
+            return False
 
     def verify_csrf(self, session: OperatorSession, candidate_csrf_token: Optional[str]) -> bool:
         if not candidate_csrf_token:
@@ -149,17 +281,18 @@ class OperatorSessionService:
         return secrets.compare_digest(session.csrf_token, candidate_csrf_token)
 
     @staticmethod
-    def validate_origin_and_host(host: Optional[str], origin: Optional[str], referer: Optional[str] = None) -> bool:
+    def validate_origin_and_host(
+        host: Optional[str],
+        origin: Optional[str],
+        referer: Optional[str] = None,
+    ) -> bool:
         allowed = ("localhost", "127.0.0.1", "testserver")
-        # Check host header
         if host:
             host_clean = host.lower().strip()
-            # Allow port variants on localhost / 127.0.0.1
             host_domain = host_clean.split(":")[0]
             if host_domain not in allowed:
                 return False
 
-        # If origin header is present, must be localhost or 127.0.0.1 or testserver
         if origin:
             try:
                 parsed = urlparse(origin)
@@ -168,8 +301,6 @@ class OperatorSessionService:
                     return False
             except Exception:
                 return False
-
-        # If referer is present and origin is not, check referer
         elif referer:
             try:
                 parsed = urlparse(referer)

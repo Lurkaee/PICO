@@ -8,11 +8,6 @@ from pico.services.operator_session import OperatorSessionService
 def main() -> None:
     parser = argparse.ArgumentParser(description="PICO Local Operator Pairing")
     parser.add_argument(
-        "--approver",
-        default="human_operator",
-        help="Operator identity name (default: human_operator)",
-    )
-    parser.add_argument(
         "--ttl",
         type=int,
         default=300,
@@ -21,7 +16,8 @@ def main() -> None:
     args = parser.parse_args()
 
     service = OperatorSessionService.get_instance()
-    pairing = service.generate_pairing_code(approver=args.approver, ttl_seconds=args.ttl)
+    pairing = service.generate_pairing_code(ttl_seconds=args.ttl)
+
 
     print("=" * 50)
     print(" PICO Local Operator Pairing Code")

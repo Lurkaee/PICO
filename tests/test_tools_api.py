@@ -61,55 +61,113 @@ def test_api_submit_and_execute_tool(client: TestClient) -> None:
     assert "execution_succeeded" in event_types
 
 
+def test_unauthenticated_consequential_submission_fails_closed(client: TestClient) -> None:
+    """
+    Adversarial regression test for Finding A:
+    Submitting test.consequential_action without an operator session or valid
+    server-side approval token MUST be rejected with HTTP 403 Forbidden due to
+    missing 'admin:consequential' permission, create NO database execution record,
+    and produce NO consequential side effect.
+    """
+    # 1. Unauthenticated submission without credentials
+    before_res = client.get("/api/tools/executions?capability_id=test.consequential_action")
+    assert before_res.status_code == 200
+    initial_count = len(before_res.json()["items"])
+
+    res = client.post(
+        "/api/tools/executions?execute_now=true",
+        json={
+            "capability_id": "test.consequential_action",
+            "input_data": {"resource_id": "sys_disk_unique_probe", "operation": "wipe"},
+        },
+    )
+    assert res.status_code == 403
+    assert "admin:consequential" in res.json()["detail"]
+
+    # 2. Verify no execution record was created
+    after_res = client.get("/api/tools/executions?capability_id=test.consequential_action")
+    assert after_res.status_code == 200
+    assert len(after_res.json()["items"]) == initial_count
+
+
 def test_api_consequential_approval_and_execution(client: TestClient) -> None:
-    # 1. Submit consequential capability -> awaiting_approval
+    # 1. Pair operator session via trusted CLI challenge
+    from pico.services.operator_session import OperatorSessionService
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert pair_res.status_code == 200
+    csrf_token = pair_res.json()["csrf_token"]
+    assert pair_res.json()["approver"] == "local_operator"
+
+    # 2. Authenticated operator submits consequential capability -> enters awaiting_approval
     res = client.post(
         "/api/tools/executions?execute_now=true",
         json={
             "capability_id": "test.consequential_action",
             "input_data": {"resource_id": "sys_disk_0", "operation": "wipe"},
         },
+        headers={"X-CSRF-Token": csrf_token},
     )
     assert res.status_code == 201
     data = res.json()
     assert data["status"] == "awaiting_approval"
     exec_id = data["id"]
 
-    # 2. Reject untrusted approver
-    untrusted_res = client.post(
+    # 3. Reject unauthenticated approver even if claiming a trusted identity string
+    # Use clean unauthenticated client
+    unauth_client = TestClient(app)
+    naked_res = unauth_client.post(
         f"/api/tools/executions/{exec_id}/approve",
-        json={"approver": "untrusted_robot_1"},
+        json={"approver": "local_operator"},
     )
-    assert untrusted_res.status_code == 403
+    assert naked_res.status_code == 403
 
-    # 3. Approve with trusted human operator
+    # 4. Approve with authenticated operator session, attempting to pass a spoofed approver in JSON
     approve_res = client.post(
         f"/api/tools/executions/{exec_id}/approve",
-        json={"approver": "lead_engineer", "notes": "Approved for testing"},
+        json={"approver": "forged_operator_override", "notes": "Approved for testing via operator session"},
+        headers={"X-CSRF-Token": csrf_token},
     )
     assert approve_res.status_code == 200
     assert approve_res.json()["status"] == "queued"
+    # Identity MUST be bound to local_operator, ignoring the JSON payload attempt
+    assert approve_res.json()["approved_by"] == "local_operator"
 
-    # 4. Trigger execution
-    run_res = client.post(f"/api/tools/executions/{exec_id}/execute")
+    # 5. Trigger execution (with active operator session)
+    run_res = client.post(
+        f"/api/tools/executions/{exec_id}/execute",
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert run_res.status_code == 200
     assert run_res.json()["status"] == "succeeded"
     assert run_res.json()["output_data"]["performed"] is True
 
 
 def test_api_cancel_execution(client: TestClient) -> None:
-    # Submit consequential capability which stays in awaiting_approval
+    from pico.services.operator_session import OperatorSessionService
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert pair_res.status_code == 200
+    csrf_token = pair_res.json()["csrf_token"]
+
+    # Submit consequential capability with authenticated operator which stays in awaiting_approval
     res = client.post(
         "/api/tools/executions?execute_now=false",
         json={
             "capability_id": "test.consequential_action",
             "input_data": {"resource_id": "res_1", "operation": "action"},
         },
+        headers={"X-CSRF-Token": csrf_token},
     )
     assert res.status_code == 201
     exec_id = res.json()["id"]
 
-    cancel_res = client.post(f"/api/tools/executions/{exec_id}/cancel?reason=Aborted")
+    cancel_res = client.post(
+        f"/api/tools/executions/{exec_id}/cancel?reason=Aborted",
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert cancel_res.status_code == 200
     assert cancel_res.json()["status"] == "cancelled"
 

@@ -114,20 +114,30 @@ export async function streamChat(
   signal?: AbortSignal
 ): Promise<void> {
   const parser = new SSEParser(callbacks);
-  const response = await fetch('/api/chat/stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
-    body: JSON.stringify({
-      message: payload.message,
-      conversation_id: payload.conversation_id || null,
-      data_classification: payload.classification || 'INTERNAL',
-      stream: true,
-    }),
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify({
+        message: payload.message,
+        conversation_id: payload.conversation_id || null,
+        data_classification: payload.classification || 'INTERNAL',
+        stream: true,
+      }),
+      signal,
+    });
+  } catch (err: unknown) {
+    if (signal?.aborted) {
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    callbacks.onError?.({ error: 'NetworkError', detail: `Stream request failed: ${msg}` });
+    return;
+  }
 
   if (!response.ok) {
     let errorDetail = `HTTP ${response.status} ${response.statusText}`;
