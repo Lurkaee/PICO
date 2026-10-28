@@ -727,6 +727,34 @@ The desktop client implements a structured error model mapping transport, timeou
 
 ---
 
+### 2.9.4 Stage D Allowlisted Dual-Setpoint Climate Actuation (Milestone P7.4.2.4)
+
+**Operational Invariants & Safety Constraints**:
+- **Single Scoped Dual-Setpoint Operation**: Setting lower and upper target temperatures (`target_temp_low` and `target_temp_high`) on an explicitly allowlisted `climate.*` entity. The entity must already advertise dual-setpoint control (`supported_features & 2 != 0`) and be actively operating in `heat_cool` mode.
+- **Zero Operating-Mode Transitions**: PICO never switches mode before, during, or after dispatch. Incompatible modes fail closed with zero physical mutations. Automatic mode changes, fan mode adjustments, preset activation, single-setpoint `temperature` adjustments, and generic service calls (`call_service`) are strictly prohibited.
+- **Dedicated Independent Enablement Gate**: Requires `HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED=true` (default: `False`). All parent gates must also be satisfied: `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true`, `HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true`, non-empty `HOME_ASSISTANT_CLIMATE_ALLOWLIST`, valid server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`, `APPROVAL_SECRET_TOKEN`, and `homeassistant:actuate` permission. Single-setpoint climate actuation or switch actuation does not authorize dual-setpoint mutation.
+- **Fail-Closed Target Allowlist**: Target entity must match an exact string in `HOME_ASSISTANT_CLIMATE_ALLOWLIST`. Wildcards, regex, prefixes, and non-climate domains fail closed with `ValidationError`.
+- **Numeric Safety & Server-Controlled Grid Origins**: Client requests cannot supply or override `grid_origin`. Setting `grid_origin` or extra properties is forbidden and rejected with HTTP 422. Booleans and non-finite numeric/string values (`inf`, `-inf`, `nan`, `1e999`) are strictly rejected. Step alignment for both targets is computed strictly against server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`.
+- **Strict Range Bounds & Ordering**: Requires `target_temp_low < target_temp_high`, and both targets must independently lie within authoritative reported bounds `[min_temp, max_temp]`. Equal, inverted, or out-of-bounds ranges fail closed.
+- **Mandatory Pre-Dispatch Verification**: Authoritative fresh read immediately before mutation validates entity availability, dual-setpoint feature support (bit 1), active `heat_cool` mode, range bounds, step alignment for both targets, single-use approval ticket validity, and triple-digest agreement (`recomputed == persisted == approved`).
+- **Idempotency & State Satisfaction**: If both reported target setpoints (`target_temp_low` and `target_temp_high` attributes) already equal the requested setpoints, physical dispatch is skipped (`dispatch_status='already_satisfied'`) and verified independently with zero service calls.
+- **Single Dispatch Boundary**: Exactly one HTTP `POST /api/services/climate/set_temperature` call with strictly `{"entity_id": target_id, "target_temp_low": target_temp_low, "target_temp_high": target_temp_high}`. The payload strictly omits `temperature` and `hvac_mode`. Strictly zero automatic retries (`max_retries=0`, `idempotent=False`, `consequential=True`) on timeouts or failures.
+- **Independent Read-After-Write Verification**: Post-dispatch state is independently observed via read-only `GET /api/states/{id}` until both setpoints match. Never claims physical device connectivity (`physical_device_connectivity_claimed=False`).
+- **Strict Route & Capability Isolation**: Status queries for single-setpoint executions return 404 on the dual-setpoint status endpoint and vice versa.
+
+- **`POST /api/homeassistant/climate/dual-setpoint/propose`**
+  - **Description**: Proposes a dual-setpoint climate actuation execution for an allowlisted climate entity. Creates a `ToolExecution` in `awaiting_approval` status bound to SHA-256 digest. Fails closed without valid `X-Pico-Approval-Token` or `homeassistant:actuate` permission.
+  - **Request Body**: `ClimateDualSetpointProposeRequest` (`target_entity_id: str`, `target_temp_low: float`, `target_temp_high: float`, optional `target_unit: str | None = None`, optional `reason: str | None = None`). Extra fields (including `grid_origin`) are forbidden.
+  - **Headers**: `X-Pico-Approval-Token` (mandatory).
+  - **Response (201 Created)**: `ToolExecutionResponse` (status: `awaiting_approval`).
+
+- **`GET /api/homeassistant/climate/dual-setpoint/execution/{execution_id}`**
+  - **Description**: Inspect approval state, execution status, and verification outcome of a dual-setpoint climate actuation execution. Returns 404 if the execution was created for a different capability.
+  - **Path Parameters**: `execution_id: str`.
+  - **Response (200 OK)**: `ToolExecutionResponse`.
+
+---
+
 ### 2.10 OS & Desktop Application Automation Capabilities (Milestone P8.1)
 
 OS automation capabilities are integrated into the core Tool Execution Engine (`/api/tools/*`) under dedicated authorization and approval controls:

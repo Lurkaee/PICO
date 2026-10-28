@@ -321,3 +321,44 @@ class ClimateActuationResult(BaseModel):
     verification_details: dict[str, Any] = Field(default_factory=dict)
     message: str
     physical_device_connectivity_claimed: bool = False
+
+
+class ClimateDualSetpointActuationPlan(BaseModel):
+    """Milestone P7.4.2.4: Consequential dual-setpoint climate actuation action plan."""
+    __test__ = False
+    plan_id: str
+    entity_id: str
+    requested_temp_low: float
+    requested_temp_high: float
+    requested_unit: str | None = None
+    current_temperature: float | None = None
+    current_target_temp_low: float | None = None
+    current_target_temp_high: float | None = None
+    hvac_mode: str | None = None
+    service: str = "climate.set_temperature"
+    state_readiness: str = "ready"
+    is_mutation_needed: bool
+    preconditions: list[str]
+    expected_postconditions: list[str]
+    input_digest: str
+    expires_at: str
+    data_classification: str = "INTERNAL"
+    is_mutation_performed: bool = False
+
+
+class ClimateDualSetpointActuationResult(BaseModel):
+    """Milestone P7.4.2.4: Structured execution and independent verification outcome for dual-setpoint climate actuation."""
+    __test__ = False
+    success: bool
+    entity_id: str
+    requested_temp_low: float
+    requested_temp_high: float
+    requested_unit: str | None = None
+    reported_temp_low: float | None = None
+    reported_temp_high: float | None = None
+    reported_mode: str | None = None
+    dispatch_status: str
+    verification_status: str
+    verification_details: dict[str, Any] = Field(default_factory=dict)
+    message: str
+    physical_device_connectivity_claimed: bool = False

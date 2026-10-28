@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 import httpx
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from pico.capabilities.base import RiskTier
@@ -14,6 +15,9 @@ from pico.capabilities.homeassistant.ha_actuation import (
     HomeAssistantClimateActuationCapability,
     HomeAssistantClimateActuationInput,
     HomeAssistantClimateActuationOutput,
+    HomeAssistantClimateDualSetpointActuationCapability,
+    HomeAssistantClimateDualSetpointActuationInput,
+    HomeAssistantClimateDualSetpointActuationOutput,
 )
 from pico.capabilities.registry import CapabilityRegistry, registry
 from pico.core.config import settings
@@ -24,6 +28,7 @@ from pico.homeassistant.actuation import (
     HomeAssistantSwitchActuationService,
     validate_actuation_preconditions,
     validate_climate_actuation_preconditions,
+    validate_climate_dual_setpoint_actuation_preconditions,
     validate_switch_actuation_preconditions,
 )
 from pico.homeassistant.climate import (
@@ -35,10 +40,13 @@ from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.contracts import (
     ClimateActuationPlan,
     ClimateActuationResult,
+    ClimateDualSetpointActuationPlan,
+    ClimateDualSetpointActuationResult,
     ClimateReadinessReport,
     ReadinessCheckStatus,
     ReadinessErrorCategory,
 )
+from pico.api.homeassistant import ClimateDualSetpointProposeRequest
 from pico.homeassistant.readiness import evaluate_climate_readiness
 from pico.homeassistant.ws_client import ALLOWED_READONLY_WS_COMMANDS
 from pico.main import app
@@ -160,8 +168,15 @@ def make_mock_climate_transport(
 
             target_id = body.get("entity_id")
             new_temp = body.get("temperature")
+            new_low = body.get("target_temp_low")
+            new_high = body.get("target_temp_high")
             if mutate_on_service and target_id in state_box["states"]:
-                state_box["states"][target_id]["attributes"]["temperature"] = new_temp
+                if new_temp is not None:
+                    state_box["states"][target_id]["attributes"]["temperature"] = new_temp
+                if new_low is not None:
+                    state_box["states"][target_id]["attributes"]["target_temp_low"] = new_low
+                if new_high is not None:
+                    state_box["states"][target_id]["attributes"]["target_temp_high"] = new_high
 
             return httpx.Response(200, json=[{"entity_id": target_id, "state": state_box["states"].get(target_id, {}).get("state")}])
 
@@ -1297,3 +1312,584 @@ def test_stage_c_switch_actuation_boundary_preserved(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(settings, "HOME_ASSISTANT_SWITCH_ALLOWLIST", json.dumps(["switch.desk_lamp_plug"]))
     with pytest.raises(ValidationError, match="Only the 'switch' domain is permitted"):
         validate_switch_actuation_preconditions(target_entity_id=TEST_CLIMATE_A, operation="turn_on")
+
+
+# =====================================================================
+# 7. Milestone P7.4.2.4: Allowlisted Dual-Setpoint Climate Actuation
+# =====================================================================
+
+def make_dual_setpoint_state(
+    state: str = "heat_cool",
+    supported_features: int = 3,
+    low: float = 18.0,
+    high: float = 24.0,
+) -> dict[str, Any]:
+    return {
+        "entity_id": TEST_CLIMATE_A,
+        "state": state,
+        "attributes": {
+            "friendly_name": "Living Room Thermostat",
+            "current_temperature": 20.0,
+            "target_temp_low": low,
+            "target_temp_high": high,
+            "min_temp": 16.0,
+            "max_temp": 28.0,
+            "target_temp_step": 0.5,
+            "supported_features": supported_features,
+            "unit_of_measurement": "°C",
+            "hvac_modes": ["off", "heat", "cool", "heat_cool"],
+        },
+    }
+
+
+def test_climate_dual_setpoint_actuation_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED is False by default on pristine settings."""
+    from pico.core.config import Settings
+    pristine = Settings(_env_file=None)
+    assert pristine.HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED is False
+
+
+@pytest.mark.parametrize(
+    "gate,expected_match",
+    [
+        ("HOME_ASSISTANT_ENABLED", "HOME_ASSISTANT_ENABLED=false"),
+        ("HOME_ASSISTANT_ACCESS_TOKEN", "access token is missing"),
+        ("HOME_ASSISTANT_ACTUATION_ENABLED", "HOME_ASSISTANT_ACTUATION_ENABLED=true"),
+        ("HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED", "HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true"),
+        ("HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", "HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true"),
+        ("HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED=true"),
+    ],
+)
+def test_dual_setpoint_missing_prerequisite_gates_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, gate: str, expected_match: str
+) -> None:
+    """Every parent gate and the dual-setpoint gate must fail closed if missing or disabled."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+    if gate == "HOME_ASSISTANT_ACCESS_TOKEN":
+        monkeypatch.setattr(settings, gate, "")
+    else:
+        monkeypatch.setattr(settings, gate, False)
+
+    with pytest.raises(AuthorizationError, match=expected_match):
+        validate_climate_dual_setpoint_actuation_preconditions(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=19.0,
+            target_temp_high=23.0,
+        )
+
+
+def test_dual_setpoint_allowlist_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Entity not present in HOME_ASSISTANT_CLIMATE_ALLOWLIST raises ValidationError."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+    with pytest.raises(ValidationError, match="is not in the Stage D climate allowlist"):
+        validate_climate_dual_setpoint_actuation_preconditions(
+            target_entity_id="climate.unauthorized_thermostat",
+            target_temp_low=19.0,
+            target_temp_high=23.0,
+        )
+
+
+def test_dual_setpoint_schema_validation_and_rejected_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inputs with booleans, non-finites, inverted ranges, client grid origins, and extra fields fail closed."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    # 1. Booleans
+    with pytest.raises(ValueError, match="cannot be a boolean"):
+        HomeAssistantClimateDualSetpointActuationInput(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=True,  # type: ignore[arg-type]
+            target_temp_high=23.0,
+        )
+
+    # 2. Non-finite strings (nan, inf, 1e999)
+    for bad_val in ("nan", "inf", "-inf", "1e999"):
+        with pytest.raises((ValueError, ValidationError)):
+            HomeAssistantClimateDualSetpointActuationInput(
+                target_entity_id=TEST_CLIMATE_A,
+                target_temp_low=bad_val,  # type: ignore[arg-type]
+                target_temp_high=23.0,
+            )
+
+    # 3. Inverted or equal range
+    with pytest.raises(ValidationError, match="must be strictly less than upper target temperature"):
+        HomeAssistantClimateDualSetpointActuationInput(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=23.0,
+            target_temp_high=21.0,
+        )
+    with pytest.raises(ValidationError, match="must be strictly less than upper target temperature"):
+        HomeAssistantClimateDualSetpointActuationInput(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=22.0,
+            target_temp_high=22.0,
+        )
+
+    # 4. Client-supplied grid_origin forbidden
+    with pytest.raises(ValueError, match="Client-supplied 'grid_origin' is forbidden"):
+        HomeAssistantClimateDualSetpointActuationInput.model_validate({
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+            "grid_origin": 16.0,
+        })
+
+    # 5. Extra fields forbidden
+    with pytest.raises((PydanticValidationError, ValidationError)):
+        HomeAssistantClimateDualSetpointActuationInput.model_validate({
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+            "extra_field": "unsupported",
+        })
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_wrong_mode_blocks_without_mode_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-dispatch check blocks dual-setpoint actuation if entity is in 'heat' or 'cool' mode without changing mode."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    heat_state = make_dual_setpoint_state(state="heat")
+    transport, state_box = make_mock_climate_transport(initial_states={TEST_CLIMATE_A: heat_state})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        res = await act_svc.dispatch_dual_setpoint_actuation(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=19.0,
+            target_temp_high=23.0,
+        )
+
+        assert res["dispatched"] is False
+        assert res["dispatch_status"] == "blocked_precondition"
+        assert "mode_incompatible" in res["reason"]
+        # Invariant: ZERO physical mutations dispatched
+        assert len(state_box["mutation_calls"]) == 0
+        # Invariant: Device state remains untouched (still 'heat')
+        assert state_box["states"][TEST_CLIMATE_A]["state"] == "heat"
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_missing_target_temp_range_feature_flag_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-dispatch check blocks dual-setpoint actuation if entity lacks TARGET_TEMPERATURE_RANGE feature flag."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    single_only_state = make_dual_setpoint_state(state="heat_cool", supported_features=1)
+    transport, state_box = make_mock_climate_transport(initial_states={TEST_CLIMATE_A: single_only_state})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        res = await act_svc.dispatch_dual_setpoint_actuation(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=19.0,
+            target_temp_high=23.0,
+        )
+
+        assert res["dispatched"] is False
+        assert res["dispatch_status"] == "blocked_precondition"
+        assert "does not support dual-setpoint temperature range" in res["reason"]
+        assert len(state_box["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_unavailable_or_unknown_entity_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-dispatch check blocks dual-setpoint actuation if entity is unavailable."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    unavail_state = make_dual_setpoint_state(state="unavailable")
+    transport, state_box = make_mock_climate_transport(initial_states={TEST_CLIMATE_A: unavail_state})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        res = await act_svc.dispatch_dual_setpoint_actuation(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=19.0,
+            target_temp_high=23.0,
+        )
+
+        assert res["dispatched"] is False
+        assert res["dispatch_status"] == "blocked_precondition"
+        assert len(state_box["mutation_calls"]) == 0
+
+
+def test_dual_setpoint_propose_creates_awaiting_approval_and_zero_mutations(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """POST /api/homeassistant/climate/dual-setpoint/propose creates execution in awaiting_approval with 0 mutations."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    # 1. Missing approval token header fails with 403
+    resp_unauth = client.post(
+        "/api/homeassistant/climate/dual-setpoint/propose",
+        json={
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+        },
+    )
+    assert resp_unauth.status_code == 403
+
+    # 2. Valid proposal with approval token header succeeds with 201
+    resp = client.post(
+        "/api/homeassistant/climate/dual-setpoint/propose",
+        headers={"X-Pico-Approval-Token": MOCK_APPROVAL_SECRET},
+        json={
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+            "reason": "Test dual setpoint proposal",
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["capability_id"] == "homeassistant.allowlisted_climate_dual_setpoint_actuate"
+    assert data["input_data"]["target_temp_low"] == 19.0
+    assert data["input_data"]["target_temp_high"] == 23.0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_execution_without_approval_rejected(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    """Executing a dual-setpoint execution before human approval fails closed."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    engine = ToolExecutionEngine(db_session, registry)
+    item = engine.submit(
+        capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+        input_data={
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+    assert item.status == "awaiting_approval"
+
+    # Attempting to execute unapproved item raises ValidationError (in status awaiting_approval)
+    with pytest.raises(ValidationError, match="is in status 'awaiting_approval'"):
+        await engine.execute(item.id, caller_permissions={"homeassistant:actuate"})
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_successful_approved_execution_dispatches_exact_payload(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    """Approved dual-setpoint actuation dispatches exactly one call with target_temp_low and target_temp_high (no temperature or hvac_mode)."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    dual_state = make_dual_setpoint_state()
+    transport, state_box = make_mock_climate_transport(initial_states={TEST_CLIMATE_A: dual_state})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        test_cap = HomeAssistantClimateDualSetpointActuationCapability(service=act_svc)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_dual_setpoint_actuate": test_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        item = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temp_low": 19.0,
+                "target_temp_high": 23.0,
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+
+        # Approve execution
+        engine.approve(
+            item.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        # Execute
+        res = await engine.execute(item.id, caller_permissions={"homeassistant:actuate", "admin:consequential"})
+        assert res.status == "succeeded"
+        assert res.verification_status == "passed"
+        assert res.output_json["success"] is True
+        assert res.output_json["verification_status"] == "verified"
+        assert res.output_json["dispatch_status"] == "accepted"
+
+        # Dispatches EXACTLY one mutation
+        assert len(state_box["mutation_calls"]) == 1
+        call_body = state_box["mutation_calls"][0]["body"]
+        assert call_body == {
+            "entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+        }
+        # Invariant: Strictly NO temperature or hvac_mode in the payload
+        assert "temperature" not in call_body
+        assert "hvac_mode" not in call_body
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_already_satisfied_skips_physical_dispatch(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    """If entity is already at requested target range, dispatch_status='already_satisfied' and 0 mutations are dispatched."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    already_state = make_dual_setpoint_state(low=19.0, high=23.0)
+    transport, state_box = make_mock_climate_transport(initial_states={TEST_CLIMATE_A: already_state})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        test_cap = HomeAssistantClimateDualSetpointActuationCapability(service=act_svc)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_dual_setpoint_actuate": test_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        item = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temp_low": 19.0,
+                "target_temp_high": 23.0,
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+        engine.approve(
+            item.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        res = await engine.execute(item.id, caller_permissions={"homeassistant:actuate", "admin:consequential"})
+        assert res.status == "succeeded"
+        assert res.output_json["dispatch_status"] == "already_satisfied"
+        # Invariant: 0 mutations dispatched
+        assert len(state_box["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_read_after_write_verification_requires_both_targets(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    """Verification fails if only one target temperature matches."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    dual_state = make_dual_setpoint_state()
+    # mutate_on_service=False so device state remains low=18.0, high=24.0 (does not update to 19.0/23.0)
+    transport, state_box = make_mock_climate_transport(
+        initial_states={TEST_CLIMATE_A: dual_state},
+        mutate_on_service=False,
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        test_cap = HomeAssistantClimateDualSetpointActuationCapability(service=act_svc)
+        monkeypatch.setattr(
+            registry,
+            "_capabilities",
+            {**registry._capabilities, "homeassistant.allowlisted_climate_dual_setpoint_actuate": test_cap},
+        )
+
+        engine = ToolExecutionEngine(db_session, registry)
+        item = engine.submit(
+            capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temp_low": 19.0,
+                "target_temp_high": 23.0,
+            },
+            caller_permissions={"homeassistant:actuate"},
+        )
+        engine.approve(
+            item.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+
+        res = await engine.execute(item.id, caller_permissions={"homeassistant:actuate", "admin:consequential"})
+        assert res.status == "verification_failed"
+        assert res.verification_status == "failed"
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_timeout_and_error_zero_retries(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    """Network timeout results in timeout_uncertain with zero automatic retries."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    dual_state = make_dual_setpoint_state()
+    transport, state_box = make_mock_climate_transport(
+        initial_states={TEST_CLIMATE_A: dual_state},
+        service_timeout=True,
+    )
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        act_svc = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+
+        res = await act_svc.dispatch_dual_setpoint_actuation(
+            target_entity_id=TEST_CLIMATE_A,
+            target_temp_low=19.0,
+            target_temp_high=23.0,
+        )
+        assert res["dispatch_status"] == "timeout_uncertain"
+        # Exactly one dispatch attempted, zero retries
+        assert len(state_box["mutation_calls"]) == 1
+
+
+def test_dual_setpoint_execution_status_route_isolation(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient, db_session: Session
+) -> None:
+    """Executions cannot be inspected across differing capability routes."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    engine = ToolExecutionEngine(db_session, registry)
+
+    # 1. Create single-setpoint execution
+    single_item = engine.submit(
+        capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+        input_data={
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temperature": 22.0,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+
+    # 2. Create dual-setpoint execution
+    dual_item = engine.submit(
+        capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+        input_data={
+            "target_entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+    db_session.commit()
+
+    # Inspecting dual item via single-setpoint route -> 404
+    r1 = client.get(f"/api/homeassistant/climate/execution/{dual_item.id}")
+    assert r1.status_code == 404
+
+    # Inspecting single item via dual-setpoint route -> 404
+    r2 = client.get(f"/api/homeassistant/climate/dual-setpoint/execution/{single_item.id}")
+    assert r2.status_code == 404
+
+    # Inspecting through correct respective routes -> 200
+    r3 = client.get(f"/api/homeassistant/climate/execution/{single_item.id}")
+    assert r3.status_code == 200
+    assert r3.json()["capability_id"] == "homeassistant.allowlisted_climate_setpoint_actuate"
+
+    r4 = client.get(f"/api/homeassistant/climate/dual-setpoint/execution/{dual_item.id}")
+    assert r4.status_code == 200
+    assert r4.json()["capability_id"] == "homeassistant.allowlisted_climate_dual_setpoint_actuate"
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_concurrent_atomic_claims(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    """Concurrent executions of the same approved dual-setpoint ticket result in exactly 1 dispatch and 1 atomic claim failure."""
+    monkeypatch.setattr(settings, "HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED", True)
+
+    dual_state = make_dual_setpoint_state()
+    transport, state_box = make_mock_climate_transport(initial_states={TEST_CLIMATE_A: dual_state})
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        ro_client = HomeAssistantClient(http_client=http_client)
+        service1 = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        service2 = HomeAssistantClimateActuationService(
+            readonly_client=ro_client,
+            http_client=http_client,
+        )
+        assert service1._dispatched_executions is not service2._dispatched_executions
+
+        cap1 = HomeAssistantClimateDualSetpointActuationCapability(service=service1)
+        cap2 = HomeAssistantClimateDualSetpointActuationCapability(service=service2)
+
+        reg1 = CapabilityRegistry()
+        reg1.register(cap1)
+        reg2 = CapabilityRegistry()
+        reg2.register(cap2)
+
+        engine1 = ToolExecutionEngine(db_session, reg1)
+        engine2 = ToolExecutionEngine(db_session, reg2)
+        perms = {"homeassistant:actuate"}
+
+        item = engine1.submit(
+            capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
+            input_data={
+                "target_entity_id": TEST_CLIMATE_A,
+                "target_temp_low": 19.0,
+                "target_temp_high": 23.0,
+            },
+            caller_permissions=perms,
+        )
+        approved = engine1.approve(
+            item.id,
+            approver="operator@pico.local",
+            approval_token=MOCK_APPROVAL_SECRET,
+        )
+        assert approved.status == "queued"
+        assert len(state_box["mutation_calls"]) == 0
+
+        barrier = asyncio.Barrier(2)
+        res1, res2 = await asyncio.gather(
+            engine1.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+            engine2.execute(item.id, caller_permissions=perms, claim_barrier=barrier),
+            return_exceptions=True,
+        )
+
+        results = [res1, res2]
+        succeeded = [r for r in results if isinstance(r, ToolExecution) and r.status == "succeeded"]
+        failed = [r for r in results if isinstance(r, AuthorizationError)]
+
+        assert len(succeeded) == 1, f"Expected exactly 1 succeeded, got {len(succeeded)}: {results}"
+        assert succeeded[0].verification_status == "passed"
+        assert succeeded[0].output_json.get("verification_status") == "verified"
+        assert succeeded[0].output_json.get("dispatch_status") == "accepted"
+
+        assert len(failed) == 1, f"Expected exactly 1 AuthorizationError, got {len(failed)}: {results}"
+        err_msg = str(failed[0]).lower()
+        assert "could not be claimed" in err_msg or "concurrent dispatch conflict" in err_msg
+
+        # Exactly 1 physical mutation call
+        assert len(state_box["mutation_calls"]) == 1
+        assert state_box["mutation_calls"][0]["body"] == {
+            "entity_id": TEST_CLIMATE_A,
+            "target_temp_low": 19.0,
+            "target_temp_high": 23.0,
+        }

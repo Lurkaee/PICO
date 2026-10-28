@@ -25,6 +25,7 @@ from pico.capabilities.filesystem import (
 )
 from pico.capabilities.homeassistant.ha_actuation import (
     HomeAssistantClimateActuationCapability,
+    HomeAssistantClimateDualSetpointActuationCapability,
     HomeAssistantSwitchActuationCapability,
     HomeAssistantTestLightActuationCapability,
 )
@@ -79,6 +80,7 @@ def register_default_capabilities(reg: CapabilityRegistry) -> None:
     reg.register(HomeAssistantSwitchActuationReadinessCapability())
     reg.register(HomeAssistantClimateReadinessCapability())
     reg.register(HomeAssistantClimateActuationCapability())
+    reg.register(HomeAssistantClimateDualSetpointActuationCapability())
     reg.register(InspectWindowsCapability())
     reg.register(LaunchApplicationCapability())
     reg.register(StageDiffCapability())
@@ -127,6 +129,7 @@ __all__ = [
     "HomeAssistantSwitchActuationReadinessCapability",
     "HomeAssistantClimateReadinessCapability",
     "HomeAssistantClimateActuationCapability",
+    "HomeAssistantClimateDualSetpointActuationCapability",
     "InspectWindowsCapability",
     "LaunchApplicationCapability",
     "StageDiffCapability",
