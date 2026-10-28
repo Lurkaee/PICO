@@ -468,4 +468,87 @@ it('immediately clears prior conversation messages on switch and handles failed 
     expect(screen.queryByText('Confidential message in Conversation A')).not.toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('Failed to load history: Internal server error loading history');
   });
+
+  it('preserves streaming bubble and controls during new-conversation creation transition', async () => {
+    const newConv = conversation('conv_new');
+    vi.mocked(api.createConversation).mockResolvedValueOnce(newConv);
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]);
+
+    let streamCallbacks: any;
+    let resolveStream: () => void = () => {};
+    const streamPromise = new Promise<void>((resolve) => {
+      resolveStream = resolve;
+    });
+
+    vi.spyOn(sseModule, 'streamChat').mockImplementation(async (_payload, callbacks) => {
+      streamCallbacks = callbacks;
+      return streamPromise;
+    });
+
+    const onConversationCreated = vi.fn();
+    const { rerender } = render(
+      <ChatPanel {...props} onConversationCreated={onConversationCreated} activeConversation={null} />
+    );
+
+    // Enter message and submit
+    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'First new session message' } });
+    fireEvent.click(screen.getByLabelText('Send message'));
+
+    // Wait for createConversation to be called and onConversationCreated callback
+    await waitFor(() => expect(onConversationCreated).toHaveBeenCalledWith(newConv));
+    await waitFor(() => expect(streamCallbacks).toBeDefined());
+
+    // Emit initial token while stream is pending
+    await act(async () => {
+      streamCallbacks.onToken('Initial chunk');
+    });
+
+    // Assert the live streaming bubble and Stop Generation button are visible
+    expect(screen.getByText('Initial chunk')).toBeInTheDocument();
+    expect(screen.getByText('Stop Generation')).toBeInTheDocument();
+
+    // Allow the newly created conversation's history effect to run (as happens when parent sets activeConversation)
+    rerender(
+      <ChatPanel {...props} onConversationCreated={onConversationCreated} activeConversation={newConv} />
+    );
+
+    // Wait for history request to resolve
+    await waitFor(() => expect(api.getMessages).toHaveBeenCalledWith('conv_new', 50, 0));
+
+    // Assert live streaming bubble and Stop Generation button remain visible
+    expect(screen.getByText('Initial chunk')).toBeInTheDocument();
+    expect(screen.getByText('Stop Generation')).toBeInTheDocument();
+
+    // Assert message input and send button remain disabled while streaming
+    const inputEl = screen.getByLabelText('Message input') as HTMLTextAreaElement;
+    const sendBtn = screen.getByLabelText('Send message') as HTMLButtonElement;
+    expect(inputEl).toBeDisabled();
+    expect(sendBtn).toBeDisabled();
+
+    // Emit another token and verify live bubble updates
+    await act(async () => {
+      streamCallbacks.onToken(' and follow-up chunk');
+    });
+    expect(screen.getByText('Initial chunk and follow-up chunk')).toBeInTheDocument();
+
+    // Complete the stream
+    await act(async () => {
+      streamCallbacks.onDone({
+        routing_metadata: {
+          provider: 'ollama',
+          model: 'qwen3.5:2b',
+          effective_classification: 'INTERNAL',
+        },
+      });
+      resolveStream();
+      await streamPromise;
+    });
+
+    // Verify assistant message is appended exactly once and streaming controls are cleared normally
+    await waitFor(() => expect(screen.queryByText('Stop Generation')).not.toBeInTheDocument());
+    expect(screen.getAllByText('Initial chunk and follow-up chunk')).toHaveLength(1);
+    expect(inputEl).not.toBeDisabled();
+    fireEvent.change(inputEl, { target: { value: 'Follow-up message' } });
+    expect(sendBtn).not.toBeDisabled();
+  });
 });

@@ -34,8 +34,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const activeConversationIdRef = useRef<string | null>(activeConversation?.id ?? null);
   const activeStreamIdRef = useRef<number>(0);
+  const streamConversationIdRef = useRef<string | null>(null);
 
-  activeConversationIdRef.current = activeConversation?.id ?? null;
+  activeConversationIdRef.current = activeConversation?.id ?? streamConversationIdRef.current ?? null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
@@ -66,6 +67,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       setStreamingContent('');
       setCurrentRouting(null);
       setIsCancelled(false);
+      streamConversationIdRef.current = null;
       return;
     }
 
@@ -76,10 +78,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     let isMounted = true;
     setLoadingHistory(true);
-    setStreaming(false);
-    setStreamingContent('');
-    setCurrentRouting(null);
-    setIsCancelled(false);
+    if (streamConversationIdRef.current !== activeConversation.id) {
+      setStreaming(false);
+      setStreamingContent('');
+      setCurrentRouting(null);
+      setIsCancelled(false);
+    }
     setStreamError(null);
     setAmbiguousOutcome(false);
 
@@ -142,9 +146,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       try {
         const title = trimmed.slice(0, 30) + (trimmed.length > 30 ? '...' : '');
         const newConv = await api.createConversation(title);
-        activeConversationIdRef.current = newConv.id;
-        onConversationCreated(newConv);
         convId = newConv.id;
+        activeConversationIdRef.current = newConv.id;
+        streamConversationIdRef.current = newConv.id;
+        onConversationCreated(newConv);
       } catch (err) {
         // Do not clear the draft before the required conversation-creation request succeeds
         setStreamError(`Failed to initialize session: ${err instanceof Error ? err.message : String(err)}. Message retained in input.`);
@@ -167,6 +172,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     // Prepare streaming
     const streamId = ++activeStreamIdRef.current;
+    streamConversationIdRef.current = convId ?? null;
     setStreaming(true);
     setStreamingContent('');
     setCurrentRouting(null);
@@ -263,6 +269,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       if (isCurrentStreamInstance) {
         setStreaming(false);
+        streamConversationIdRef.current = null;
         if (abortControllerRef.current === controller) {
           abortControllerRef.current = null;
         }

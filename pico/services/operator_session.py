@@ -166,13 +166,15 @@ class OperatorSessionService:
                     return res.rowcount
                 except OperationalError as exc:
                     write_session.rollback()
-                    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                        if attempt < max_retries - 1:
-                            time.sleep(0.01 * (2**attempt))
-                            continue
+                    err_msg = str(exc).lower()
+                    if "locked" not in err_msg and "busy" not in err_msg:
+                        raise
+                    if attempt < max_retries - 1:
+                        time.sleep(0.01 * (2**attempt))
+                        continue
                     raise AuthorizationError(
                         "Database busy during operator pairing verification. Please retry your request."
-                    )
+                    ) from exc
         return 0
 
     def pair(
@@ -271,13 +273,15 @@ class OperatorSessionService:
                         break
                     except OperationalError as exc:
                         write_session.rollback()
-                        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                            if attempt < 4:
-                                time.sleep(0.01 * (2**attempt))
-                                continue
+                        err_msg = str(exc).lower()
+                        if "locked" not in err_msg and "busy" not in err_msg:
+                            raise
+                        if attempt < 4:
+                            time.sleep(0.01 * (2**attempt))
+                            continue
                         raise AuthorizationError(
                             "Database busy during operator pairing verification. Please retry your request."
-                        )
+                        ) from exc
 
             if not consumed:
                 raise AuthorizationError("Pairing code has already been consumed or locked.")

@@ -3,8 +3,11 @@ HttpOnly session lifecycle, and CSRF protection.
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError
@@ -442,3 +445,73 @@ def test_spa_fallback_rejects_symlink_escape(tmp_path, monkeypatch):
     response = TestClient(app).get("/linked/secret.txt")
     assert response.status_code == 404
     assert "private outside file" not in response.text
+
+
+def test_increment_failed_attempts_retries_on_locked_and_raises_authorization_error_with_cause():
+    """Verify busy/locked contention retries with exponential backoff and chains OperationalError as __cause__."""
+    service = OperatorSessionService.get_instance()
+    locked_exc = OperationalError("UPDATE ...", {}, Exception("database is locked"))
+
+    mock_session = MagicMock()
+    mock_session.execute.side_effect = locked_exc
+
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(AuthorizationError) as exc_info:
+            service._increment_failed_attempts(now=datetime.now(timezone.utc), db=mock_session, max_retries=5)
+
+        assert "Database busy during operator pairing verification" in str(exc_info.value)
+        assert exc_info.value.__cause__ is locked_exc
+        assert mock_session.rollback.call_count == 5
+        assert mock_sleep.call_count == 4
+        sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
+        assert sleep_times == [0.01 * (2**i) for i in range(4)]
+
+
+def test_increment_failed_attempts_immediately_raises_non_busy_operational_error():
+    """Verify non-busy database errors in _increment_failed_attempts propagate immediately without retrying."""
+    service = OperatorSessionService.get_instance()
+    non_busy_exc = OperationalError("UPDATE ...", {}, Exception("disk I/O error"))
+
+    mock_session = MagicMock()
+    mock_session.execute.side_effect = non_busy_exc
+
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(OperationalError) as exc_info:
+            service._increment_failed_attempts(now=datetime.now(timezone.utc), db=mock_session, max_retries=5)
+
+        assert exc_info.value is non_busy_exc
+        mock_sleep.assert_not_called()
+        assert mock_session.rollback.call_count == 1
+
+
+def test_pair_consumption_retries_on_busy_and_chains_cause():
+    """Verify busy/locked contention during challenge consumption retries within bound and chains __cause__."""
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(ttl_seconds=300)
+    busy_exc = OperationalError("UPDATE ...", {}, Exception("database table is locked"))
+
+    with patch("time.sleep") as mock_sleep:
+        with patch.object(Session, "commit", side_effect=busy_exc):
+            with pytest.raises(AuthorizationError) as exc_info:
+                service.pair(challenge.code)
+
+            assert "Database busy during operator pairing verification" in str(exc_info.value)
+            assert exc_info.value.__cause__ is busy_exc
+            assert mock_sleep.call_count == 4
+            sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
+            assert sleep_times == [0.01 * (2**i) for i in range(4)]
+
+
+def test_pair_consumption_immediately_raises_non_busy_operational_error():
+    """Verify non-busy database errors during pairing consumption propagate immediately without retrying."""
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code(ttl_seconds=300)
+    non_busy_exc = OperationalError("UPDATE ...", {}, Exception("no such table: missing_tbl"))
+
+    with patch("time.sleep") as mock_sleep:
+        with patch.object(Session, "commit", side_effect=non_busy_exc):
+            with pytest.raises(OperationalError) as exc_info:
+                service.pair(challenge.code)
+
+            assert exc_info.value is non_busy_exc
+            mock_sleep.assert_not_called()
