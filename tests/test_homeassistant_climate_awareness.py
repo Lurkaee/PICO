@@ -2461,7 +2461,31 @@ def test_dual_setpoint_api_endpoint_success_and_adversarial_validation() -> None
             )
             assert resp_extra.status_code == 422
 
-            # 5. Remote caller without approval token -> 403 Forbidden
+            # 5. Non-finite string inputs ("inf", "-inf", "nan", "1e999") -> 422
+            for non_finite_val in ("inf", "-inf", "nan", "1e999"):
+                # Test target_temp_low
+                resp_low = client.post(
+                    "/api/homeassistant/climate/dual-setpoint/plan",
+                    json={
+                        "target_entity_id": TEST_CLIMATE_A,
+                        "target_temp_low": non_finite_val,
+                        "target_temp_high": 23.5,
+                    },
+                )
+                assert resp_low.status_code == 422, f"Expected 422 for target_temp_low={non_finite_val!r}, got {resp_low.status_code}"
+
+                # Test target_temp_high
+                resp_high = client.post(
+                    "/api/homeassistant/climate/dual-setpoint/plan",
+                    json={
+                        "target_entity_id": TEST_CLIMATE_A,
+                        "target_temp_low": 19.0,
+                        "target_temp_high": non_finite_val,
+                    },
+                )
+                assert resp_high.status_code == 422, f"Expected 422 for target_temp_high={non_finite_val!r}, got {resp_high.status_code}"
+
+            # 6. Remote caller without approval token -> 403 Forbidden
             with patch("pico.api.homeassistant.is_loopback_host", return_value=False):
                 resp_remote = client.post(
                     "/api/homeassistant/climate/dual-setpoint/plan",

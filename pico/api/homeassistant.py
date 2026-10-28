@@ -411,9 +411,11 @@ class ClimateDualSetpointPlanRequest(BaseModel):
         description="Exact climate entity ID. Must belong to the Stage D allowlist.",
     )
     target_temp_low: float = Field(
+        allow_inf_nan=False,
         description="Explicit requested lower target temperature setpoint.",
     )
     target_temp_high: float = Field(
+        allow_inf_nan=False,
         description="Explicit requested upper target temperature setpoint.",
     )
     target_unit: str | None = Field(
