@@ -672,9 +672,23 @@ The desktop client implements a structured error model mapping transport, timeou
   - `disabled`: Integration or climate awareness is disabled by policy.
 
 - **`POST /api/homeassistant/climate/plan`**
-  - **Description**: Evaluates the feasibility of a requested temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
+  - **Description**: Evaluates the feasibility of a requested single temperature setpoint against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
   - **Request Body**: `ClimatePlanRequest` (`target_entity_id: str`, `target_temperature: float`, optional `target_unit: str | None = None`). Any client attempt to supply `grid_origin` or extra fields is rejected with HTTP 422.
   - **Response (200 OK)**: `ClimateSetpointPlan` (`plan_id: str`, `entity_id: str`, `requested_temperature: float`, `requested_unit: str | None`, `grid_origin: float | None`, `grid_origin_unit: str | None`, `current_temperature: float | None`, `target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
+
+- **`POST /api/homeassistant/climate/dual-setpoint/plan`** (Milestone P7.4.2.3)
+  - **Description**: Evaluates the feasibility of a requested dual-setpoint temperature range (`target_temp_low` and `target_temp_high`) against the reported operating constraints of an allowlisted climate entity without executing any state mutation.
+  - **Request Body**: `ClimateDualSetpointPlanRequest` (`target_entity_id: str`, `target_temp_low: float`, `target_temp_high: float`, optional `target_unit: str | None = None`). Any client attempt to supply `grid_origin`, boolean values, non-finite values, or unexpected fields is rejected with HTTP 422.
+  - **Pre-Conditions & Validation Rules**:
+    1. Entity must belong to `HOME_ASSISTANT_CLIMATE_ALLOWLIST`.
+    2. Entity must explicitly support dual-setpoint capability (bit 1 `TARGET_TEMPERATURE_RANGE` of `supported_features`).
+    3. Entity must already be in `heat_cool` operating mode; planner never alters HVAC mode.
+    4. Numeric validation: `target_temp_low` and `target_temp_high` must be finite, non-boolean numbers with `target_temp_low < target_temp_high`.
+    5. Bounds validation: Both targets must fall within authoritative `[min_temp, max_temp]`.
+    6. Step & Grid Alignment: Both targets must independently align to `target_temp_step` relative to server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`.
+    7. Unit Consistency: If `target_unit` is provided, it must match the entity's reported `temperature_unit`.
+  - **Zero-Mutation Guarantee**: Guaranteed strictly read-only. Performs zero physical mutations, zero service calls, and does not grant actuation authorization.
+  - **Response (200 OK)**: `ClimateDualSetpointPlan` (`plan_id: str`, `entity_id: str`, `target_temp_low: float`, `target_temp_high: float`, `requested_unit: str | None`, `grid_origin: float | None`, `grid_origin_unit: str | None`, `current_temperature: float | None`, `current_target_temp_low: float | None`, `current_target_temp_high: float | None`, `current_target_temperature: float | None`, `min_temp: float | None`, `max_temp: float | None`, `target_temp_step: float | None`, `supported_features: int | None`, `temperature_unit: str | None`, `hvac_mode: str | None`, `hvac_modes: list[str]`, `is_feasible: bool`, `feasibility_status: str`, `reasons: list[str]`, `input_digest: str`, `is_mutation_performed: bool = false`).
 
 - **`GET /api/homeassistant/climate/observe/{entity_id}`**
   - **Description**: Inspects the current reported state and operating bounds of an allowlisted climate entity. Guaranteed read-only GET.

@@ -60,10 +60,13 @@ from pico.homeassistant.climate import (
     parse_temperature_unit,
     validate_climate_allowlist,
     validate_climate_grid_origins,
+    validate_dual_mode_compatibility,
+    validate_dual_temperature_capability,
     validate_temperature_step,
 )
 from pico.homeassistant.client import HomeAssistantClient
 from pico.homeassistant.contracts import (
+    ClimateDualSetpointPlan,
     ClimateObservation,
     ClimateReadinessReport,
     ClimateSetpointPlan,
@@ -1913,3 +1916,586 @@ async def test_zero_mutation_calls_strictly_asserted_across_all_paths() -> None:
 
     assert len(call_log["mutation_calls"]) == 0
     assert len(call_log["read_calls"]) > 0
+
+
+# =====================================================================
+# Milestone P7.4.2.3: Read-Only Dual-Setpoint Feasibility Planning
+# =====================================================================
+
+def make_heat_cool_payload(
+    entity_id: str = TEST_CLIMATE_A,
+    state: str = "heat_cool",
+    current_temp: float | None = 21.0,
+    target_temp_low: float | None = 20.0,
+    target_temp_high: float | None = 24.0,
+    min_temp: float | None = 16.0,
+    max_temp: float | None = 28.0,
+    step: float | None = 0.5,
+    supported_features: int | None = 2,  # Bit 1 = TARGET_TEMPERATURE_RANGE
+    unit: str | None = "°C",
+    modes: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Helper to generate a mock climate entity payload for dual-setpoint testing."""
+    attrs: dict[str, Any] = {
+        "friendly_name": "Test Dual-Setpoint Climate",
+        "current_temperature": current_temp,
+        "target_temp_low": target_temp_low,
+        "target_temp_high": target_temp_high,
+        "min_temp": min_temp,
+        "max_temp": max_temp,
+        "target_temp_step": step,
+        "supported_features": supported_features,
+        "unit_of_measurement": unit,
+        "hvac_modes": modes or ["heat_cool", "off"],
+    }
+    return {
+        entity_id: {
+            "entity_id": entity_id,
+            "state": state,
+            "attributes": attrs,
+        }
+    }
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_success_valid_range_and_step() -> None:
+    """Valid lower and upper target range for a supported entity already in heat_cool returns ready."""
+    payloads = make_heat_cool_payload()
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.5,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is True
+    assert plan.feasibility_status == "ready"
+    assert plan.is_mutation_performed is False
+    assert plan.target_temp_low == 19.0
+    assert plan.target_temp_high == 23.5
+    assert plan.current_target_temp_low == 20.0
+    assert plan.current_target_temp_high == 24.0
+    assert plan.grid_origin == 16.0
+    assert plan.grid_origin_unit == "°C"
+    assert plan.temperature_unit == "°C"
+    assert plan.hvac_mode == "heat_cool"
+    assert "Guarantees metadata feasibility only" in plan.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_success_without_requested_unit() -> None:
+    """Requested unit is optional; planner succeeds and inherits reported unit."""
+    payloads = make_heat_cool_payload()
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=18.0,
+        target_temp_high=22.0,
+        requested_unit=None,
+    )
+
+    assert plan.is_feasible is True
+    assert plan.feasibility_status == "ready"
+    assert plan.requested_unit is None
+    assert plan.temperature_unit == "°C"
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("incompatible_mode", ["heat", "cool", "off", "auto", "fan_only", "dry"])
+async def test_dual_setpoint_plan_rejects_incompatible_modes_without_switching(incompatible_mode: str) -> None:
+    """Planner rejects incompatible modes and NEVER switches the entity into heat_cool."""
+    payloads = make_heat_cool_payload(state=incompatible_mode)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "mode_incompatible"
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "features,expected_status",
+    [
+        (1, "unsupported_capability"),   # Bit 0 only (single setpoint only)
+        (0, "unsupported_capability"),   # Neither bit
+        (None, "capability_unknown"),     # Missing supported_features
+        (-1, "capability_unknown"),       # Negative / invalid
+    ],
+)
+async def test_dual_setpoint_plan_rejects_missing_or_unsupported_features(features: int | None, expected_status: str) -> None:
+    """Planner fails closed when dual-setpoint feature (Bit 1) is not explicitly supported."""
+    payloads = make_heat_cool_payload(supported_features=features)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == expected_status
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "low,high",
+    [
+        (True, 24.0),           # Boolean low
+        (20.0, False),          # Boolean high
+        (float("inf"), 24.0),   # Infinite low
+        (20.0, float("nan")),   # NaN high
+        ("20.0", 24.0),         # Non-numeric string low
+    ],
+)
+async def test_dual_setpoint_plan_rejects_boolean_and_non_finite_inputs(low: Any, high: Any) -> None:
+    """Boolean, non-finite, and malformed inputs are strictly rejected without mutation."""
+    payloads = make_heat_cool_payload()
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=low,
+        target_temp_high=high,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "state_unknown"
+    assert "finite numeric values" in plan.reasons[0]
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "low,high",
+    [
+        (22.0, 22.0),  # Equal targets
+        (24.0, 20.0),  # Inverted range
+    ],
+)
+async def test_dual_setpoint_plan_rejects_equal_or_inverted_range(low: float, high: float) -> None:
+    """Target range ordering (lower < upper) is strictly enforced."""
+    payloads = make_heat_cool_payload()
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=low,
+        target_temp_high=high,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "target_out_of_range"
+    assert "strictly less than" in plan.reasons[0]
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "low,high,reason_substr",
+    [
+        (14.0, 22.0, "below minimum supported setpoint"),
+        (18.0, 30.0, "above maximum supported setpoint"),
+        (29.0, 30.0, "above maximum supported setpoint"),
+        (14.0, 15.0, "below minimum supported setpoint"),
+    ],
+)
+async def test_dual_setpoint_plan_rejects_out_of_bounds_targets_independently(
+    low: float,
+    high: float,
+    reason_substr: str,
+) -> None:
+    """Both lower and upper targets must independently lie within [min_temp, max_temp]."""
+    payloads = make_heat_cool_payload(min_temp=16.0, max_temp=28.0)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=low,
+        target_temp_high=high,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "target_out_of_range"
+    assert reason_substr in plan.reasons[0]
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_rejects_unit_mismatch() -> None:
+    """Mismatched or unrecognized temperature units fail closed."""
+    payloads = make_heat_cool_payload(unit="°C")
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    # Unit conflict (°F requested on °C entity)
+    plan_conflict = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="°F",
+    )
+    assert plan_conflict.is_feasible is False
+    assert plan_conflict.feasibility_status == "unit_unknown"
+    assert "conflicts with entity's reported unit" in plan_conflict.reasons[0]
+
+    # Unrecognized unit
+    plan_unknown = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="UnknownUnit",
+    )
+    assert plan_unknown.is_feasible is False
+    assert plan_unknown.feasibility_status == "unit_unknown"
+    assert "unrecognized or unsupported" in plan_unknown.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("bad_step", [None, 0.0, -0.5, True, "invalid"])
+async def test_dual_setpoint_plan_rejects_missing_or_invalid_step(bad_step: Any) -> None:
+    """Missing, zero, negative, or non-numeric step metadata fails closed with step_unknown."""
+    payloads = make_heat_cool_payload(step=bad_step)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    plan = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="°C",
+    )
+
+    assert plan.is_feasible is False
+    assert plan.feasibility_status == "step_unknown"
+    assert plan.is_mutation_performed is False
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_rejects_missing_or_untrusted_grid_origin() -> None:
+    """Without trusted server-side grid origin, step alignment cannot be verified."""
+    payloads = make_heat_cool_payload(step=0.5)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+
+    # 1. No grid origin configured at all
+    service_no_origin = HomeAssistantClimateService(readonly_client=client, trusted_grid_origins={})
+    plan_no_origin = await service_no_origin.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="°C",
+    )
+    assert plan_no_origin.is_feasible is False
+    assert plan_no_origin.feasibility_status == "step_alignment_unknown"
+    assert "no trusted server-side step-grid origin is configured" in plan_no_origin.reasons[0]
+
+    # 2. Grid origin configured with conflicting unit
+    service_bad_unit = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 60.0, "unit": "°F"}},
+    )
+    plan_bad_unit = await service_bad_unit.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+        requested_unit="°C",
+    )
+    assert plan_bad_unit.is_feasible is False
+    assert plan_bad_unit.feasibility_status == "step_alignment_unknown"
+    assert "does not match entity's reported temperature unit" in plan_bad_unit.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_rejects_misaligned_targets_independently() -> None:
+    """Misaligned lower target and misaligned upper target are independently caught."""
+    payloads = make_heat_cool_payload(step=0.5)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    # Lower target misaligned (19.3 with step 0.5 from origin 16.0)
+    plan_low_bad = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.3,
+        target_temp_high=24.0,
+        requested_unit="°C",
+    )
+    assert plan_low_bad.is_feasible is False
+    assert plan_low_bad.feasibility_status == "target_step_mismatch"
+    assert "19.3" in plan_low_bad.reasons[0]
+
+    # Upper target misaligned (23.7 with step 0.5 from origin 16.0)
+    plan_high_bad = await service.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.7,
+        requested_unit="°C",
+    )
+    assert plan_high_bad.is_feasible is False
+    assert plan_high_bad.feasibility_status == "target_step_mismatch"
+    assert "23.7" in plan_high_bad.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_digest_sensitivity() -> None:
+    """Canonical SHA-256 digest is sensitive to lower target, upper target, unit, and grid origin."""
+    payloads = make_heat_cool_payload()
+    client, _ = make_mock_climate_client(entity_payloads=payloads)
+
+    service1 = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+    base_plan = await service1.assess_dual_setpoint_feasibility(TEST_CLIMATE_A, 19.0, 23.0, "°C")
+
+    # Change lower target
+    plan_diff_low = await service1.assess_dual_setpoint_feasibility(TEST_CLIMATE_A, 19.5, 23.0, "°C")
+    assert base_plan.input_digest != plan_diff_low.input_digest
+
+    # Change upper target
+    plan_diff_high = await service1.assess_dual_setpoint_feasibility(TEST_CLIMATE_A, 19.0, 23.5, "°C")
+    assert base_plan.input_digest != plan_diff_high.input_digest
+
+    # Change unit
+    plan_diff_unit = await service1.assess_dual_setpoint_feasibility(TEST_CLIMATE_A, 19.0, 23.0, None)
+    assert base_plan.input_digest != plan_diff_unit.input_digest
+
+    # Change grid origin
+    service2 = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.5, "unit": "°C"}},
+    )
+    plan_diff_origin = await service2.assess_dual_setpoint_feasibility(TEST_CLIMATE_A, 19.0, 23.0, "°C")
+    assert base_plan.input_digest != plan_diff_origin.input_digest
+
+
+@pytest.mark.anyio
+async def test_dual_setpoint_plan_rejects_unallowlisted_or_unavailable_entity() -> None:
+    """Exact allowlist and availability checks are strictly enforced."""
+    client, call_log = make_mock_climate_client()
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    # 1. Unallowlisted entity
+    plan_unallowlisted = await service.assess_dual_setpoint_feasibility(
+        target_entity_id="climate.unallowlisted_thermostat",
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+    )
+    assert plan_unallowlisted.is_feasible is False
+    assert plan_unallowlisted.feasibility_status == "not_allowlisted"
+
+    # 2. Entity state unavailable
+    payloads_unavailable = {
+        TEST_CLIMATE_A: {
+            "entity_id": TEST_CLIMATE_A,
+            "state": "unavailable",
+            "attributes": {},
+        }
+    }
+    client_unavail, _ = make_mock_climate_client(entity_payloads=payloads_unavailable)
+    service_unavail = HomeAssistantClimateService(
+        readonly_client=client_unavail,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+    plan_unavailable = await service_unavail.assess_dual_setpoint_feasibility(
+        target_entity_id=TEST_CLIMATE_A,
+        target_temp_low=19.0,
+        target_temp_high=23.0,
+    )
+    assert plan_unavailable.is_feasible is False
+    assert plan_unavailable.feasibility_status == "state_unavailable"
+    assert len(call_log["mutation_calls"]) == 0
+
+
+@pytest.mark.anyio
+async def test_single_setpoint_planner_still_rejects_heat_cool() -> None:
+    """Verify regression safety: single-setpoint planner still rejects heat_cool operating mode."""
+    payloads = make_heat_cool_payload(state="heat_cool", supported_features=3)
+    client, call_log = make_mock_climate_client(entity_payloads=payloads)
+    service = HomeAssistantClimateService(
+        readonly_client=client,
+        trusted_grid_origins={TEST_CLIMATE_A: {"origin": 16.0, "unit": "°C"}},
+    )
+
+    single_plan = await service.assess_setpoint_feasibility(TEST_CLIMATE_A, 21.0, "°C")
+    assert single_plan.is_feasible is False
+    assert single_plan.feasibility_status == "mode_incompatible"
+    assert "requires a dual-setpoint temperature range" in single_plan.reasons[0]
+    assert len(call_log["mutation_calls"]) == 0
+
+
+def test_dual_setpoint_api_endpoint_success_and_adversarial_validation() -> None:
+    """Test POST /api/homeassistant/climate/dual-setpoint/plan endpoint via TestClient."""
+    payloads = make_heat_cool_payload()
+    transport, call_log = make_mock_climate_transport(entity_payloads=payloads)
+
+    real_client_cls = httpx.AsyncClient
+    with patch(
+        "pico.homeassistant.client.httpx.AsyncClient",
+        side_effect=lambda **kwargs: real_client_cls(transport=transport),
+    ):
+        with patch.object(
+            settings,
+            "HOME_ASSISTANT_CLIMATE_GRID_ORIGINS",
+            f'{{"{TEST_CLIMATE_A}": {{"origin": 16.0, "unit": "°C"}}}}',
+        ):
+            client = TestClient(app)
+
+            # 1. Valid request -> 200 OK
+            resp_ok = client.post(
+                "/api/homeassistant/climate/dual-setpoint/plan",
+                json={
+                    "target_entity_id": TEST_CLIMATE_A,
+                    "target_temp_low": 19.0,
+                    "target_temp_high": 23.5,
+                    "target_unit": "°C",
+                },
+            )
+            assert resp_ok.status_code == 200
+            data_ok = resp_ok.json()
+            assert data_ok["is_feasible"] is True
+            assert data_ok["feasibility_status"] == "ready"
+            assert data_ok["is_mutation_performed"] is False
+            assert data_ok["target_temp_low"] == 19.0
+            assert data_ok["target_temp_high"] == 23.5
+
+            # 2. Client attempting to supply grid_origin -> 422 Unprocessable Entity
+            resp_grid = client.post(
+                "/api/homeassistant/climate/dual-setpoint/plan",
+                json={
+                    "target_entity_id": TEST_CLIMATE_A,
+                    "target_temp_low": 19.0,
+                    "target_temp_high": 23.5,
+                    "grid_origin": 19.0,
+                },
+            )
+            assert resp_grid.status_code == 422
+            assert "Client-supplied 'grid_origin' is forbidden" in resp_grid.text
+
+            # 3. Boolean input -> 422 Unprocessable Entity
+            resp_bool = client.post(
+                "/api/homeassistant/climate/dual-setpoint/plan",
+                json={
+                    "target_entity_id": TEST_CLIMATE_A,
+                    "target_temp_low": True,
+                    "target_temp_high": 23.5,
+                },
+            )
+            assert resp_bool.status_code == 422
+
+            # 4. Unexpected extra fields -> 422 (model_config extra='forbid')
+            resp_extra = client.post(
+                "/api/homeassistant/climate/dual-setpoint/plan",
+                json={
+                    "target_entity_id": TEST_CLIMATE_A,
+                    "target_temp_low": 19.0,
+                    "target_temp_high": 23.5,
+                    "unexpected_field": "exploit",
+                },
+            )
+            assert resp_extra.status_code == 422
+
+            # 5. Non-finite string inputs ("inf", "-inf", "nan", "1e999") -> 422
+            for non_finite_val in ("inf", "-inf", "nan", "1e999"):
+                # Test target_temp_low
+                resp_low = client.post(
+                    "/api/homeassistant/climate/dual-setpoint/plan",
+                    json={
+                        "target_entity_id": TEST_CLIMATE_A,
+                        "target_temp_low": non_finite_val,
+                        "target_temp_high": 23.5,
+                    },
+                )
+                assert resp_low.status_code == 422, f"Expected 422 for target_temp_low={non_finite_val!r}, got {resp_low.status_code}"
+
+                # Test target_temp_high
+                resp_high = client.post(
+                    "/api/homeassistant/climate/dual-setpoint/plan",
+                    json={
+                        "target_entity_id": TEST_CLIMATE_A,
+                        "target_temp_low": 19.0,
+                        "target_temp_high": non_finite_val,
+                    },
+                )
+                assert resp_high.status_code == 422, f"Expected 422 for target_temp_high={non_finite_val!r}, got {resp_high.status_code}"
+
+            # 6. Remote caller without approval token -> 403 Forbidden
+            with patch("pico.api.homeassistant.is_loopback_host", return_value=False):
+                resp_remote = client.post(
+                    "/api/homeassistant/climate/dual-setpoint/plan",
+                    json={
+                        "target_entity_id": TEST_CLIMATE_A,
+                        "target_temp_low": 19.0,
+                        "target_temp_high": 23.5,
+                    },
+                )
+                assert resp_remote.status_code == 403
+
+            # Zero physical mutations performed across all API tests
+            assert len(call_log["mutation_calls"]) == 0
