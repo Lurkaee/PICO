@@ -10,6 +10,7 @@ from pico.core.errors import AuthorizationError, EntityNotFoundError
 from pico.db.session import get_db
 from pico.homeassistant.actuation import (
     HomeAssistantActuationService,
+    HomeAssistantClimateActuationService,
     HomeAssistantSwitchActuationService,
 )
 from pico.homeassistant.climate import HomeAssistantClimateService
@@ -441,3 +442,88 @@ async def get_climate_readiness(
         check_live=check_live,
         target_entity_id=target_entity_id,
     )
+
+
+class ClimateProposeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_entity_id: str = Field(
+        description="Exact climate entity ID in Stage D climate allowlist.",
+    )
+    target_temperature: float = Field(
+        description="Explicit target temperature setpoint.",
+    )
+    target_unit: str | None = Field(
+        default=None,
+        description="Optional explicit temperature unit (e.g. '°C', '°F').",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Optional operator reason for actuation proposal.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_untrusted_grid_origin(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "grid_origin" in data:
+            raise ValueError(
+                "Client-supplied 'grid_origin' is forbidden. Grid origins are server-side "
+                "operator configurations and cannot be supplied or overridden in client requests."
+            )
+        return data
+
+
+@router.post(
+    "/climate/propose",
+    response_model=ToolExecutionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Propose a climate setpoint actuation execution (created in awaiting_approval status)",
+)
+def propose_climate_actuation(
+    payload: ClimateProposeRequest,
+    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Propose an actuation of an allowlisted climate entity setpoint.
+
+    Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
+    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    """
+    if (
+        not settings.APPROVAL_SECRET_TOKEN
+        or not x_approval_token
+        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
+    ):
+        raise AuthorizationError(
+            "Physical climate actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
+        )
+
+    engine = ToolExecutionEngine(db, registry)
+    execution = engine.submit(
+        capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
+        input_data={
+            "target_entity_id": payload.target_entity_id,
+            "target_temperature": payload.target_temperature,
+            "target_unit": payload.target_unit,
+            "reason": payload.reason,
+        },
+        caller_permissions={"homeassistant:actuate"},
+    )
+    return ToolExecutionResponse.model_validate(execution)
+
+
+@router.get(
+    "/climate/execution/{execution_id}",
+    response_model=ToolExecutionResponse,
+    summary="Inspect approval and verification status of a climate actuation execution",
+)
+def get_climate_actuation_status(
+    execution_id: str,
+    db: Session = Depends(get_db),
+) -> ToolExecutionResponse:
+    """Inspect the execution record, human approval ticket, and independent verification outcome for a climate actuation."""
+    repo = ToolExecutionRepository(db)
+    execution = repo.get_by_id(execution_id)
+    if not execution or execution.capability_id != "homeassistant.allowlisted_climate_setpoint_actuate":
+        raise EntityNotFoundError("ClimateActuationExecution", execution_id)
+    return ToolExecutionResponse.model_validate(execution)

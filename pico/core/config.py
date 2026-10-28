@@ -82,10 +82,11 @@ class Settings(BaseSettings):
     HOME_ASSISTANT_SWITCH_ACTUATION_ENABLED: bool = False
     HOME_ASSISTANT_SWITCH_ALLOWLIST: str = "[]"
 
-    # Home Assistant Stage D Read-Only Climate Awareness Settings (Milestone P7.4.2.1)
+    # Home Assistant Stage D Climate Awareness & Actuation Settings (Milestones P7.4.2.1 & P7.4.2.2)
     HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED: bool = False
     HOME_ASSISTANT_CLIMATE_ALLOWLIST: str = "[]"
     HOME_ASSISTANT_CLIMATE_GRID_ORIGINS: str = "{}"
+    HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED: bool = False
 
     # OS & Desktop Application Automation Settings (Milestone P8.1)
     OS_AUTOMATION_ENABLED: bool = True

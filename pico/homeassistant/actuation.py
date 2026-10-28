@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 import httpx
@@ -14,7 +15,14 @@ from pico.homeassistant.client import (
     ConnectionError,
     HomeAssistantClient,
 )
+from pico.homeassistant.climate import (
+    HomeAssistantClimateService,
+    parse_temperature_unit,
+    validate_climate_allowlist,
+)
 from pico.homeassistant.contracts import (
+    ClimateActuationPlan,
+    ClimateActuationResult,
     SwitchActuationPlan,
     SwitchActuationResult,
     TestLightActuationPlan,
@@ -804,6 +812,449 @@ class HomeAssistantSwitchActuationService:
                 "entity_id": valid_entity_id,
                 "expected_state": desired_state,
                 "reported_state": last_state,
+                "attempts": attempts,
+                "physical_device_connectivity_claimed": False,
+            },
+        )
+
+
+def validate_climate_actuation_preconditions(
+    target_entity_id: str | None = None,
+    target_temperature: float | None = None,
+    target_unit: str | None = None,
+) -> str:
+    """Validate all preconditions required before any Stage D climate actuation may occur.
+
+    Returns the validated target climate entity ID.
+    Raises AuthorizationError or ValidationError if any invariant fails.
+    """
+    # 1. Integration must be enabled
+    if not settings.HOME_ASSISTANT_ENABLED:
+        raise AuthorizationError("Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).")
+
+    # 2. Access token must be configured
+    if not settings.HOME_ASSISTANT_ACCESS_TOKEN or not settings.HOME_ASSISTANT_ACCESS_TOKEN.strip():
+        raise AuthorizationError("Home Assistant access token is missing or empty.")
+
+    # 3. Overall physical actuation must be explicitly enabled
+    if not settings.HOME_ASSISTANT_ACTUATION_ENABLED:
+        raise AuthorizationError(
+            "Physical actuation is disabled by default. Set HOME_ASSISTANT_ACTUATION_ENABLED=true to enable."
+        )
+
+    # 4. Climate awareness must be explicitly enabled
+    if not getattr(settings, "HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED", False):
+        raise AuthorizationError(
+            "Climate awareness is disabled by default. Set HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true to enable."
+        )
+
+    # 5. Stage D climate actuation must be explicitly enabled
+    if not getattr(settings, "HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", False):
+        raise AuthorizationError(
+            "Stage D climate actuation is disabled by default. Set HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true to enable."
+        )
+
+    # 6. Climate allowlist must be valid and non-empty
+    allowlist = validate_climate_allowlist()
+
+    # 7. Target entity ID must be provided and exact
+    if not target_entity_id or not isinstance(target_entity_id, str):
+        raise ValidationError("Target entity ID must be a non-empty string.")
+
+    if target_entity_id != target_entity_id.strip():
+        raise ValidationError(f"Target entity ID '{target_entity_id}' contains leading or trailing whitespace.")
+
+    clean_target = target_entity_id.strip()
+
+    if any(ch in clean_target for ch in ("*", "?", "/", "\\")):
+        raise ValidationError(f"Wildcards or special characters in target entity ID '{clean_target}' are prohibited.")
+
+    if not clean_target.startswith("climate."):
+        domain = clean_target.split(".", 1)[0]
+        raise ValidationError(
+            f"Target entity '{clean_target}' is in domain '{domain}'. "
+            f"Only the 'climate' domain is permitted for Stage D climate actuation."
+        )
+
+    if not ENTITY_ID_REGEX.match(clean_target):
+        raise ValidationError(f"Invalid entity ID format for target climate entity: '{clean_target}'.")
+
+    if clean_target not in allowlist:
+        raise ValidationError(
+            f"Target entity '{clean_target}' is not in the Stage D climate allowlist ({sorted(list(allowlist))}). "
+            f"Actuation of arbitrary, model-chosen, or unconfigured entities is strictly prohibited."
+        )
+
+    # 8. Target temperature validation
+    if target_temperature is None or isinstance(target_temperature, bool) or not isinstance(target_temperature, (int, float)):
+        raise ValidationError("Target temperature must be a finite numeric value.")
+
+    f_temp = float(target_temperature)
+    if not math.isfinite(f_temp):
+        raise ValidationError("Non-finite target temperature is not permitted.")
+
+    # 9. Target unit validation (if supplied)
+    if target_unit is not None:
+        if not isinstance(target_unit, str) or not parse_temperature_unit(target_unit):
+            raise ValidationError(f"Unsupported or unrecognized temperature unit '{target_unit}'.")
+
+    return clean_target
+
+
+class HomeAssistantClimateActuationService:
+    """Dedicated, narrowly scoped service for actuating explicitly allowlisted Stage D Home Assistant climate entities.
+
+    Enforces:
+    1. Only explicitly allowlisted climate.* entities can be targeted.
+    2. Only the single 'climate.set_temperature' operation is permitted.
+    3. Entity must be in a verified compatible operating mode (heat or cool).
+    4. Decimal-safe step alignment against trusted server-side grid origin.
+    5. Stage A read-only WebSocket boundary is preserved (never used for writes).
+    6. Outbound dispatch is through authenticated REST API with strict timeouts and no retries.
+    7. Independent read-after-write verification confirms reported target temperature.
+    """
+
+    def __init__(
+        self,
+        readonly_client: HomeAssistantClient | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        base_url: str | None = None,
+        access_token: str | None = None,
+        climate_service: HomeAssistantClimateService | None = None,
+    ) -> None:
+        self._readonly_client = readonly_client or HomeAssistantClient(
+            base_url=base_url,
+            access_token=access_token,
+        )
+        self._http_client = http_client
+        self._base_url = (base_url or settings.HOME_ASSISTANT_BASE_URL).strip().rstrip("/")
+        self._access_token = access_token if access_token is not None else settings.HOME_ASSISTANT_ACCESS_TOKEN
+        self._timeout = settings.HOME_ASSISTANT_ACTUATION_TIMEOUT_SECONDS
+        self._dispatched_executions: set[str] = set()
+        self._climate_service = climate_service or HomeAssistantClimateService(
+            readonly_client=self._readonly_client,
+        )
+
+    def _get_headers(self) -> dict[str, str]:
+        if not self._access_token or not self._access_token.strip():
+            raise AuthorizationError("Missing Home Assistant access token for actuation.")
+        return {
+            "Authorization": f"Bearer {self._access_token.strip()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        if self._http_client:
+            return self._http_client
+        return httpx.AsyncClient(timeout=self._timeout, follow_redirects=False)
+
+    async def create_plan(
+        self,
+        target_entity_id: str,
+        target_temperature: float,
+        target_unit: str | None = None,
+    ) -> ClimateActuationPlan:
+        """Create a structured climate actuation plan without causing any physical action.
+
+        Inspects the current reported state and operating bounds of the climate entity via read-only feasibility assessment.
+        """
+        valid_entity_id = validate_climate_actuation_preconditions(
+            target_entity_id=target_entity_id,
+            target_temperature=target_temperature,
+            target_unit=target_unit,
+        )
+
+        # Assess setpoint feasibility using authoritative read-only climate planner
+        feasibility = await self._climate_service.assess_setpoint_feasibility(
+            target_entity_id=valid_entity_id,
+            requested_temperature=target_temperature,
+            requested_unit=target_unit,
+        )
+
+        current_target = feasibility.target_temperature
+        is_already_satisfied = (
+            current_target is not None
+            and abs(float(current_target) - float(target_temperature)) < 1e-6
+        )
+
+        if not feasibility.is_feasible or feasibility.feasibility_status != "ready":
+            state_readiness = feasibility.feasibility_status
+            is_mutation_needed = False
+        elif is_already_satisfied:
+            state_readiness = "already_satisfied"
+            is_mutation_needed = False
+        else:
+            state_readiness = "ready"
+            is_mutation_needed = True
+
+        unit_str = f" {target_unit}" if target_unit else ""
+        if state_readiness == "ready":
+            preconditions = [
+                f"Configured climate entity '{valid_entity_id}' is allowlisted and reachable",
+                f"Active operating mode is '{feasibility.hvac_mode}' (single-setpoint compatible)",
+                f"Target temperature {target_temperature}{unit_str} is within operating bounds and aligns with trusted grid origin",
+                "Home Assistant Stage D climate actuation is explicitly enabled",
+                "Human operator approval is granted",
+            ]
+        elif state_readiness == "already_satisfied":
+            preconditions = [
+                f"Configured climate entity '{valid_entity_id}' is allowlisted and reachable",
+                f"Current target temperature is already confirmed {target_temperature}{unit_str}",
+                "No physical mutation is required",
+            ]
+        else:
+            preconditions = [
+                f"Configured climate entity '{valid_entity_id}' is allowlisted",
+                f"Feasibility status is '{state_readiness}' ({'; '.join(feasibility.reasons)})",
+                "Physical dispatch will be blocked until operating preconditions are satisfied",
+            ]
+
+        expected_postconditions = [
+            f"Reported target temperature of '{valid_entity_id}' equals {target_temperature}{unit_str}",
+            "Target temperature verified via independent read-only read-back",
+        ]
+
+        canonical_dict = {
+            "capability_id": "homeassistant.allowlisted_climate_setpoint_actuate",
+            "entity_id": valid_entity_id,
+            "service": "climate.set_temperature",
+            "target_temperature": float(target_temperature),
+            "target_unit": target_unit,
+        }
+        canonical_json = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"))
+        input_digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(minutes=5)).isoformat()
+        plan_id = f"plan_climate_act_{hashlib.sha256((valid_entity_id + str(target_temperature) + now.isoformat()).encode('utf-8')).hexdigest()[:16]}"
+
+        return ClimateActuationPlan(
+            plan_id=plan_id,
+            entity_id=valid_entity_id,
+            requested_temperature=target_temperature,
+            requested_unit=target_unit,
+            current_temperature=feasibility.current_temperature,
+            current_target_temperature=current_target,
+            hvac_mode=feasibility.hvac_mode,
+            service="climate.set_temperature",
+            state_readiness=state_readiness,
+            is_mutation_needed=is_mutation_needed,
+            preconditions=preconditions,
+            expected_postconditions=expected_postconditions,
+            input_digest=input_digest,
+            expires_at=expires_at,
+            data_classification="INTERNAL",
+            is_mutation_performed=False,
+        )
+
+    async def dispatch_actuation(
+        self,
+        target_entity_id: str,
+        target_temperature: float,
+        target_unit: str | None = None,
+        execution_id: str | None = None,
+        skip_if_already_in_state: bool = True,
+    ) -> dict[str, Any]:
+        """Dispatch exactly one authenticated mutation request to Home Assistant set_temperature.
+
+        This is the single, auditable egress point for Stage D climate setpoint state changes.
+        Retries are strictly prohibited.
+        """
+        if execution_id:
+            if execution_id in self._dispatched_executions:
+                raise AuthorizationError(
+                    f"Execution '{execution_id}' has already been dispatched. Replay is strictly prohibited."
+                )
+
+        valid_entity_id = validate_climate_actuation_preconditions(
+            target_entity_id=target_entity_id,
+            target_temperature=target_temperature,
+            target_unit=target_unit,
+        )
+
+        # Fresh pre-dispatch authoritative feasibility inspection
+        try:
+            plan = await self._climate_service.assess_setpoint_feasibility(
+                target_entity_id=valid_entity_id,
+                requested_temperature=target_temperature,
+                requested_unit=target_unit,
+            )
+        except Exception as exc:
+            logger.warning("Pre-dispatch check failed for climate entity '%s': %s", valid_entity_id, exc)
+            return {
+                "dispatched": False,
+                "service": "climate.set_temperature",
+                "entity_id": valid_entity_id,
+                "target_temperature": float(target_temperature),
+                "target_unit": target_unit,
+                "http_status": None,
+                "dispatch_status": "blocked_precondition",
+                "reason": f"Pre-dispatch feasibility assessment failed for '{valid_entity_id}' ({type(exc).__name__}): {exc}",
+                "reported_temperature": None,
+                "reported_mode": "unavailable",
+            }
+
+        if not plan.is_feasible or plan.feasibility_status != "ready":
+            reason_str = "; ".join(plan.reasons) if plan.reasons else f"Status: {plan.feasibility_status}"
+            logger.warning(
+                "Pre-dispatch check: climate entity '%s' feasibility check failed: %s",
+                valid_entity_id,
+                reason_str,
+            )
+            return {
+                "dispatched": False,
+                "service": "climate.set_temperature",
+                "entity_id": valid_entity_id,
+                "target_temperature": float(target_temperature),
+                "target_unit": target_unit,
+                "http_status": None,
+                "dispatch_status": "blocked_precondition",
+                "reason": f"Pre-dispatch feasibility check failed with status '{plan.feasibility_status}': {reason_str}",
+                "reported_temperature": plan.target_temperature,
+                "reported_mode": plan.hvac_mode or "unknown",
+            }
+
+        # If already set to requested target temperature, avoid redundant physical mutation
+        if (
+            skip_if_already_in_state
+            and plan.target_temperature is not None
+            and abs(float(plan.target_temperature) - float(target_temperature)) < 1e-6
+        ):
+            logger.info(
+                "Pre-dispatch check: climate entity '%s' is already at requested target temperature %s. Mutation skipped.",
+                valid_entity_id,
+                target_temperature,
+            )
+            return {
+                "dispatched": False,
+                "service": "climate.set_temperature",
+                "entity_id": valid_entity_id,
+                "target_temperature": float(target_temperature),
+                "target_unit": target_unit,
+                "http_status": None,
+                "dispatch_status": "already_satisfied",
+                "reason": f"Target climate entity '{valid_entity_id}' is already set to requested target temperature {target_temperature}.",
+                "reported_temperature": plan.target_temperature,
+                "reported_mode": plan.hvac_mode,
+            }
+
+        if execution_id:
+            self._dispatched_executions.add(execution_id)
+
+        url = f"{self._base_url}/api/services/climate/set_temperature"
+        headers = self._get_headers()
+        payload = {
+            "entity_id": valid_entity_id,
+            "temperature": float(target_temperature),
+        }
+
+        client = await self._get_http_client()
+        try:
+            resp = await client.post(url, headers=headers, json=payload, timeout=self._timeout)
+            if resp.status_code in (401, 403):
+                raise AuthorizationError("Home Assistant rejected climate actuation credentials (401/403).")
+            if resp.status_code >= 400:
+                raise ConnectionError(f"Home Assistant returned HTTP error on service dispatch: {resp.status_code}")
+
+            return {
+                "dispatched": True,
+                "service": "climate.set_temperature",
+                "entity_id": valid_entity_id,
+                "target_temperature": float(target_temperature),
+                "target_unit": target_unit,
+                "http_status": resp.status_code,
+                "dispatch_status": "accepted",
+                "reported_temperature": plan.target_temperature,
+                "reported_mode": plan.hvac_mode,
+            }
+        except httpx.TimeoutException:
+            logger.warning("Climate actuation dispatch timed out after %ss for %s", self._timeout, valid_entity_id)
+            return {
+                "dispatched": True,
+                "service": "climate.set_temperature",
+                "entity_id": valid_entity_id,
+                "target_temperature": float(target_temperature),
+                "target_unit": target_unit,
+                "http_status": None,
+                "dispatch_status": "timeout_uncertain",
+                "reported_temperature": plan.target_temperature,
+                "reported_mode": plan.hvac_mode,
+            }
+        except httpx.RequestError as exc:
+            logger.error("Climate actuation dispatch failed: %s", type(exc).__name__)
+            raise ConnectionError(f"Climate actuation dispatch failed: {type(exc).__name__}")
+
+    async def verify_state(
+        self,
+        target_entity_id: str,
+        expected_temperature: float,
+        target_unit: str | None = None,
+        max_timeout: float | None = None,
+        poll_interval: float | None = None,
+    ) -> VerificationResult:
+        """Independently verify reported entity target temperature using read-only path.
+
+        Bounded polling: stops when target temperature matches or timeout expires.
+        Zero state-changing requests are made.
+        """
+        valid_entity_id = validate_climate_actuation_preconditions(
+            target_entity_id=target_entity_id,
+            target_temperature=expected_temperature,
+            target_unit=target_unit,
+        )
+        timeout = max_timeout if max_timeout is not None else settings.HOME_ASSISTANT_VERIFICATION_TIMEOUT_SECONDS
+        interval = poll_interval if poll_interval is not None else settings.HOME_ASSISTANT_VERIFICATION_POLL_INTERVAL_SECONDS
+
+        start_time = asyncio.get_event_loop().time()
+        last_temp: Any = "unknown"
+        attempts = 0
+
+        while True:
+            attempts += 1
+            try:
+                raw = await self._readonly_client.get_state(valid_entity_id)
+                attrs = raw.get("attributes", {}) if isinstance(raw, dict) else {}
+                raw_target = attrs.get("temperature")
+                if raw_target is not None and not isinstance(raw_target, bool):
+                    try:
+                        f_raw = float(raw_target)
+                        last_temp = f_raw
+                        if math.isfinite(f_raw) and abs(f_raw - float(expected_temperature)) < 1e-6:
+                            return VerificationResult(
+                                passed=True,
+                                details={
+                                    "entity_id": valid_entity_id,
+                                    "expected_temperature": float(expected_temperature),
+                                    "reported_temperature": f_raw,
+                                    "reported_mode": raw.get("state"),
+                                    "attempts": attempts,
+                                    "physical_device_connectivity_claimed": False,
+                                },
+                            )
+                    except (ValueError, TypeError):
+                        last_temp = f"invalid_numeric: {raw_target!r}"
+                else:
+                    last_temp = "none"
+            except Exception as exc:
+                last_temp = f"read_error: {type(exc).__name__}"
+
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                break
+
+            await asyncio.sleep(min(interval, max(0.05, timeout - elapsed)))
+
+        return VerificationResult(
+            passed=False,
+            reason=(
+                f"State verification failed for climate entity '{valid_entity_id}': "
+                f"expected target temperature {expected_temperature}, but reported target temperature remained '{last_temp}' after {attempts} attempts ({timeout}s)."
+            ),
+            details={
+                "entity_id": valid_entity_id,
+                "expected_temperature": float(expected_temperature),
+                "reported_temperature": last_temp,
                 "attempts": attempts,
                 "physical_device_connectivity_claimed": False,
             },

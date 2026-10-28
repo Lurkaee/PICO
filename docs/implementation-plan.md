@@ -138,8 +138,18 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Fail-closed alignment: Unconfigured entities or unit mismatches fail closed as `step_alignment_unknown`. Missing or invalid `target_temp_step` fails closed as `step_unknown`.
   - Canonical plan digest binding: `input_digest` binds exact entity ID, requested temperature, requested unit, and effective server-configured origin and unit (`f"{origin}:{unit}"` or `"none:none"`).
   - Preserved strict zero-mutation boundaries: Zero climate actuation endpoints, zero mutation calls.
-- [ ] **P7.4.2 Stage D Climate & Environmental Controls (Full Physical Actuation)**: Planned. Physical climate actuation remains strictly unsupported.
-- **Status**: **STAGE A, STAGE B, STAGE C, & STAGE D PREPARATORY (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1, P7.4.2.1.1, P7.4.2.1.2, P7.4.2.1.3) COMPLETED & VERIFIED; FULL P7.4.2 CLIMATE ACTUATION PLANNED**.
+- [x] **P7.4.2.2 Stage D Allowlisted Single-Setpoint Climate Actuation**:
+  - First physical climate actuation slice under Milestone P7.4.2. Supports strictly one operation: set requested temperature for an explicitly allowlisted climate entity.
+  - Entity must already be in a verified, compatible operating mode (`heat` or `cool`). Strictly zero automatic mode changes, fan mode changes, preset activation, `heat_cool` dual-setpoint ranges, or generic service calls (`call_service`).
+  - Read-only observation and feasibility planning (`POST /api/homeassistant/climate/plan`) remain strictly read-only; new actuation capability is separately registered: `homeassistant.allowlisted_climate_setpoint_actuate`.
+  - Independent enablement gates: `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_ACTUATION_ENABLED=true`, `HOME_ASSISTANT_CLIMATE_AWARENESS_ENABLED=true`, `HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true` (disabled by default), validated server-side `HOME_ASSISTANT_CLIMATE_ALLOWLIST`, server-configured `HOME_ASSISTANT_CLIMATE_GRID_ORIGINS`, `APPROVAL_SECRET_TOKEN`, and `homeassistant:actuate` permission.
+  - Fail-closed pre-dispatch verification: fresh authoritative state read re-evaluating exact allowlist membership, single setpoint feature flag (`TARGET_TEMPERATURE`), compatible mode (`heat`/`cool`), range limits (`min_temp <= target <= max_temp`), trusted grid origin step alignment (`abs(dec_req - dec_origin) % dec_step == 0`), unit match, single-use approval ticket validity, and triple-digest agreement (`recomputed == persisted == approved`).
+  - Idempotency & state satisfaction: skips physical mutation if the reported target setpoint (`temperature` attribute) already equals the requested setpoint (`dispatch_status='already_satisfied'`).
+  - Single dispatch: invokes `POST /api/services/climate/set_temperature` with `{"entity_id": target_id, "temperature": target_temp}` exactly once. Strictly zero automatic retries (`max_retries=0`, `idempotent=False`, `consequential=True`) on timeouts or failures.
+  - Independent read-after-write verification: polls read-only state endpoint (`GET /api/states/{id}`) to verify reported temperature against approved setpoint. Inconclusive outcomes fail closed (`verification_failed`). Never claims physical device connectivity (`physical_device_connectivity_claimed=False`).
+  - REST API routes: `POST /api/homeassistant/climate/propose` (returns 201 with execution in `awaiting_approval`) and `GET /api/homeassistant/climate/execution/{execution_id}` (inspects execution status). Client `grid_origin` input strictly forbidden.
+- [ ] **P7.4.2 Stage D Climate & Environmental Controls (Full Dual-Setpoint & Mode Actuation)**: Planned. Multi-setpoint (`heat_cool` ranges), HVAC mode switching, fan mode control, and preset actuation remain strictly unsupported.
+- **Status**: **STAGE A, STAGE B, STAGE C, STAGE D PREPARATORY, & STAGE D SINGLE-SETPOINT ACTUATION (P7.1, P7.2, P7.3, P7.4.1, P7.4.1.2, P7.4.2.1, P7.4.2.1.1, P7.4.2.1.2, P7.4.2.1.3, P7.4.2.2) COMPLETED & VERIFIED; ADVANCED CLIMATE MODES PLANNED**.
 
 
 ### Milestone P8: Computer Control & Engineering Workspace

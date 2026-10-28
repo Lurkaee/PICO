@@ -13,6 +13,7 @@ from pico.homeassistant.actuation import validate_switch_allowlist
 from pico.homeassistant.climate import (
     HomeAssistantClimateService,
     validate_climate_allowlist,
+    validate_climate_grid_origins,
 )
 from pico.homeassistant.contracts import (
     ActuationReadinessReport,
@@ -1154,18 +1155,61 @@ class HomeAssistantClimateReadinessChecker:
                     )
                 )
 
-        # 5. Actuation boundary check
-        checks.append(
-            ReadinessCheckItem(
-                name="actuation_boundary",
-                status=ReadinessCheckStatus.PASS,
-                error_category=None,
-                message="Climate physical actuation is disabled by policy (strictly read-only awareness milestone).",
-                remediation=None,
+        # 5. Trusted grid origins configuration check
+        try:
+            grid_origins_map = validate_climate_grid_origins(
+                allowlist=allowlisted_set if allowlist_valid else None
             )
-        )
+            checks.append(
+                ReadinessCheckItem(
+                    name="climate_grid_origins",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message=f"Stage D trusted climate grid origins configuration is valid ({len(grid_origins_map)} configured entity origins).",
+                    remediation=None,
+                )
+            )
+        except ValidationError as exc:
+            checks.append(
+                ReadinessCheckItem(
+                    name="climate_grid_origins",
+                    status=ReadinessCheckStatus.FAIL,
+                    error_category=ReadinessErrorCategory.INVALID_ENTITY,
+                    message=f"Stage D trusted climate grid origins configuration is invalid: {exc}",
+                    remediation="Ensure HOME_ASSISTANT_CLIMATE_GRID_ORIGINS contains only valid JSON mapping allowlisted climate.* entities to {'origin': float, 'unit': str}.",
+                )
+            )
 
-        # 6. Transport security check
+        # 6. Actuation boundary check
+        actuation_enabled = bool(
+            integration_enabled
+            and access_token_present
+            and climate_awareness_enabled
+            and settings.HOME_ASSISTANT_ACTUATION_ENABLED
+            and getattr(settings, "HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED", False)
+        )
+        if actuation_enabled:
+            checks.append(
+                ReadinessCheckItem(
+                    name="actuation_boundary",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message="Climate physical actuation is explicitly enabled (HOME_ASSISTANT_ENABLED=true, access token present, climate awareness enabled, HOME_ASSISTANT_ACTUATION_ENABLED=true, and HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED=true).",
+                    remediation=None,
+                )
+            )
+        else:
+            checks.append(
+                ReadinessCheckItem(
+                    name="actuation_boundary",
+                    status=ReadinessCheckStatus.PASS,
+                    error_category=None,
+                    message="Climate physical actuation is disabled by policy or missing prerequisites (strictly read-only awareness mode).",
+                    remediation=None,
+                )
+            )
+
+        # 7. Transport security check
         base_url = settings.HOME_ASSISTANT_BASE_URL
         allow_insecure = settings.HOME_ASSISTANT_ALLOW_INSECURE_TRANSPORT
         try:
@@ -1213,7 +1257,7 @@ class HomeAssistantClimateReadinessChecker:
                 )
             )
 
-        # 7. Live Read-Only Connectivity Check
+        # 8. Live Read-Only Connectivity Check
         live_passed: bool | None = None
         reported_state: str | None = None
         state_readiness: str | None = None
@@ -1346,7 +1390,11 @@ class HomeAssistantClimateReadinessChecker:
         if ready_for_observation:
             summary = (
                 f"READY: Stage D climate awareness preflight passed for '{target_to_probe}'. "
-                f"Climate awareness is ready (physical actuation strictly disabled)."
+                + (
+                    "Climate setpoint actuation is enabled (approval still required)."
+                    if actuation_enabled
+                    else "Climate awareness is ready (physical actuation disabled)."
+                )
             )
         else:
             failed_checks = [
@@ -1361,7 +1409,7 @@ class HomeAssistantClimateReadinessChecker:
             target_entity_id=target_to_probe,
             allowlisted_entities=sorted(list(allowlisted_set)),
             climate_awareness_enabled=climate_awareness_enabled,
-            actuation_enabled=False,
+            actuation_enabled=actuation_enabled,
             live_check_performed=check_live,
             live_passed=live_passed if check_live else None,
             state_readiness=state_readiness,
