@@ -304,6 +304,12 @@ export const api = {
     return request<ToolExecution>(`/api/tools/executions/${executionId}`);
   },
 
+  async executeExecution(executionId: string): Promise<ToolExecution> {
+    return request<ToolExecution>(`/api/tools/executions/${executionId}/execute`, {
+      method: 'POST',
+    });
+  },
+
   async approveExecution(executionId: string, notes?: string, approver?: string): Promise<ToolExecution> {
     return request<ToolExecution>(`/api/tools/executions/${executionId}/approve`, {
       method: 'POST',

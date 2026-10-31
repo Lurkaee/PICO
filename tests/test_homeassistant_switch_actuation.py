@@ -637,7 +637,15 @@ def test_api_switch_propose_and_status(monkeypatch: pytest.MonkeyPatch) -> None:
         assert execution_data["status"] == "awaiting_approval"
 
         # 3. Retrieve switch execution status
-        res_status = client.get(f"/api/homeassistant/switch/{execution_id}")
+        # Unauthenticated read fails closed with 403 under Workstream C
+        res_unauth = client.get(f"/api/homeassistant/switch/{execution_id}")
+        assert res_unauth.status_code == 403
+
+        # Authenticated read with valid token succeeds
+        res_status = client.get(
+            f"/api/homeassistant/switch/{execution_id}",
+            headers={"X-Pico-Approval-Token": MOCK_APPROVAL_SECRET},
+        )
         assert res_status.status_code == 200
         assert res_status.json()["id"] == execution_id
 
@@ -663,7 +671,10 @@ def test_api_switch_execution_isolation(monkeypatch: pytest.MonkeyPatch) -> None
         light_exec_id = res_light.json()["id"]
 
         # Requesting via switch endpoint must fail with 404
-        res_isolated = client.get(f"/api/homeassistant/switch/{light_exec_id}")
+        res_isolated = client.get(
+            f"/api/homeassistant/switch/{light_exec_id}",
+            headers={"X-Pico-Approval-Token": MOCK_APPROVAL_SECRET},
+        )
         assert res_isolated.status_code == 404
 
 

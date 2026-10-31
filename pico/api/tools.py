@@ -2,7 +2,13 @@ import secrets
 from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
-from pico.api.operator import get_operator_session_optional
+from pico.api.operator import (
+    AuthorizationContext,
+    get_authorization_context,
+    get_operator_session_optional,
+    require_consequential_authorization,
+    require_history_authorization,
+)
 from pico.capabilities.registry import registry
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError
@@ -94,12 +100,10 @@ def get_capability(capability_id: str) -> CapabilityResponse:
 async def submit_execution(
     payload: ToolExecutionCreate,
     execute_now: bool = Query(default=True, description="Immediately execute if non-consequential and queued"),
-    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
-    operator_session=Depends(get_operator_session_optional),
+    auth_ctx: AuthorizationContext = Depends(get_authorization_context),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
-    # Default local dev permissions grant standard development scopes (NEVER physical actuation or consequential actions)
     default_perms = {
         "tools:calculate",
         "tools:validate",
@@ -109,13 +113,8 @@ async def submit_execution(
         "test:execute",
     }
     effective_perms = set(default_perms)
-    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-    is_authorized = bool(
-        operator_session is not None
-        or (configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret))
-    )
 
-    if is_authorized:
+    if auth_ctx.is_authorized:
         effective_perms.add("admin:consequential")
         if payload.capability_id in (
             "homeassistant.test_light_actuate",
@@ -163,6 +162,7 @@ def list_executions(
     session_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionListResponse:
     repo = ToolExecutionRepository(db)
@@ -190,6 +190,7 @@ def list_executions(
 )
 def get_execution(
     execution_id: str,
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     repo = ToolExecutionRepository(db)
@@ -206,8 +207,7 @@ def get_execution(
 )
 async def run_execution(
     execution_id: str,
-    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
-    operator_session=Depends(get_operator_session_optional),
+    auth_ctx: AuthorizationContext = Depends(get_authorization_context),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
@@ -215,6 +215,14 @@ async def run_execution(
     item = repo.get_by_id(execution_id)
     if not item:
         raise EntityNotFoundError("ToolExecution", execution_id)
+
+    capability = registry.get(item.capability_id, version=item.capability_version) if registry.has(item.capability_id) else None
+    is_consequential = bool(capability.metadata.consequential) if capability else True
+
+    if is_consequential and not auth_ctx.is_authorized:
+        raise AuthorizationError(
+            "Consequential execution dispatch fails closed without valid X-Pico-Approval-Token or active Operator Session."
+        )
 
     default_perms = {
         "tools:calculate",
@@ -225,13 +233,8 @@ async def run_execution(
         "test:execute",
     }
     effective_perms = set(default_perms)
-    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-    is_authorized = bool(
-        operator_session is not None
-        or (configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret))
-    )
 
-    if is_authorized:
+    if auth_ctx.is_authorized:
         effective_perms.add("admin:consequential")
         if item.capability_id in (
             "homeassistant.test_light_actuate",
@@ -261,8 +264,8 @@ async def run_execution(
 def approve_execution(
     execution_id: str,
     payload: ToolApprovalRequest,
+    auth_ctx: AuthorizationContext = Depends(require_consequential_authorization),
     x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
-    operator_session=Depends(get_operator_session_optional),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     repo = ToolExecutionRepository(db)
@@ -270,30 +273,8 @@ def approve_execution(
     if not item:
         raise EntityNotFoundError("ToolExecution", execution_id)
 
-    capability = registry.get(item.capability_id, version=item.capability_version)
-    is_consequential = bool(capability.metadata.consequential) if capability else True
-
-    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-    has_token = bool(configured_secret and x_approval_token and secrets.compare_digest(x_approval_token, configured_secret))
-    has_session = operator_session is not None
-
-    if is_consequential:
-        if not has_token and not has_session:
-            raise AuthorizationError(
-                "Consequential action approval fails closed without valid X-Pico-Approval-Token or active Operator Session."
-            )
-        authenticated_principal = "authenticated_token_holder" if has_token else "local_operator"
-        authoritative_approver = operator_session.approver if has_session else "authenticated_token_holder"
-    elif has_token:
-        authenticated_principal = "authenticated_token_holder"
-        authoritative_approver = "authenticated_token_holder"
-    elif has_session:
-        authenticated_principal = "local_operator"
-        authoritative_approver = operator_session.approver
-    else:
-        raise AuthorizationError(
-            "Action approval fails closed without valid X-Pico-Approval-Token or active Operator Session."
-        )
+    # Server-derived authoritative approver identity
+    authoritative_approver = auth_ctx.principal
 
     engine = ToolExecutionEngine(db, registry)
     execution = engine.approve(
@@ -301,7 +282,7 @@ def approve_execution(
         approver=authoritative_approver,
         notes=payload.notes,
         approval_token=x_approval_token,
-        authenticated_principal=authenticated_principal,
+        authenticated_principal=auth_ctx.principal,
     )
     return ToolExecutionResponse.model_validate(execution)
 
@@ -314,8 +295,22 @@ def approve_execution(
 def cancel_execution(
     execution_id: str,
     reason: str | None = Query(default=None),
+    auth_ctx: AuthorizationContext = Depends(get_authorization_context),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
+    repo = ToolExecutionRepository(db)
+    item = repo.get_by_id(execution_id)
+    if not item:
+        raise EntityNotFoundError("ToolExecution", execution_id)
+
+    capability = registry.get(item.capability_id, version=item.capability_version) if registry.has(item.capability_id) else None
+    is_consequential = bool(capability.metadata.consequential) if capability else True
+
+    if is_consequential and not auth_ctx.is_authorized:
+        raise AuthorizationError(
+            "Cancellation of consequential execution requires valid local operator session or approval token."
+        )
+
     engine = ToolExecutionEngine(db, registry)
     execution = engine.cancel(execution_id, reason=reason)
     return ToolExecutionResponse.model_validate(execution)
@@ -330,8 +325,14 @@ def get_execution_events(
     execution_id: str,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> LedgerEventListResponse:
+    exec_repo = ToolExecutionRepository(db)
+    item = exec_repo.get_by_id(execution_id)
+    if not item:
+        raise EntityNotFoundError("ToolExecution", execution_id)
+
     repo = EventLedgerRepository(db)
     events = repo.list_events(execution_id=execution_id, limit=limit, offset=offset)
     total = repo.count(execution_id=execution_id)

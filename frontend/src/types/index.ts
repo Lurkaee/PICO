@@ -88,12 +88,27 @@ export interface ToolExecution {
   task_id?: string | null;
   session_id?: string | null;
   idempotency_key?: string | null;
-  status: 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'failed' | 'cancelled';
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_approval'
+    | 'verifying'
+    | 'succeeded'
+    | 'verification_failed'
+    | 'failed'
+    | 'timed_out'
+    | 'cancelled'
+    | string;
   input_data: Record<string, unknown>;
   output_data?: Record<string, unknown> | null;
   error_message?: string | null;
+  error_details?: Record<string, unknown> | null;
+  verification_status?: string | null;
+  verification_details?: Record<string, unknown> | null;
   approved_by?: string | null;
+  approved_at?: string | null;
   created_at: string;
+  queued_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
 }
