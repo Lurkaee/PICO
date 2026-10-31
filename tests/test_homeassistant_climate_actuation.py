@@ -773,7 +773,14 @@ def test_api_climate_propose_route_creates_execution() -> None:
 
     # Inspect status via GET /api/homeassistant/climate/execution/{id}
     exec_id = data["id"]
-    status_resp = client.get(f"/api/homeassistant/climate/execution/{exec_id}")
+    # Unauthenticated read fails closed with 403
+    unauth_resp = client.get(f"/api/homeassistant/climate/execution/{exec_id}")
+    assert unauth_resp.status_code == 403
+
+    status_resp = client.get(
+        f"/api/homeassistant/climate/execution/{exec_id}",
+        headers={"X-Pico-Approval-Token": MOCK_APPROVAL_SECRET},
+    )
     assert status_resp.status_code == 200
     assert status_resp.json()["id"] == exec_id
 
@@ -1798,20 +1805,24 @@ def test_dual_setpoint_execution_status_route_isolation(
     )
     db_session.commit()
 
+    tok = "valid_climate_token_123"
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", tok)
+    headers = {"X-Pico-Approval-Token": tok}
+
     # Inspecting dual item via single-setpoint route -> 404
-    r1 = client.get(f"/api/homeassistant/climate/execution/{dual_item.id}")
+    r1 = client.get(f"/api/homeassistant/climate/execution/{dual_item.id}", headers=headers)
     assert r1.status_code == 404
 
     # Inspecting single item via dual-setpoint route -> 404
-    r2 = client.get(f"/api/homeassistant/climate/dual-setpoint/execution/{single_item.id}")
+    r2 = client.get(f"/api/homeassistant/climate/dual-setpoint/execution/{single_item.id}", headers=headers)
     assert r2.status_code == 404
 
     # Inspecting through correct respective routes -> 200
-    r3 = client.get(f"/api/homeassistant/climate/execution/{single_item.id}")
+    r3 = client.get(f"/api/homeassistant/climate/execution/{single_item.id}", headers=headers)
     assert r3.status_code == 200
     assert r3.json()["capability_id"] == "homeassistant.allowlisted_climate_setpoint_actuate"
 
-    r4 = client.get(f"/api/homeassistant/climate/dual-setpoint/execution/{dual_item.id}")
+    r4 = client.get(f"/api/homeassistant/climate/dual-setpoint/execution/{dual_item.id}", headers=headers)
     assert r4.status_code == 200
     assert r4.json()["capability_id"] == "homeassistant.allowlisted_climate_dual_setpoint_actuate"
 

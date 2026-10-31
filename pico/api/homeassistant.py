@@ -5,6 +5,12 @@ from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.orm import Session
 
+from pico.api.operator import (
+    AuthorizationContext,
+    get_authorization_context,
+    require_consequential_authorization,
+    require_history_authorization,
+)
 from pico.capabilities.registry import registry
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError
@@ -165,23 +171,14 @@ async def plan_test_light_actuation(
 )
 def propose_test_light_actuation(
     payload: TestLightProposeRequest,
-    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    auth_ctx: AuthorizationContext = Depends(require_consequential_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Propose an actuation of the configured test light.
 
     Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
-    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    Physical actuation fails closed without a valid local operator session or approval token.
     """
-    if (
-        not settings.APPROVAL_SECRET_TOKEN
-        or not x_approval_token
-        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
-    ):
-        raise AuthorizationError(
-            "Physical actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
-        )
-
     engine = ToolExecutionEngine(db, registry)
     execution = engine.submit(
         capability_id="homeassistant.test_light_actuate",
@@ -190,7 +187,7 @@ def propose_test_light_actuation(
             "target_entity_id": payload.target_entity_id,
             "reason": payload.reason,
         },
-        caller_permissions={"homeassistant:actuate"},
+        caller_permissions={"homeassistant:actuate", "admin:consequential"},
     )
     return ToolExecutionResponse.model_validate(execution)
 
@@ -222,6 +219,7 @@ async def get_actuation_readiness(
 )
 def get_actuation_status(
     execution_id: str,
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Inspect the execution record, human approval ticket, and independent verification outcome."""
@@ -284,23 +282,14 @@ async def plan_switch_actuation(
 )
 def propose_switch_actuation(
     payload: SwitchProposeRequest,
-    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    auth_ctx: AuthorizationContext = Depends(require_consequential_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Propose an actuation of an allowlisted switch.
 
     Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
-    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    Physical actuation fails closed without a valid local operator session or approval token.
     """
-    if (
-        not settings.APPROVAL_SECRET_TOKEN
-        or not x_approval_token
-        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
-    ):
-        raise AuthorizationError(
-            "Physical switch actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
-        )
-
     engine = ToolExecutionEngine(db, registry)
     execution = engine.submit(
         capability_id="homeassistant.allowlisted_switch_actuate",
@@ -309,7 +298,7 @@ def propose_switch_actuation(
             "target_state": payload.target_state,
             "reason": payload.reason,
         },
-        caller_permissions={"homeassistant:actuate"},
+        caller_permissions={"homeassistant:actuate", "admin:consequential"},
     )
     return ToolExecutionResponse.model_validate(execution)
 
@@ -346,6 +335,7 @@ async def get_switch_actuation_readiness(
 )
 def get_switch_actuation_status(
     execution_id: str,
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Inspect the execution record, human approval ticket, and independent verification outcome for a switch actuation."""
@@ -545,23 +535,14 @@ class ClimateProposeRequest(BaseModel):
 )
 def propose_climate_actuation(
     payload: ClimateProposeRequest,
-    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    auth_ctx: AuthorizationContext = Depends(require_consequential_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Propose an actuation of an allowlisted climate entity setpoint.
 
     Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
-    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    Physical actuation fails closed without a valid local operator session or approval token.
     """
-    if (
-        not settings.APPROVAL_SECRET_TOKEN
-        or not x_approval_token
-        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
-    ):
-        raise AuthorizationError(
-            "Physical climate actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
-        )
-
     engine = ToolExecutionEngine(db, registry)
     execution = engine.submit(
         capability_id="homeassistant.allowlisted_climate_setpoint_actuate",
@@ -571,7 +552,7 @@ def propose_climate_actuation(
             "target_unit": payload.target_unit,
             "reason": payload.reason,
         },
-        caller_permissions={"homeassistant:actuate"},
+        caller_permissions={"homeassistant:actuate", "admin:consequential"},
     )
     return ToolExecutionResponse.model_validate(execution)
 
@@ -583,6 +564,7 @@ def propose_climate_actuation(
 )
 def get_climate_actuation_status(
     execution_id: str,
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Inspect the execution record, human approval ticket, and independent verification outcome for a climate actuation."""
@@ -650,23 +632,14 @@ class ClimateDualSetpointProposeRequest(BaseModel):
 )
 def propose_climate_dual_setpoint_actuation(
     payload: ClimateDualSetpointProposeRequest,
-    x_approval_token: str | None = Header(default=None, alias="X-Pico-Approval-Token"),
+    auth_ctx: AuthorizationContext = Depends(require_consequential_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Propose an actuation of an allowlisted climate entity dual setpoints (low and high).
 
     Creates an execution record in 'awaiting_approval' status bound to a SHA-256 digest.
-    Physical actuation fails closed without a verified X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN.
+    Physical actuation fails closed without a valid local operator session or approval token.
     """
-    if (
-        not settings.APPROVAL_SECRET_TOKEN
-        or not x_approval_token
-        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
-    ):
-        raise AuthorizationError(
-            "Physical climate dual-setpoint actuation proposal fails closed without valid X-Pico-Approval-Token matching APPROVAL_SECRET_TOKEN."
-        )
-
     engine = ToolExecutionEngine(db, registry)
     execution = engine.submit(
         capability_id="homeassistant.allowlisted_climate_dual_setpoint_actuate",
@@ -677,7 +650,7 @@ def propose_climate_dual_setpoint_actuation(
             "target_unit": payload.target_unit,
             "reason": payload.reason,
         },
-        caller_permissions={"homeassistant:actuate"},
+        caller_permissions={"homeassistant:actuate", "admin:consequential"},
     )
     return ToolExecutionResponse.model_validate(execution)
 
@@ -689,6 +662,7 @@ def propose_climate_dual_setpoint_actuation(
 )
 def get_climate_dual_setpoint_actuation_status(
     execution_id: str,
+    auth_ctx: AuthorizationContext = Depends(require_history_authorization),
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     """Inspect the execution record, human approval ticket, and independent verification outcome for a climate dual-setpoint actuation."""
