@@ -42,7 +42,10 @@ export const App: React.FC = () => {
     const checkApprovals = () => {
       api
         .listExecutions('awaiting_approval', 50)
-        .then((items) => setPendingApprovalsCount(items.length))
+        .then((items) => {
+          const count = Array.isArray(items) ? items.length : items.total;
+          setPendingApprovalsCount(count);
+        })
         .catch(() => {});
     };
     checkApprovals();
@@ -70,7 +73,10 @@ export const App: React.FC = () => {
     // Refresh pending approvals
     api
       .listExecutions('awaiting_approval', 50)
-      .then((items) => setPendingApprovalsCount(items.length))
+      .then((res: any) => {
+        const count = Array.isArray(res) ? res.length : (res?.total ?? res?.items?.length ?? 0);
+        setPendingApprovalsCount(count);
+      })
       .catch(() => {});
   }, []);
 

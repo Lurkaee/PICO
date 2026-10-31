@@ -113,6 +113,13 @@ export interface ToolExecution {
   completed_at?: string | null;
 }
 
+export interface ToolExecutionListEnvelope {
+  items: ToolExecution[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface WorkflowStep {
   id?: string;
   step_key: string;

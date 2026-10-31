@@ -29,6 +29,40 @@ from pico.schemas.tools import (
 )
 from pico.services.execution_engine import ToolExecutionEngine
 
+def derive_effective_permissions(
+    capability_id: str,
+    auth_ctx: AuthorizationContext,
+    capability_version: str | None = None,
+) -> set[str]:
+    """Derive effective permissions server-side based on capability metadata and Policy A authorization context.
+
+    Default permissions are granted for safe, read-only tools.
+    Elevated permissions (including capability-specific required_permission and admin:consequential)
+    are derived strictly from capability metadata and granted only if the caller is authorized under Policy A.
+    Unknown or unregistered capabilities receive no elevated permissions.
+    Client-provided permission lists are untrusted and ignored.
+    """
+    default_perms = {
+        "tools:calculate",
+        "tools:validate",
+        "projects:read",
+        "tasks:read",
+        "system:diagnostics",
+        "test:execute",
+    }
+    effective_perms = set(default_perms)
+
+    if auth_ctx.is_authorized and registry.has(capability_id):
+        capability = registry.get(capability_id, version=capability_version)
+        if capability and capability.metadata:
+            if capability.metadata.required_permission:
+                effective_perms.add(capability.metadata.required_permission)
+            if capability.metadata.consequential:
+                effective_perms.add("admin:consequential")
+
+    return effective_perms
+
+
 router = APIRouter(prefix="/api/tools", tags=["Tool Execution Engine"])
 
 
@@ -104,33 +138,9 @@ async def submit_execution(
     db: Session = Depends(get_db),
 ) -> ToolExecutionResponse:
     engine = ToolExecutionEngine(db, registry)
-    default_perms = {
-        "tools:calculate",
-        "tools:validate",
-        "projects:read",
-        "tasks:read",
-        "system:diagnostics",
-        "test:execute",
-    }
-    effective_perms = set(default_perms)
-
-    if auth_ctx.is_authorized:
-        effective_perms.add("admin:consequential")
-        if payload.capability_id in (
-            "homeassistant.test_light_actuate",
-            "homeassistant.allowlisted_switch_actuate",
-            "homeassistant.allowlisted_climate_setpoint_actuate",
-            "homeassistant.allowlisted_climate_dual_setpoint_actuate",
-        ):
-            effective_perms.add("homeassistant:actuate")
-        elif payload.capability_id == "os.inspect_windows":
-            effective_perms.add("os:inspect")
-        elif payload.capability_id == "os.launch_application":
-            effective_perms.add("os:launch")
-        elif payload.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-            effective_perms.add("filesystem:write")
-        elif payload.capability_id == "browser.open_page":
-            effective_perms.add("browser:open")
+    effective_perms = derive_effective_permissions(
+        payload.capability_id, auth_ctx, capability_version=payload.capability_version
+    )
 
 
     execution = engine.submit(
@@ -224,33 +234,9 @@ async def run_execution(
             "Consequential execution dispatch fails closed without valid X-Pico-Approval-Token or active Operator Session."
         )
 
-    default_perms = {
-        "tools:calculate",
-        "tools:validate",
-        "projects:read",
-        "tasks:read",
-        "system:diagnostics",
-        "test:execute",
-    }
-    effective_perms = set(default_perms)
-
-    if auth_ctx.is_authorized:
-        effective_perms.add("admin:consequential")
-        if item.capability_id in (
-            "homeassistant.test_light_actuate",
-            "homeassistant.allowlisted_switch_actuate",
-            "homeassistant.allowlisted_climate_setpoint_actuate",
-            "homeassistant.allowlisted_climate_dual_setpoint_actuate",
-        ):
-            effective_perms.add("homeassistant:actuate")
-        elif item.capability_id == "os.inspect_windows":
-            effective_perms.add("os:inspect")
-        elif item.capability_id == "os.launch_application":
-            effective_perms.add("os:launch")
-        elif item.capability_id in ("filesystem.apply_staged_diff", "filesystem.rollback_staged_diff"):
-            effective_perms.add("filesystem:write")
-        elif item.capability_id == "browser.open_page":
-            effective_perms.add("browser:open")
+    effective_perms = derive_effective_permissions(
+        item.capability_id, auth_ctx, capability_version=item.capability_version
+    )
 
     execution = await engine.execute(execution_id, caller_permissions=effective_perms)
     return ToolExecutionResponse.model_validate(execution)

@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from pico.api.operator import (
     AuthorizationContext,
+    constant_time_token_match,
     get_authorization_context,
+    is_loopback_client,
     require_consequential_authorization,
     require_history_authorization,
 )
@@ -55,23 +57,19 @@ def verify_household_access(
 
     Invariants:
     1. Local loopback clients ('127.0.0.1', '::1', 'localhost', 'testclient') are permitted.
+       Missing connection information or forwarded headers strictly fails closed.
     2. Non-loopback remote callers MUST provide a valid X-Pico-Approval-Token matching
-       the server-configured APPROVAL_SECRET_TOKEN.
+       the server-configured APPROVAL_SECRET_TOKEN in constant time over UTF-8 bytes.
     3. If APPROVAL_SECRET_TOKEN is not configured or token is missing/mismatched,
        remote access is strictly rejected with 403 Forbidden (fail-closed).
     4. Integration enablement (HOME_ASSISTANT_ENABLED) is distinct from API exposure authorization.
     """
-    client_host = request.client.host if request.client else "127.0.0.1"
-
-    if is_loopback_host(client_host):
+    client_host = request.client.host if request.client else ""
+    if is_loopback_client(request) and is_loopback_host(client_host):
         return
 
-    # Fail closed for remote clients unless verified via established APPROVAL_SECRET_TOKEN
-    if (
-        not settings.APPROVAL_SECRET_TOKEN
-        or not x_approval_token
-        or not secrets.compare_digest(x_approval_token, settings.APPROVAL_SECRET_TOKEN)
-    ):
+    # Fail closed for remote or unknown clients unless verified via established APPROVAL_SECRET_TOKEN
+    if not constant_time_token_match(x_approval_token, settings.APPROVAL_SECRET_TOKEN):
         raise AuthorizationError(
             "Access to household endpoints from remote host is restricted. "
             "Valid X-Pico-Approval-Token required."

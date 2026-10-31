@@ -445,3 +445,148 @@ def test_homeassistant_status_endpoints_require_history_authorization(monkeypatc
 
     res_switch_auth = unauth_client.get("/api/homeassistant/switch/non_existent_id")
     assert res_switch_auth.status_code == 404
+
+
+# =====================================================================
+# Regression Tests: Safe Token Comparison, Client Fail-Closed, Discovery & Permissions
+# =====================================================================
+
+def test_safe_constant_time_token_match():
+    """Verify constant_time_token_match handles ASCII, non-ASCII, empty, and None safely without TypeError."""
+    from pico.api.operator import constant_time_token_match
+
+    # Valid matching ASCII
+    assert constant_time_token_match("my_secret_token_123", "my_secret_token_123") is True
+
+    # Mismatched ASCII
+    assert constant_time_token_match("wrong_token_value", "my_secret_token_123") is False
+
+    # Empty / None supplied or secret
+    assert constant_time_token_match("", "my_secret_token_123") is False
+    assert constant_time_token_match(None, "my_secret_token_123") is False
+    assert constant_time_token_match("my_secret_token_123", "") is False
+    assert constant_time_token_match("my_secret_token_123", None) is False
+    assert constant_time_token_match(None, None) is False
+
+    # Non-ASCII UTF-8 tokens (must never raise TypeError, compare safely as UTF-8 bytes)
+    assert constant_time_token_match("🔑_operator_token", "my_secret_token_123") is False
+    assert constant_time_token_match("tést_token", "my_secret_token_123") is False
+    assert constant_time_token_match("utf8_🔑_secret", "utf8_🔑_secret") is True
+    assert constant_time_token_match("utf8_🔒_secret", "utf8_🔑_secret") is False
+
+
+def test_homeassistant_verify_household_access_fail_closed_and_spoofed_headers(monkeypatch: pytest.MonkeyPatch):
+    """verify_household_access fails closed when client is missing and ignores spoofed X-Forwarded-For."""
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", MOCK_SECRET)
+
+    # 1. Non-loopback client attempting spoofed loopback X-Forwarded-For is rejected without valid token
+    remote_client = TestClient(app, client=("192.168.1.100", 50000))
+    res_spoof = remote_client.get(
+        "/api/homeassistant/status",
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    )
+    assert res_spoof.status_code in (401, 403)
+    assert "token" in res_spoof.json()["detail"].lower()
+
+    # 2. Remote client with invalid token fails closed
+    res_invalid = remote_client.get(
+        "/api/homeassistant/status",
+        headers={"X-Pico-Approval-Token": "invalid_forged_token"},
+    )
+    assert res_invalid.status_code == 403
+
+    # 3. Missing request.client fails closed (treated as remote, requires token)
+    from fastapi import Request
+    from pico.api.homeassistant import verify_household_access
+    mock_req = MagicMock(spec=Request)
+    mock_req.client = None
+    with pytest.raises(AuthorizationError):
+        verify_household_access(mock_req)
+
+
+def test_pending_execution_discovery_not_crowded_out_by_newer_completed_executions(monkeypatch: pytest.MonkeyPatch):
+    """Older awaiting_approval and queued executions remain discoverable despite >50 newer completed records."""
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", MOCK_SECRET)
+    client = TestClient(app, client=("127.0.0.1", 50000))
+    pair_local_operator(client)
+
+    with SessionLocal() as db:
+        repo = ToolExecutionRepository(db)
+
+        # 1. Create an older awaiting_approval execution
+        older_awaiting = repo.create(
+            capability_id="test.older_awaiting",
+            capability_version="1.0.0",
+            status="awaiting_approval",
+            input_json={"item": "old_awaiting"},
+            input_digest="digest_old_awaiting",
+        )
+        older_awaiting_id = older_awaiting.id
+
+        # 2. Create an older queued execution
+        older_queued = repo.create(
+            capability_id="test.older_queued",
+            capability_version="1.0.0",
+            status="queued",
+            input_json={"item": "old_queued"},
+            input_digest="digest_old_queued",
+        )
+        older_queued_id = older_queued.id
+
+        # 3. Create 55 newer completed (succeeded) executions
+        for i in range(55):
+            repo.create(
+                capability_id=f"test.completed_{i}",
+                capability_version="1.0.0",
+                status="succeeded",
+                input_json={"counter": i},
+                input_digest=f"digest_completed_{i}",
+            )
+
+    # Status-aware query for awaiting_approval: older awaiting is NOT crowded out
+    res_awaiting = client.get("/api/tools/executions?status=awaiting_approval&limit=50&offset=0")
+    assert res_awaiting.status_code == 200
+    awaiting_data = res_awaiting.json()
+    assert awaiting_data["total"] >= 1
+    awaiting_ids = [it["id"] for it in awaiting_data["items"]]
+    assert older_awaiting_id in awaiting_ids, "Older awaiting_approval was crowded out by completed records"
+
+    # Status-aware query for queued: older queued is NOT crowded out
+    res_queued = client.get("/api/tools/executions?status=queued&limit=50&offset=0")
+    assert res_queued.status_code == 200
+    queued_data = res_queued.json()
+    assert queued_data["total"] >= 1
+    queued_ids = [it["id"] for it in queued_data["items"]]
+    assert older_queued_id in queued_ids, "Older queued execution was crowded out by completed records"
+
+    # Pagination bounds and offsets contract
+    res_paged = client.get("/api/tools/executions?limit=10&offset=0")
+    assert res_paged.status_code == 200
+    paged_data = res_paged.json()
+    assert len(paged_data["items"]) == 10
+    assert paged_data["total"] >= 57
+    assert paged_data["offset"] == 0
+    assert paged_data["limit"] == 10
+
+
+def test_derive_effective_permissions_from_capability_metadata():
+    """derive_effective_permissions accurately extracts permissions from capability metadata or fails closed."""
+    from pico.api.operator import AuthorizationContext
+    from pico.api.tools import derive_effective_permissions
+
+    unauth_ctx = AuthorizationContext(is_authorized=False, principal="unauthenticated", method="none")
+    auth_ctx = AuthorizationContext(is_authorized=True, principal="local_operator", method="operator_session")
+
+    # 1. Unregistered / unknown capability returns only safe default permissions
+    unregistered_perms = derive_effective_permissions("non_existent_capability_123", auth_ctx)
+    assert "tools:calculate" in unregistered_perms
+    assert "admin:consequential" not in unregistered_perms
+
+    # 2. Consequential registered capability grants required_permission + admin:consequential ONLY when authorized
+    consequential_cap_id = "test.consequential_action"
+    if registry.has(consequential_cap_id):
+        auth_perms = derive_effective_permissions(consequential_cap_id, auth_ctx)
+        assert "admin:consequential" in auth_perms
+
+        unauth_perms = derive_effective_permissions(consequential_cap_id, unauth_ctx)
+        assert "admin:consequential" not in unauth_perms

@@ -12,7 +12,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { api } from '../../api/client';
-import { OperatorSessionState, ToolExecution } from '../../types';
+import { OperatorSessionState, ToolExecution, ToolExecutionListEnvelope } from '../../types';
 import { useConnectivity } from '../../context/ConnectivityContext';
 
 interface ApprovalInboxProps {
@@ -24,12 +24,44 @@ interface AmbiguousState {
   reason: string;
   timestamp: string;
   action: 'approve' | 'reject' | 'dispatch';
+  execution?: ToolExecution;
 }
+
+const PAGE_SIZE = 10;
+
+const normalizeExecutionResponse = (
+  res: any,
+  targetStatus: string,
+  defaultLimit = PAGE_SIZE,
+  defaultOffset = 0
+): ToolExecutionListEnvelope => {
+  if (!res) {
+    return { items: [], total: 0, limit: defaultLimit, offset: defaultOffset };
+  }
+  const targetStatuses = targetStatus.split(',').map((s) => s.trim());
+  if (Array.isArray(res)) {
+    const matched = res.filter((it) => targetStatuses.includes(it.status));
+    return { items: matched, total: matched.length, limit: defaultLimit, offset: defaultOffset };
+  }
+  const rawItems: ToolExecution[] = Array.isArray(res.items) ? res.items : [];
+  const matched = rawItems.filter((it: ToolExecution) => targetStatuses.includes(it.status));
+  return {
+    items: matched,
+    total: typeof res.total === 'number' ? res.total : matched.length,
+    limit: typeof res.limit === 'number' ? res.limit : defaultLimit,
+    offset: typeof res.offset === 'number' ? res.offset : defaultOffset,
+  };
+};
 
 export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOpenPairingModal }) => {
   const { isBackendReachable } = useConnectivity();
   const [awaitingExecutions, setAwaitingExecutions] = useState<ToolExecution[]>([]);
   const [queuedExecutions, setQueuedExecutions] = useState<ToolExecution[]>([]);
+  const [awaitingTotal, setAwaitingTotal] = useState(0);
+  const [queuedTotal, setQueuedTotal] = useState(0);
+  const [awaitingPage, setAwaitingPage] = useState(0);
+  const [queuedPage, setQueuedPage] = useState(0);
+
   const [dispatchResults, setDispatchResults] = useState<Record<string, ToolExecution>>({});
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -42,9 +74,21 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
   const [ambiguousExecutions, setAmbiguousExecutions] = useState<Record<string, AmbiguousState>>({});
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
+
   const requestSeq = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusPollTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const isMountedRef = useRef(true);
+  const awaitingPageRef = useRef(0);
+  const queuedPageRef = useRef(0);
+
+  useEffect(() => {
+    awaitingPageRef.current = awaitingPage;
+  }, [awaitingPage]);
+
+  useEffect(() => {
+    queuedPageRef.current = queuedPage;
+  }, [queuedPage]);
 
   const scheduleNextPoll = (delay = 6000) => {
     if (pollTimerRef.current) {
@@ -57,7 +101,62 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     }, delay);
   };
 
-  const fetchExecutions = async (clearAllErrors = false) => {
+  const clearStatusPollTimer = (id: string) => {
+    if (statusPollTimersRef.current[id]) {
+      clearTimeout(statusPollTimersRef.current[id]);
+      delete statusPollTimersRef.current[id];
+    }
+  };
+
+  const pollStatusUntilTerminal = (id: string, count = 0, maxPolls = 30) => {
+    clearStatusPollTimer(id);
+    if (!isMountedRef.current) return;
+    if (count >= maxPolls) {
+      setActionError(
+        `Background polling limit reached for execution ${id}. Use the Reconcile button to inspect authoritative state.`
+      );
+      return;
+    }
+
+    statusPollTimersRef.current[id] = setTimeout(async () => {
+      if (!isMountedRef.current) return;
+      try {
+        const updated = await api.getExecution(id);
+        if (!isMountedRef.current) return;
+
+        if (updated.status === 'running' || updated.status === 'verifying') {
+          setDispatchResults((prev) => ({ ...prev, [id]: updated }));
+          setAmbiguousExecutions((prev) =>
+            prev[id] ? { ...prev, [id]: { ...prev[id], execution: updated } } : prev
+          );
+          pollStatusUntilTerminal(id, count + 1, maxPolls);
+        } else {
+          // Terminal status reached (succeeded, verification_failed, failed, cancelled, timed_out)
+          clearStatusPollTimer(id);
+          setAmbiguousExecutions((prev) => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+          setDispatchResults((prev) => ({ ...prev, [id]: updated }));
+          setActionError(
+            `Execution ${id} reached terminal state '${updated.status}' with verification status '${updated.verification_status || 'unverified'}'.`
+          );
+          await fetchExecutions();
+        }
+      } catch {
+        // Transient error during read-only status poll; retry boundedly
+        if (!isMountedRef.current) return;
+        pollStatusUntilTerminal(id, count + 1, maxPolls);
+      }
+    }, 2000);
+  };
+
+  const fetchExecutions = async (
+    clearAllErrors = false,
+    overrideAwaitingPage?: number,
+    overrideQueuedPage?: number
+  ) => {
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
@@ -68,13 +167,59 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       setActionError(null);
       setFetchError(null);
     }
+
+    const aPage = overrideAwaitingPage !== undefined ? overrideAwaitingPage : awaitingPageRef.current;
+    const qPage = overrideQueuedPage !== undefined ? overrideQueuedPage : queuedPageRef.current;
+
     try {
-      // Query recent executions from backend
-      const items = await api.listExecutions();
+      // Status-aware independent retrieval: awaiting_approval, queued, and in-flight (running,verifying)
+      const awaitingPromise = Promise.resolve(
+        api.listExecutions('awaiting_approval', PAGE_SIZE, aPage * PAGE_SIZE)
+      );
+      const queuedPromise = Promise.resolve(
+        api.listExecutions('queued', PAGE_SIZE, qPage * PAGE_SIZE)
+      );
+      const inFlightPromise = Promise.resolve(
+        api.listExecutions('running,verifying', 20, 0)
+      ).catch(() => ({ items: [], total: 0, limit: 20, offset: 0 }));
+
+      const [awaitingRes, queuedRes, inFlightRes] = await Promise.all([
+        awaitingPromise,
+        queuedPromise,
+        inFlightPromise,
+      ]);
+
       if (!isMountedRef.current || seq !== requestSeq.current) return;
-      const all = items || [];
-      setAwaitingExecutions(all.filter((item) => item.status === 'awaiting_approval'));
-      setQueuedExecutions(all.filter((item) => item.status === 'queued'));
+
+      const awaitingEnv = normalizeExecutionResponse(awaitingRes, 'awaiting_approval', PAGE_SIZE, aPage * PAGE_SIZE);
+      const queuedEnv = normalizeExecutionResponse(queuedRes, 'queued', PAGE_SIZE, qPage * PAGE_SIZE);
+      const inFlightEnv = normalizeExecutionResponse(inFlightRes, 'running,verifying', 20, 0);
+
+      setAwaitingExecutions(awaitingEnv.items);
+      setAwaitingTotal(awaitingEnv.total);
+
+      setQueuedExecutions(queuedEnv.items);
+      setQueuedTotal(queuedEnv.total);
+
+      // Reload and recovery: discover active in-flight executions from authoritative backend state
+      if (inFlightEnv.items && inFlightEnv.items.length > 0) {
+        setDispatchResults((prev) => {
+          const next = { ...prev };
+          for (const item of inFlightEnv.items) {
+            next[item.id] = item;
+          }
+          return next;
+        });
+
+        for (const item of inFlightEnv.items) {
+          if (item.status === 'running' || item.status === 'verifying') {
+            if (!statusPollTimersRef.current[item.id]) {
+              pollStatusUntilTerminal(item.id);
+            }
+          }
+        }
+      }
+
       setLastSuccessfulFetch(new Date());
       setIsStale(false);
       setFetchError(null);
@@ -100,6 +245,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         clearTimeout(pollTimerRef.current);
         pollTimerRef.current = null;
       }
+      Object.values(statusPollTimersRef.current).forEach((timer) => clearTimeout(timer));
+      statusPollTimersRef.current = {};
     };
   }, []);
 
@@ -114,6 +261,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       if (actionType === 'dispatch') {
         if (execution.status === 'queued') {
           // Confirmed server state is still queued: dispatch claim was not consumed
+          clearStatusPollTimer(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -124,13 +272,26 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           );
           await fetchExecutions();
         } else if (execution.status === 'running' || execution.status === 'verifying') {
-          // Server is currently processing
+          // Server is currently processing: retain ambiguity lock, keep visible, continue bounded read-only polling
           setDispatchResults((prev) => ({ ...prev, [id]: execution }));
+          setAmbiguousExecutions((prev) => ({
+            ...prev,
+            [id]: {
+              ...(prev[id] || {
+                reason: 'In-flight execution reconciling with backend',
+                timestamp: new Date().toLocaleTimeString(),
+                action: 'dispatch',
+              }),
+              execution,
+            },
+          }));
           setActionError(
-            `Reconciliation in progress: execution ${id} is ${execution.status} on the server. Controls remain locked.`
+            `Reconciliation in progress: execution ${id} is ${execution.status} on the server. Read-only polling active.`
           );
+          pollStatusUntilTerminal(id);
         } else {
           // Terminal status reached (succeeded, verification_failed, failed, cancelled, timed_out)
+          clearStatusPollTimer(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -145,6 +306,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       } else if (actionType === 'approve') {
         if (execution.status === 'awaiting_approval') {
           // Confirmed server state is still awaiting approval (approval was not applied)
+          clearStatusPollTimer(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -156,6 +318,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           await fetchExecutions();
         } else {
           // Execution advanced to queued or beyond
+          clearStatusPollTimer(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -168,6 +331,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         }
       } else {
         // Fallback for cancel or general reconciliation
+        clearStatusPollTimer(id);
         setAmbiguousExecutions((prev) => {
           const next = { ...prev };
           delete next[id];
@@ -202,6 +366,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     }
     setProcessingId(id);
     setActionError(null);
+    const executionItem = awaitingExecutions.find((x) => x.id === id);
     try {
       await api.approveExecution(
         id,
@@ -222,6 +387,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
             reason: 'Network interrupted during approval submission; outcome is unconfirmed.',
             timestamp: new Date().toLocaleTimeString(),
             action: 'approve',
+            execution: executionItem,
           },
         }));
         setActionError(
@@ -250,9 +416,13 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     }
     setDispatchingId(id);
     setActionError(null);
+    const executionItem = queuedExecutions.find((x) => x.id === id);
     try {
       const result = await api.executeExecution(id);
       setDispatchResults((prev) => ({ ...prev, [id]: result }));
+      if (result.status === 'running' || result.status === 'verifying') {
+        pollStatusUntilTerminal(id);
+      }
       await fetchExecutions();
     } catch (err) {
       const isNet =
@@ -265,6 +435,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
             reason: 'Network interrupted during dispatch submission; execution outcome is unconfirmed.',
             timestamp: new Date().toLocaleTimeString(),
             action: 'dispatch',
+            execution: executionItem,
           },
         }));
         setActionError(
@@ -289,6 +460,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     }
     setProcessingId(id);
     setActionError(null);
+    const executionItem =
+      awaitingExecutions.find((x) => x.id === id) || queuedExecutions.find((x) => x.id === id);
     try {
       await api.cancelExecution(id, 'Cancelled by operator via approval inbox');
       setConfirmingId(null);
@@ -304,6 +477,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
             reason: 'Network interrupted during rejection submission; outcome is unconfirmed.',
             timestamp: new Date().toLocaleTimeString(),
             action: 'reject',
+            execution: executionItem,
           },
         }));
         setActionError(
@@ -478,7 +652,14 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     }
   };
 
-  const totalPending = awaitingExecutions.length + queuedExecutions.length;
+  const totalPending = awaitingTotal + queuedTotal;
+  const ambiguousEntries = Object.entries(ambiguousExecutions);
+  // Only render independent section for ambiguous executions that are NOT in the active awaiting/queued card lists
+  const standaloneAmbiguous = ambiguousEntries.filter(
+    ([id]) =>
+      !awaitingExecutions.some((it) => it.id === id) &&
+      !queuedExecutions.some((it) => it.id === id)
+  );
 
   return (
     <div className="panel-view">
@@ -592,7 +773,92 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         </div>
       )}
 
-      {totalPending === 0 && Object.keys(dispatchResults).length === 0 ? (
+      {/* SECTION: Ambiguous & Reconciling Executions (Kept visible independently when not present in pending lists) */}
+      {standaloneAmbiguous.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <h3
+            style={{
+              fontSize: '1rem',
+              fontWeight: 600,
+              marginBottom: 10,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              color: 'var(--warning)',
+            }}
+          >
+            <AlertTriangle style={{ color: 'var(--warning)', width: 18, height: 18 }} />
+            <span>Ambiguous & Reconciling Executions ({standaloneAmbiguous.length})</span>
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {standaloneAmbiguous.map(([id, amb]) => {
+              const isReconciling = reconcilingId === id;
+              const exec = amb.execution || dispatchResults[id];
+              const statusDisplay = exec?.status || 'unconfirmed';
+
+              return (
+                <div key={id} className="card" style={{ borderLeft: '4px solid var(--warning)' }}>
+                  <div className="card-header">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <AlertTriangle style={{ color: 'var(--warning)', width: 18, height: 18 }} />
+                      <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>
+                        {exec?.capability_id || 'Consequential Operation'}
+                      </span>
+                      {renderStatusBadge(statusDisplay, exec?.verification_status)}
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      ID: {id}
+                    </span>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: 'var(--radius-sm)',
+                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                      border: '1px solid rgba(245, 158, 11, 0.35)',
+                      color: 'var(--warning)',
+                      fontSize: '0.825rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      marginTop: 8,
+                      marginBottom: 8,
+                    }}
+                    role="alert"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+                      <span>
+                        <strong>Outcome unconfirmed:</strong> {amb.reason} Controls are locked until authoritative reconciliation.
+                      </span>
+                    </div>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => reconcileExecution(id)}
+                      disabled={isReconciling || !isBackendReachable}
+                      style={{ padding: '4px 10px', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                      title="Reconcile authoritative execution state from backend"
+                    >
+                      <RefreshCw className={isReconciling ? 'animate-spin' : ''} style={{ width: 12, height: 12 }} />
+                      Reconcile
+                    </button>
+                  </div>
+
+                  {exec?.status && (exec.status === 'running' || exec.status === 'verifying') && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>
+                      <em>Authoritative server state is '{exec.status}'. Read-only background polling active...</em>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {totalPending === 0 && ambiguousEntries.length === 0 && Object.keys(dispatchResults).length === 0 ? (
         <div
           className="card"
           style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}
@@ -606,12 +872,14 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* SECTION 1: Awaiting Human Approval */}
-          {awaitingExecutions.length > 0 && (
+          {awaitingTotal > 0 && (
             <div>
-              <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <ShieldAlert style={{ color: 'var(--warning)', width: 18, height: 18 }} />
-                <span>Awaiting Explicit Human Approval ({awaitingExecutions.length})</span>
-              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ShieldAlert style={{ color: 'var(--warning)', width: 18, height: 18 }} />
+                  <span>Awaiting Explicit Human Approval ({awaitingTotal})</span>
+                </h3>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {awaitingExecutions.map((item) => {
                   const isConfirming = confirmingId === item.id;
@@ -810,16 +1078,68 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                   );
                 })}
               </div>
+
+              {/* Pagination Controls for Awaiting Executions */}
+              {awaitingTotal > PAGE_SIZE && (
+                <div
+                  className="pagination-controls"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginTop: 12,
+                    fontSize: '0.8rem',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <span>
+                    Showing {awaitingPage * PAGE_SIZE + 1}–{Math.min((awaitingPage + 1) * PAGE_SIZE, awaitingTotal)} of {awaitingTotal}
+                  </span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const prevPage = Math.max(0, awaitingPage - 1);
+                        setAwaitingPage(prevPage);
+                        awaitingPageRef.current = prevPage;
+                        fetchExecutions(false, prevPage, queuedPage);
+                      }}
+                      disabled={awaitingPage === 0 || loading}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      Previous
+                    </button>
+                    <span>
+                      Page {awaitingPage + 1} of {Math.max(1, Math.ceil(awaitingTotal / PAGE_SIZE))}
+                    </span>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const nextPage = awaitingPage + 1;
+                        setAwaitingPage(nextPage);
+                        awaitingPageRef.current = nextPage;
+                        fetchExecutions(false, nextPage, queuedPage);
+                      }}
+                      disabled={(awaitingPage + 1) * PAGE_SIZE >= awaitingTotal || loading}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* SECTION 2: Approved — Ready to Dispatch */}
-          {queuedExecutions.length > 0 && (
+          {queuedTotal > 0 && (
             <div>
-              <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Play style={{ color: '#60a5fa', width: 18, height: 18 }} />
-                <span>Approved — Ready to Dispatch ({queuedExecutions.length})</span>
-              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Play style={{ color: '#60a5fa', width: 18, height: 18 }} />
+                  <span>Approved — Ready to Dispatch ({queuedTotal})</span>
+                </h3>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {queuedExecutions.map((item) => {
                   const isDispatching = dispatchingId === item.id;
@@ -952,10 +1272,60 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
                   );
                 })}
               </div>
+
+              {/* Pagination Controls for Queued Executions */}
+              {queuedTotal > PAGE_SIZE && (
+                <div
+                  className="pagination-controls"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginTop: 12,
+                    fontSize: '0.8rem',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <span>
+                    Showing {queuedPage * PAGE_SIZE + 1}–{Math.min((queuedPage + 1) * PAGE_SIZE, queuedTotal)} of {queuedTotal}
+                  </span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const prevPage = Math.max(0, queuedPage - 1);
+                        setQueuedPage(prevPage);
+                        queuedPageRef.current = prevPage;
+                        fetchExecutions(false, awaitingPage, prevPage);
+                      }}
+                      disabled={queuedPage === 0 || loading}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      Previous
+                    </button>
+                    <span>
+                      Page {queuedPage + 1} of {Math.max(1, Math.ceil(queuedTotal / PAGE_SIZE))}
+                    </span>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const nextPage = queuedPage + 1;
+                        setQueuedPage(nextPage);
+                        queuedPageRef.current = nextPage;
+                        fetchExecutions(false, awaitingPage, nextPage);
+                      }}
+                      disabled={(queuedPage + 1) * PAGE_SIZE >= queuedTotal || loading}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* SECTION 3: Recent Execution Outcomes (if any active or recently finished) */}
+          {/* SECTION 3: Authoritative Dispatch Outcomes */}
           {Object.keys(dispatchResults).length > 0 && (
             <div>
               <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>

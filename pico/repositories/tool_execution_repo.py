@@ -215,7 +215,11 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
     ) -> list[ToolExecution]:
         stmt = select(ToolExecution)
         if status is not None:
-            stmt = stmt.where(ToolExecution.status == status)
+            if "," in status:
+                statuses = [s.strip() for s in status.split(",") if s.strip()]
+                stmt = stmt.where(ToolExecution.status.in_(statuses))
+            else:
+                stmt = stmt.where(ToolExecution.status == status)
         if capability_id is not None:
             stmt = stmt.where(ToolExecution.capability_id == capability_id)
         if task_id is not None:
@@ -229,5 +233,9 @@ class ToolExecutionRepository(BaseRepository[ToolExecution]):
     def count(self, status: str | None = None) -> int:
         stmt = select(func.count()).select_from(ToolExecution)
         if status is not None:
-            stmt = stmt.where(ToolExecution.status == status)
+            if "," in status:
+                statuses = [s.strip() for s in status.split(",") if s.strip()]
+                stmt = stmt.where(ToolExecution.status.in_(statuses))
+            else:
+                stmt = stmt.where(ToolExecution.status == status)
         return self.db.execute(stmt).scalar_one()

@@ -22,6 +22,33 @@ router = APIRouter(prefix="/api/operator", tags=["Operator Session"])
 COOKIE_NAME = "pico_operator_session"
 
 
+def constant_time_token_match(supplied_token: str | None, configured_secret: str | None) -> bool:
+    """Safely compare a supplied token against a configured secret in constant time.
+
+    Requirements:
+    - Compare bytes using secrets.compare_digest() over UTF-8 encoded bytes.
+    - Fails closed on None, empty, whitespace-only, non-string, or malformed credentials.
+    - Never raises TypeError on non-ASCII input.
+    - Never uses equality as a fallback.
+    - Never logs or exposes the supplied token or configured secret.
+    """
+    if not supplied_token or not configured_secret:
+        return False
+    if not isinstance(supplied_token, str) or not isinstance(configured_secret, str):
+        return False
+    clean_supplied = supplied_token.strip()
+    clean_secret = configured_secret.strip()
+    if not clean_supplied or not clean_secret:
+        return False
+    try:
+        return secrets.compare_digest(
+            clean_supplied.encode("utf-8"),
+            clean_secret.encode("utf-8"),
+        )
+    except Exception:
+        return False
+
+
 def is_loopback_client(request: Request) -> bool:
     """Determine whether the direct TCP connection originates from local loopback.
 
@@ -115,10 +142,8 @@ def get_authorization_context(
             is_loopback=True,
         )
 
-    # 2. Remote or headless approval token
-    configured_secret = (settings.APPROVAL_SECRET_TOKEN or "").strip()
-    clean_token = (x_approval_token or "").strip()
-    if configured_secret and clean_token and secrets.compare_digest(clean_token, configured_secret):
+    # 2. Remote or headless approval token (constant-time bytes comparison)
+    if constant_time_token_match(x_approval_token, settings.APPROVAL_SECRET_TOKEN):
         return AuthorizationContext(
             is_authorized=True,
             principal="authenticated_token_holder",
