@@ -1478,3 +1478,29 @@ Local-first desktop operator authentication and consequential action approval bo
 The following endpoints are strictly planned and not active:
 
 - `GET /api/evaluations/reports` — Evaluation harness metrics and test suite results (Phase 3)
+
+---
+
+### 2.14 Consequential Tool Execution & Operator Authorization (Milestone P10.3.2)
+
+Under Policy A (Paired Local Operator Authorization), all consequential tool execution mutations and execution history reads enforce a unified authorization model:
+
+1. **Authorization Credentials**:
+   - **Local Loopback Client**: Valid `pico_operator_session` HttpOnly cookie plus `X-CSRF-Token` header matching the session-bound CSRF token for mutating requests (`POST`, `PUT`, `DELETE`), validated strictly on genuine loopback connections (`127.0.0.1`, `::1`). Non-loopback clients presenting this cookie are strictly rejected fail-closed.
+   - **Remote/Headless API Client**: Valid `X-Pico-Approval-Token` header matching server-side `APPROVAL_SECRET_TOKEN` via constant-time comparison (`hmac.compare_digest`).
+   - **Unauthenticated / Model Callers**: Strictly rejected with HTTP 401 or 403. Model-generated proposals never authorize execution.
+
+2. **Endpoints & Authorization Rules**:
+   - `POST /api/tools/executions`: Submit tool execution. Non-consequential executions run immediately if `execute_now=true`. Consequential capabilities (`consequential=True`) require authorization context for immediate execution or elevated scopes; without authorization, consequential submissions initialize in `awaiting_approval`.
+   - `POST /api/tools/executions/{id}/approve`: Explicit human approval. Requires local paired session on loopback or remote approval token. Transitions execution to `queued` with triple-digest binding. Authoritative approver identity is derived on the server (`local_operator` or `authenticated_token_holder`). Approval does NOT dispatch execution.
+   - `POST /api/tools/executions/{id}/execute`: Explicit execution dispatch. Requires local paired session on loopback or remote approval token. Claims the execution atomically via compare-and-set (`running`), checks preconditions, executes sandboxed capability, performs independent post-action verification, and records immutable event ledger trace.
+   - `POST /api/tools/executions/{id}/cancel`: Cancel queued or awaiting-approval execution. Requires authorization for consequential executions.
+   - `GET /api/tools/executions`: List executions. Requires history authorization (paired loopback session or remote approval token).
+   - `GET /api/tools/executions/{id}`: Inspect execution by ID. Requires history authorization.
+   - `GET /api/tools/executions/{id}/events`: Audit event trace for execution. Requires history authorization.
+   - `POST /api/homeassistant/*/propose`: Dedicated proposal endpoints accept paired local operator sessions on loopback without requiring `X-Pico-Approval-Token`.
+   - `GET /api/homeassistant/*/execution/{id}`: Execution status queries require history authorization.
+
+3. **Mandatory Physical Actuation Configuration Gate**:
+   - `APPROVAL_SECRET_TOKEN` must be configured (non-None, non-empty, non-whitespace) on the PICO server before any Home Assistant physical actuation (`homeassistant.test_light_actuate`, `homeassistant.allowlisted_switch_actuate`, `homeassistant.allowlisted_climate_setpoint_actuate`, `homeassistant.allowlisted_climate_dual_setpoint_actuate`) can be dispatched.
+   - Enforced at both precondition checks and the capability execution boundary in `ToolExecutionEngine.execute()`. Paired local operator sessions do NOT waive this requirement.
