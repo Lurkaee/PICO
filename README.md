@@ -1,12 +1,12 @@
 <div align="center">
-  <img src="assets/brand/pico-logo.jpg" alt="PICO — Local-first Personal Intelligence" width="680" />
+  <img src="assets/brand/pico-logo.jpg" alt="PICO — Local-first Personal Intelligence" width="400" />
   <p><strong>A personal intelligence system built around your machine, your data, and your control.</strong></p>
   <p>
-    <a href="#-what-is-pico">Overview</a> ·
-    <a href="#-quickstart">Quickstart</a> ·
-    <a href="#-capabilities">Capabilities</a> ·
-    <a href="#-security-by-design">Security</a> ·
-    <a href="#-documentation">Documentation</a>
+    <a href="#what-is-pico">Overview</a> ·
+    <a href="#quickstart">Quickstart</a> ·
+    <a href="#capabilities">Capabilities</a> ·
+    <a href="#security-by-design">Security</a> ·
+    <a href="#documentation">Documentation</a>
   </p>
 </div>
 
@@ -139,9 +139,44 @@ The CLI prints a one-time six-digit challenge. Enter it in the desktop UI's pair
 - Successful pairing establishes an <code>HttpOnly; SameSite=Strict</code> session cookie and a separate CSRF token.
 - Unpaired users retain read-only access to safe views; consequential actions remain locked.
 
+<details>
+<summary><strong>Operator authorization states</strong></summary>
+
+The desktop UI distinguishes these states instead of treating every session as simply signed in or signed out:
+
+1. **Unpaired / Read-only:** safe views remain available; consequential approval controls stay locked.
+2. **Pairing required:** consequential proposals wait in <code>awaiting_approval</code> until the local operator completes CLI pairing.
+3. **Authenticated operator session:** a verified local operator can review and approve consequential actions bound to their canonical input digest.
+4. **Expired or revoked session:** approval controls lock again until a new pairing ceremony succeeds.
+5. **Unauthorized action:** a request without the required capability permission fails closed, with no side effect.
+6. **Authorized pending approval:** an eligible consequential step remains paused until the human operator explicitly approves it.
+
+</details>
+
 ## Model providers
 
 PICO uses a provider-agnostic model gateway. The default **mock** provider is deterministic and offline, making it useful for development without a model runtime. **Mock mode is not an LLM.**
+
+<details>
+<summary><strong>Exercise streaming chat with the offline mock provider</strong></summary>
+
+The default <code>mock</code> provider is useful for checking the conversation and streaming API without Ollama, credentials, or cloud access. It returns deterministic development responses; it is not a local language model.
+
+With the backend running, execute this from PowerShell:
+
+`§§powershell
+$conv = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/conversations" -Method Post -ContentType "application/json" -Body '{"title": "Demo Thread"}'
+
+$body = @{
+    conversation_id = $conv.id
+    message = "Explain PICO local persistence."
+    data_classification = "INTERNAL"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/chat/stream" -Method Post -ContentType "application/json" -Body $body
+§§§
+
+</details>
 
 ### Use local Ollama
 
@@ -231,6 +266,35 @@ Relevant configuration includes:
 - <code>HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED</code>
 - <code>APPROVAL_SECRET_TOKEN</code>
 
+
+
+**API surface**
+
+| Scope | Endpoint | Purpose |
+|---|---|---|
+| Read-only | <code>GET /api/homeassistant/status</code> | Integration health and connection status |
+| Read-only | <code>GET /api/homeassistant/entities</code> | Bounded entity discovery |
+| Read-only | <code>GET /api/homeassistant/entities/{entity_id}</code> | Inspect one entity |
+| Read-only | <code>GET /api/homeassistant/overview</code> | Bounded home overview |
+| Test light | <code>POST /api/homeassistant/actuation/plan</code> | Read-only actuation plan |
+| Test light | <code>POST /api/homeassistant/actuation/propose</code> | Propose an allowlisted light operation |
+| Test light | <code>GET /api/homeassistant/actuation/readiness</code> | Readiness inspection |
+| Test light | <code>GET /api/homeassistant/actuation/{execution_id}</code> | Inspect execution and verification |
+| Switch | <code>POST /api/homeassistant/switch/plan</code> | Plan a switch operation without mutation |
+| Switch | <code>POST /api/homeassistant/switch/propose</code> | Propose an allowlisted switch operation |
+| Switch | <code>GET /api/homeassistant/switch/readiness</code> / <code>GET /api/homeassistant/switch/{execution_id}</code> | Readiness and execution inspection |
+| Climate | <code>POST /api/homeassistant/climate/plan</code> | Plan a single-setpoint operation without mutation |
+| Climate | <code>GET /api/homeassistant/climate/observe/{entity_id}</code> / <code>GET /api/homeassistant/climate/readiness</code> | Observe an entity and inspect readiness |
+| Climate | <code>POST /api/homeassistant/climate/propose</code> | Propose a single-setpoint temperature operation |
+| Climate | <code>GET /api/homeassistant/climate/execution/{execution_id}</code> | Inspect single-setpoint execution |
+| Dual-setpoint climate | <code>POST /api/homeassistant/climate/dual-setpoint/plan</code> | Plan a dual-setpoint operation without mutation |
+| Dual-setpoint climate | <code>POST /api/homeassistant/climate/dual-setpoint/propose</code> | Propose a dual-setpoint temperature operation |
+| Dual-setpoint climate | <code>GET /api/homeassistant/climate/dual-setpoint/execution/{execution_id}</code> | Inspect dual-setpoint execution |
+
+The WebSocket command allowlist remains read-only: <code>get_states</code>, <code>get_config</code>, and <code>ping</code>. Readiness can also be inspected locally with <code>python -m pico.homeassistant.readiness</code>, adding <code>--switch</code> or <code>--climate</code> for those domains.
+
+Local loopback proposals can use the verified paired operator session. Remote/headless privileged calls use the approved token path. All consequential operations remain subject to the server-side configuration gates and capability permissions.
+
 Readiness checks are available before enabling live operations. See [docs/implementation-plan.md](docs/implementation-plan.md) for the exact P7 scope and verification history.
 
 </details>
@@ -269,6 +333,23 @@ PICO's offline behavior is designed to fail honestly and avoid duplicate side ef
 - Interrupted streams and ambiguous mutations are marked as interrupted or **Outcome unknown**. PICO does not blindly retry them.
 - The UI distinguishes backend connectivity from local inference health and revalidates the operator session after reconnection.
 
+<details>
+<summary><strong>Offline behavior and recovery checks</strong></summary>
+
+The offline shell is deliberately narrow: the service worker caches the application shell (<code>/</code>, <code>/index.html</code>) and approved static build assets (<code>/assets/*</code>) only. It does not persist private conversations, messages or drafts, memory records, tool inputs/results, pairing material, cookies, CSRF tokens, approval tickets, or workflow state. Dynamic API requests remain network-only.
+
+When a message cannot be sent, the UI may retain up to 25 unsent drafts in active memory. They can be reviewed, edited, discarded, or explicitly sent after recovery. They are not written to browser storage and disappear when the page is refreshed or closed. Reconnection never auto-submits drafts.
+
+Interrupted streams display <code>[Response stream interrupted]</code>. Ambiguous mutations—such as approvals, execution dispatch, workflow advances, compensations, memory-forget requests, and audio-session operations—are marked <strong>Outcome unknown</strong> and are not blindly retried. The UI reconciles against authoritative server state before unlocking the affected control. On recovery it revalidates the local operator session through <code>GET /api/operator/status</code>.
+
+Useful manual checks:
+
+- Stop the backend while the frontend is open: the UI should show backend disconnection, preserve the current in-memory view, and lock consequential controls.
+- Keep the backend running but stop Ollama: the UI should report inference as degraded/unavailable rather than claiming the whole backend is offline.
+- Restore connectivity: drafts should remain explicit user actions; consequential controls should stay locked until the operator session is revalidated.
+
+</details>
+
 ## Benchmarks and runtime tools
 
 ### Local model benchmarks
@@ -291,6 +372,12 @@ Mock benchmarking checks runner behavior and report generation only. It must not
 
 Reports are written to <code>bench_reports/</code> as timestamped Markdown summaries and machine-readable JSON logs.
 
+Benchmark output is stored under <code>bench_reports/</code> with unique UTC timestamps:
+- Markdown summaries include medians, ranges, memory telemetry, and quality-gate evaluations.
+- JSON reports retain machine-readable per-run measurements for inspection.
+
+
+
 <details>
 <summary><strong>PowerShell safety and verification scripts</strong></summary>
 
@@ -306,6 +393,12 @@ Checks Ollama availability, installed model presence, system RAM, and dedicated 
 # Starts Ollama only when explicitly requested; does not download models
 .\scripts\pico-preflight.ps1 -StartOllama
 ```
+
+
+
+The preflight script probes the Ollama CLI and local API, checks whether the selected model is already installed, and reports system RAM and dedicated GPU VRAM (when <code>nvidia-smi</code> is available). It returns exit code <code>0</code> for <code>PASS</code> and <code>2</code> for <code>BLOCKED</code>. <code>-StartOllama</code> is an explicit opt-in to start the local service; it does not download models.
+
+The verification script compiles <code>pico</code>, <code>tests</code>, and <code>tools</code>, runs <code>git diff --check</code>, and executes the backend tests. Use <code>-SkipTests</code> for the faster compile/whitespace checks only.
 
 **Development verification — <code>scripts/pico-verify.ps1</code>**
 
