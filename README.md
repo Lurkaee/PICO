@@ -426,7 +426,7 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
   - Dedicated capability `homeassistant.test_light_actuate` with risk tier `HIGH` and `consequential=True`.
 - **Fail-Closed Physical Actuation Guardrails**:
   - **Single Entity & Actions**: Only controls `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID` with `turn_on` or `turn_off`. Any other entity or action fails closed.
-  - **Server-Side Token Authentication**: Physical proposal, approval, and execution require `X-Pico-Approval-Token` matching server `APPROVAL_SECRET_TOKEN`. Loopback callers are NOT exempt.
+  - **Policy A Authorization & Dispatch Gate**: Proposal and approval require valid Policy A authorization (paired local operator session or `X-Pico-Approval-Token`). Physical dispatch additionally requires a non-empty server-side `APPROVAL_SECRET_TOKEN`; a paired loopback session does not waive this configuration gate.
   - **Dedicated Permission**: Requires `homeassistant:actuate`, strictly excluded from generic default tool permissions.
   - **Triple-Digest Integrity**: Persisted input recomputed SHA-256 == stored execution digest == approval bound digest verified immediately before mutation dispatch.
   - **Single-Use Replay Protection**: Approvals are single-use; duplicate or replayed dispatches fail closed with `AuthorizationError`.
