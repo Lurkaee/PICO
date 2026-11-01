@@ -1,404 +1,379 @@
-# PICO — Personal Intelligence Coordinator & Operator
-
-PICO is a local-first, multi-model personal intelligence system engineered for verifiable persistence, private context compilation, transparent multi-model routing, and safe tool execution.
-
----
-
-## Architecture & Documentation
-
-- [AGENTS.md](AGENTS.md) — Non-negotiable operating rules, hardware constraints, and engineering principles.
-- [docs/architecture.md](docs/architecture.md) — System architecture, subsystem boundaries, and request lifecycle data flow.
-- [docs/data-model.md](docs/data-model.md) — Relational persistence models, SQLite WAL configuration, and schema evolution.
-- [docs/api-contract.md](docs/api-contract.md) — REST API endpoints, schemas, validation, and error envelopes.
-- [docs/security-and-risk-register.md](docs/security-and-risk-register.md) — Threat modeling, local trust boundaries, and risk mitigations.
-- [docs/implementation-plan.md](docs/implementation-plan.md) — Phased delivery plan and completion statuses.
-- [docs/evaluation/README.md](docs/evaluation/README.md) — Evaluation framework and representative test case specifications.
-- [docs/model-gateway-design.md](docs/model-gateway-design.md) — Per-step model router, profiles, and data classification policies.
+<div align="center">
+  <img src="assets/brand/pico-logo.jpg" alt="PICO — Local-first Personal Intelligence" width="680" />
+  <p><strong>A personal intelligence system built around your machine, your data, and your control.</strong></p>
+  <p>
+    <a href="#-what-is-pico">Overview</a> ·
+    <a href="#-quickstart">Quickstart</a> ·
+    <a href="#-capabilities">Capabilities</a> ·
+    <a href="#-security-by-design">Security</a> ·
+    <a href="#-documentation">Documentation</a>
+  </p>
+</div>
 
 ---
 
-## Local Setup & Quickstart (Windows PowerShell)
+## What is PICO?
 
-### 1. Prerequisites
-- Python 3.12+ (CI matrix: Python 3.12, 3.13, 3.14; locally verified: Python 3.14.7 on Windows 11; remote CI execution unverified as no Git remote is configured)
-- Windows PowerShell
+**PICO (Personal Intelligence Coordinator & Operator)** is a local-first, privacy-first personal intelligence system. It coordinates specialized components for perception, memory, model routing, computer control, home automation, and multi-step workflows.
 
-### 2. Environment Activation & Dependencies
-```powershell
-# Create virtual environment (if not already created)
-python -m venv .venv
+PICO is **not one all-knowing model with unrestricted access**. It is an orchestrated system: models reason, deterministic services enforce policy, tools operate within explicit boundaries, and independent verification checks what actually happened.
 
-# Activate virtual environment
-.\.venv\Scripts\Activate.ps1
+> **The guiding idea:** keep private context and core control local; make every consequential action bounded, reviewable, and verifiable.
 
-# Install pinned dependencies
-pip install -r requirements.txt
-```
+**Current foundation:** Python 3.12+ · FastAPI · SQLite · React · TypeScript · Vite · Ollama
 
-### 3. Database Migrations & Seeding
-```powershell
-# Apply Alembic schema migrations (conversations, messages, projects, tasks, routing_decisions)
-alembic upgrade head
+The canonical milestone tracker is [docs/implementation-plan.md](docs/implementation-plan.md). It records what is implemented, verified, in progress, and still planned.
 
-# (Optional) Seed deterministic local development data
-python -m pico.db.seed
-```
+## Capabilities
 
-### 4. Run Backend Server
-```powershell
-uvicorn pico.main:app --host 127.0.0.1 --port 8000 --reload
-```
-Once running:
-- **Interactive OpenAPI Documentation**: `http://127.0.0.1:8000/docs`
-- **Health Check**: `http://127.0.0.1:8000/health`
-- **Desktop Web UI** (when built): `http://127.0.0.1:8000/`
+| Area | What is in the codebase |
+|---|---|
+| **Context & memory** | A privacy-aware context compiler, persistent conversations and tasks, and working, episodic, semantic, and procedural memory with provenance and controlled approval. |
+| **Model routing** | A provider-agnostic gateway with per-step routing, local Ollama support, a deterministic offline mock provider, and a strict cloud boundary. |
+| **Perception** | Push-to-talk audio, on-demand visual inspection, motion-event detection, and normalized environmental/sensor events. |
+| **Computer control** | Bounded Windows application/window automation, staged filesystem changes, and isolated browser inspection. |
+| **Home automation** | Home Assistant awareness plus narrowly allowlisted light, switch, and climate operations with explicit approvals and post-action verification. |
+| **Workflow coordination** | Persistent task graphs, logical worker roles, single-model resource scheduling, independent output verification, and controlled compensation. |
+| **Desktop experience** | A local web interface for streaming chat, push-to-talk voice, memory, workflows, approvals, and system status. |
 
----
+### Important capability boundaries
 
-## Desktop Web Experience (Phase 10.1)
+- The current voice interface is **push-to-talk**. It is not an always-listening wake-word assistant.
+- The desktop experience is a **local web UI** served by the FastAPI backend; it is not yet a packaged native Windows desktop application.
+- Browser automation is intentionally bounded and isolated. It is not unrestricted control of every website or browser session.
+- Local inference can work without a cloud model, but internet-backed services (for example, YouTube) still require an internet connection.
+- Smart-home actuation is disabled by default and limited to the operations explicitly configured by the operator.
 
-PICO ships a polished local-first desktop UI in the `frontend/` directory. It connects directly to the FastAPI backend and exposes streaming chat, workflow timelines, memory inspection, approval handling, and system status in one command-centre interface.
+## Quickstart
+
+The primary development target is **Windows 11 with PowerShell**.
 
 ### Prerequisites
 
-- **Node.js** 22+ (22 LTS recommended)
-- **pnpm** 10+ (`npm install -g pnpm` or `winget install pnpm`)
+- Python 3.12 or newer
+- Windows PowerShell
+- Optional frontend: Node.js 22+ and pnpm 10+
 
-### Development mode (hot-reload, proxied to backend)
+### 1. Create the environment and install dependencies
+
+From the repository root:
 
 ```powershell
-# Start the FastAPI backend first (see above)
-uvicorn pico.main:app --host 127.0.0.1 --port 8000 --reload
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-# In a second terminal — install and start the dev server
+Create a local environment file from the template when you need to override defaults:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Review <code>.env.example</code> before adding credentials. Never commit <code>.env</code> or real secrets.
+
+### 2. Prepare the database
+
+```powershell
+alembic upgrade head
+
+# Optional: seed deterministic local development data
+python -m pico.db.seed
+```
+
+### 3. Start the backend
+
+```powershell
+uvicorn pico.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+When the server is running:
+
+| URL | Purpose |
+|---|---|
+| [http://127.0.0.1:8000/](http://127.0.0.1:8000/) | Local desktop interface, when the frontend has been built |
+| [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) | Interactive API documentation |
+| [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) | Backend health check |
+
+## Desktop experience
+
+PICO's frontend lives in <code>frontend/</code>. It connects to the local FastAPI backend and brings the primary interaction surfaces together: streaming chat, push-to-talk voice, workflow timelines, memory inspection, approvals, and system status.
+
+### Run the frontend in development mode
+
+Keep the backend running in one terminal. In a second PowerShell terminal:
+
+```powershell
 cd frontend
 pnpm install
 pnpm run dev
-# Opens http://localhost:5173 with proxy to http://127.0.0.1:8000
 ```
 
-### Production build (served directly by FastAPI)
+Vite serves the UI at <code>http://localhost:5173</code> and proxies API requests to <code>http://127.0.0.1:8000</code>.
+
+### Build the frontend for local serving
 
 ```powershell
 cd frontend
-pnpm run build          # Outputs to frontend/dist/
-# FastAPI auto-serves frontend/dist when dist/assets/ exists
+pnpm run build
+cd ..
 uvicorn pico.main:app --host 127.0.0.1 --port 8000
-# Now visit http://127.0.0.1:8000/
 ```
 
-### Frontend test suite
+FastAPI serves <code>frontend/dist/</code> when the production assets are present.
+
+### Pair a local operator
+
+Consequential approvals and privileged operations require a verified operator session. Pairing is initiated by the trusted local CLI—not by the browser.
 
 ```powershell
-cd frontend
-pnpm run test           # Vitest — all 125 frontend tests
-pnpm run typecheck      # TypeScript strict type check
-```
-
-### Local operator pairing (for consequential approvals)
-
-Consequential tool-execution approvals and privileged workflow operations require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is ever transmitted to the browser.
-
-```powershell
-# In a separate terminal with the backend running, generate a single-use 6-digit challenge:
 python -m pico.cli.pair
-
-# Output:
-# ============================================================
-# PICO Local Operator Pairing
-# ============================================================
-# Pairing Code: 482910
-# Expires in:   300 seconds
-# ============================================================
 ```
 
-Enter the 6-digit code shown into the desktop UI's pairing modal.
-- Challenges are persisted in the local SQLite store (`operator_pairing_challenges`), bridging CLI and backend processes.
-- Codes are single-use, hashed with salt, expire in 300 seconds, and lock out after 5 consecutive failed attempts.
-- Browser-side code minting (`POST /api/operator/pairing-code`) is completely removed to maintain a strict local-operator trust boundary.
-- The approved identity (`local_operator`) is bound to the challenge at CLI generation; caller-supplied approver values cannot override it.
-- Upon successful verification, the backend issues an `HttpOnly; SameSite=Strict` session cookie (`pico_operator_session`) and returns a separate CSRF token in JSON.
+The CLI prints a one-time six-digit challenge. Enter it in the desktop UI's pairing dialog.
 
-#### UI Authorization & Operator States
-The PICO desktop interface accurately distinguishes six operator and action states:
-1. **Unpaired / Read-Only**: The desktop interface can inspect conversation history, view active workflows, search memories, and execute safe non-consequential tools.
-2. **Pairing Required**: Consequential action proposals halt in `awaiting_approval`; approval buttons in the Approval Inbox are locked until an operator pairs via the CLI.
-3. **Authenticated Operator Session**: A verified operator session exists. Consequential actions can be reviewed and approved by the human operator using the cryptographic digest.
-4. **Expired or Revoked Session**: The session has passed its expiration window or was explicitly revoked via logout; approval actions re-lock until a new CLI code is paired.
-5. **Unauthorized Action**: A client or workflow step requested a privileged capability without possessing the required capability permissions; execution fails closed with zero side effects.
-6. **Authorized Pending Approval**: A consequential capability step is authorized to run once approved by the human operator, bound to the SHA-256 canonical input digest.
+- Challenges are stored in SQLite, single-use, salt-hashed, and expire after 300 seconds.
+- Five consecutive failed attempts trigger lockout.
+- The browser never receives <code>APPROVAL_SECRET_TOKEN</code>.
+- Successful pairing establishes an <code>HttpOnly; SameSite=Strict</code> session cookie and a separate CSRF token.
+- Unpaired users retain read-only access to safe views; consequential actions remain locked.
 
-### Offline Resilience & Safe Recovery (Phase 10.2)
+## Model providers
 
-PICO features an offline-resilient desktop shell and safe recovery architecture engineered to withstand backend disconnections, inference/model failures, and interrupted streams without leaking private data or causing duplicate side effects.
+PICO uses a provider-agnostic model gateway. The default **mock** provider is deterministic and offline, making it useful for development without a model runtime. **Mock mode is not an LLM.**
 
-#### 1. Application Shell & Caching Architecture
-- **Offline Shell**: The service worker (`sw.js`) caches only the static application shell (`/`, `/index.html`) and immutable build bundles (`/assets/*`), allowing the UI to reopen when the backend is offline.
-- **Strict Data Exclusion**: In adherence to PICO's local-first privacy rules, the service worker and browser persistent storage (`localStorage`, `sessionStorage`, `IndexedDB`) strictly **never** cache:
-  - Private conversations, messages, or drafts
-  - Semantic/episodic memory records
-  - Tool execution inputs, logs, or results
-  - Operator pairing tokens, session cookies, or CSRF tokens
-  - Approval tickets or workflow state
-- **Network-Only API Transport**: All `/api/*` and dynamic endpoints bypass the service worker cache entirely. Failed API calls return genuine network errors rather than falling back to SPA HTML.
-- **Zero Mutating Interception**: The service worker never intercepts, queues, or replays `POST`, `PUT`, or `DELETE` requests.
+### Use local Ollama
 
-#### 2. In-Memory Draft Outbox (Zero Auto-Submit)
-- **Draft Outbox**: If a message cannot be dispatched due to backend unavailability or conversation creation failure, it is preserved in an in-memory draft queue (bounded to 25 items).
-- **Explicit Dispatch Only**: Drafts are **never automatically transmitted** upon reconnection. Users can review, edit, discard, or explicitly send pending drafts once connectivity is restored.
-- **Ephemeral Lifecycle**: Drafts reside strictly in active application memory; refreshing or closing the browser window discards them, preventing unencrypted persistence of sensitive drafts on disk.
-
-#### 3. Ambiguous Outcomes & Zero Auto-Replay
-- **Interrupted Chat Streams**: SSE streams cut short by network interruption or backend failure are visibly tagged as `[Response stream interrupted]` and marked with an ambiguous outcome notice. They are never marked as completed, and chat requests are never automatically retried.
-- **Consequential Mutations**: Approvals, tool execution submissions, workflow advances, compensations, memory forget requests, and audio session operations with ambiguous network outcomes are marked **"Outcome unknown"**. The UI never performs blind retries.
-- **Truthful Reconciliation**: Upon reconnection, users inspect actual server state and choose whether to re-dispatch or cancel.
-
-#### 4. Operator Session Revalidation on Reconnect
-- When the backend recovers from an offline state, the frontend immediately revalidates the operator session against `GET /api/operator/status`.
-- Consequential approval controls remain locked in `pairing_required` until the backend confirms that the session cookie and CSRF token remain valid.
-
-#### 5. Local Testing of Offline & Degraded Scenarios
-- **Backend Disconnection**: Stop the FastAPI backend (`Ctrl+C` in the backend terminal). The UI displays a calm offline banner with the time since the last successful check, retains current in-memory views labeled with a stale badge, preserves drafts, and locks consequential controls.
-- **Model/Provider Failure**: If Ollama is stopped or the model is missing while the backend is online, the UI enters a `Degraded` state. The system accurately reports backend reachability while flagging inference as unavailable, avoiding misleading full-system "offline" alerts.
-- **Frontend Test Suite**: Run `pnpm run test` in `frontend/` to execute all 125 unit and integration tests (including connectivity manager, context outbox, offline shell, approvals, and resilience tests).
-
----
-
-
-## Model Providers & Streaming Chat (Phase 1, Slice 2)
-
-PICO features a provider-agnostic model gateway with per-step deterministic routing.
-
-### 1. Exercise Streaming Chat with Development Mock (Default)
-The system defaults to a deterministic, offline `mock` provider that requires no external runtimes or credentials:
+PICO does not download models automatically. Install Ollama and pull a model yourself, then select it:
 
 ```powershell
-# In PowerShell: create a conversation and invoke streaming chat
-$conv = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/conversations" -Method Post -ContentType "application/json" -Body '{"title": "Demo Thread"}'
-
-$body = @{
-    conversation_id = $conv.id
-    message = "Explain PICO local persistence."
-    data_classification = "INTERNAL"
-} | ConvertTo-Json
-
-# Send request to streaming endpoint
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/chat/stream" -Method Post -ContentType "application/json" -Body $body
-```
-
-### 2. Check and Use Local Ollama
-To switch to local Ollama inference:
-
-```powershell
-# 1. Verify Ollama is running on localhost
+# Check the local Ollama service and installed models
 curl.exe -s http://127.0.0.1:11434/api/tags
+ollama list
 
-# 2. Verify that qwen3.5:2b is already installed (PICO never downloads models automatically)
-# If missing, pull manually outside PICO:
-# ollama pull qwen3.5:2b
+# Pull manually only if the model is not already installed
+ollama pull qwen3.5:2b
 
-# 3. Configure PICO to use Ollama by setting DEFAULT_PROVIDER in .env or PowerShell session
+# Select local inference for this PowerShell session
 $env:DEFAULT_PROVIDER = "ollama"
 $env:OLLAMA_MODEL = "qwen3.5:2b"
 ```
 
-### 3. Explicit Cloud Opt-In
-Cloud inference is strictly disabled by default. Private and secret data never leaves the machine. To explicitly enable cloud inference for `PUBLIC` data:
+### Enable cloud inference only by explicit choice
+
+Cloud inference is disabled by default. When explicitly enabled, **only <code>PUBLIC</code> context may leave the machine**.
 
 ```powershell
-# Enable cloud access in .env or session
 $env:CLOUD_ENABLED = "true"
 $env:CLOUD_BASE_URL = "https://api.openai.com/v1"
 $env:CLOUD_MODEL = "gpt-4o-mini"
-$env:CLOUD_API_KEY = "sk-..."  # Your private API key
+$env:CLOUD_API_KEY = "replace-with-your-key"
 ```
 
-> [!IMPORTANT]
-> Any prompt marked `INTERNAL`, `SENSITIVE`, or `SECRET` will remain pinned to local inference even if cloud is enabled.
+The effective classification of assembled context follows the highest-sensitivity contributing content. <code>INTERNAL</code>, <code>SENSITIVE</code>, <code>SECRET</code>, and missing or unknown classifications stay pinned to local inference—even when cloud access is enabled.
 
----
+## Capabilities in more detail
 
-## Local Hardware Benchmarking (`tools/bench/`)
+<details>
+<summary><strong>Perception: voice, vision, motion, and sensors</strong></summary>
 
-PICO includes a local benchmark runner to measure model readiness and system resource consumption (TTFT, tokens/sec, RAM, GPU VRAM) under the Windows target hardware baseline.
+- **Audio:** explicit push-to-talk capture with provider-neutral speech-to-text and text-to-speech adapters, including local adapters. Capture state is observable; temporary PCM buffers are disposed promptly.
+- **Vision:** on-demand frame ingestion requires explicit user consent. Payload size and image dimensions are bounded, and transient frame buffers are released.
+- **Motion:** a layered adapter supports PIR presence events, deterministic CPU frame-difference analysis, and cross-modal event correlation.
+- **Environmental events:** modalities share a normalized perception-event contract with validation, per-sensor deduplication, cooldowns, and read-only boundaries.
 
-### 1. Check Ollama Availability & Installed Models
-Before running a live benchmark, verify that Ollama is running and inspect locally available models without initiating downloads:
+Microphone and camera capture are not silently activated. See [docs/architecture.md](docs/architecture.md) and the perception modules under <code>pico/perception/</code>.
+
+</details>
+
+<details>
+<summary><strong>Computer and workspace control</strong></summary>
+
+PICO's computer-control layer is provider-neutral and deliberately constrained:
+
+- **Windows/application automation:** bounded window inspection and server-configured application allowlists. Launches are consequential, require approval, use direct argument lists rather than shell execution, and do not retry automatically.
+- **Filesystem operations:** stage and inspect text diffs before applying them or rolling them back. Paths must remain inside configured roots; writes are digest-bound to approval and independently verified. Windows mutations use handle-bound operations to resist path and file-identity races.
+- **Browser inspection:** optional Playwright support with an empty-by-default origin allowlist, isolated ephemeral contexts, SSRF protections, bounded observations, and no persistence of browser credentials or sessions.
+
+These capabilities are not a general-purpose remote-control backdoor. See [docs/security-and-risk-register.md](docs/security-and-risk-register.md) for the trust boundaries.
+
+</details>
+
+<details>
+<summary><strong>Home Assistant and physical-world controls</strong></summary>
+
+PICO integrates with Home Assistant through authenticated REST and a pure-Python WebSocket client.
+
+**Read-only awareness**
+- <code>GET /api/homeassistant/status</code>
+- <code>GET /api/homeassistant/entities</code>
+- <code>GET /api/homeassistant/entities/{entity_id}</code>
+- <code>GET /api/homeassistant/overview</code>
+- WebSocket commands are restricted to <code>get_states</code>, <code>get_config</code>, and <code>ping</code>.
+
+**Verified, allowlisted operations**
+- A single configured test light may be switched on or off.
+- Explicitly allowlisted switches/plugs may be switched on or off.
+- Explicitly allowlisted climate entities support verified single-setpoint and dual-setpoint temperature operations, subject to their supported features, active HVAC mode, reported limits, units, and trusted server-configured step-grid origin.
+
+**Not supported:** arbitrary Home Assistant service calls, generic <code>toggle</code>, automatic HVAC mode changes, fan-mode changes, or preset activation.
+
+Physical actuation is disabled by default. It requires the independent configuration gates, exact entity allowlists, the server-side approval secret, the appropriate permission, a single-use human approval, digest checks immediately before dispatch, and independent read-after-write verification. Mutations are never blindly retried. PICO does not claim that a successful API response proves physical device connectivity.
+
+Relevant configuration includes:
+- <code>HOME_ASSISTANT_ENABLED</code>
+- <code>HOME_ASSISTANT_ACTUATION_ENABLED</code>
+- <code>HOME_ASSISTANT_SWITCH_ALLOWLIST</code>
+- <code>HOME_ASSISTANT_CLIMATE_ALLOWLIST</code>
+- <code>HOME_ASSISTANT_CLIMATE_GRID_ORIGINS</code>
+- <code>HOME_ASSISTANT_CLIMATE_ACTUATION_ENABLED</code>
+- <code>HOME_ASSISTANT_CLIMATE_DUAL_SETPOINT_ACTUATION_ENABLED</code>
+- <code>APPROVAL_SECRET_TOKEN</code>
+
+Readiness checks are available before enabling live operations. See [docs/implementation-plan.md](docs/implementation-plan.md) for the exact P7 scope and verification history.
+
+</details>
+
+<details>
+<summary><strong>Memory, workflows, and independent verification</strong></summary>
+
+- **Memory:** working, episodic, semantic, and procedural stores. Retrieved content carries provenance and classification; proposed facts are distinct from approved knowledge. Procedural skills have a reviewed and approved lifecycle.
+- **Workflow coordination:** persistent task graphs validate dependencies before execution and run eligible steps through the capability registry and execution engine.
+- **Scheduling:** logical worker roles share a single configured resident local model through bounded, priority-aware scheduling. Queue limits, timeouts, cancellation, and resource leases prevent uncontrolled model contention.
+- **Independent verification:** deterministic structure and execution-evidence checks gate downstream work. Model-assisted review may add semantic feedback but cannot override failed deterministic checks.
+- **Recovery:** interrupted workflows are reconciled against persisted execution records and the event ledger; consequential compensations require approval.
+
+</details>
+
+## Security by design
+
+PICO is built around explicit trust boundaries rather than convenience-first automation.
+
+| Invariant | Meaning |
+|---|---|
+| **Local-first routing** | Cloud access is opt-in; only <code>PUBLIC</code> effective context may be sent to a cloud provider. |
+| **Fail-closed permissions** | Unknown, missing, or untrusted authority does not grant access. Capabilities declare permissions, risk, schemas, and execution limits. |
+| **Human approval** | Consequential actions require a verified operator or approved token path, with approval bound to the exact input digest. |
+| **Single-use dispatch** | Atomic claims and replay protection prevent duplicate consequential dispatch. Automatic retries are disabled where they could repeat side effects. |
+| **Independent verification** | PICO checks authoritative state or output evidence before reporting success. Uncertain outcomes remain uncertain until reconciled. |
+| **Auditable execution** | Lifecycle events are recorded in an append-only event ledger with secret redaction. |
+
+### Offline and degraded operation
+
+PICO's offline behavior is designed to fail honestly and avoid duplicate side effects:
+
+- The service worker caches only the static application shell and approved build assets. API responses, private conversations, memory, execution records, pairing tokens, cookies, CSRF tokens, and approval state are not cached.
+- API requests remain network-only. The service worker never queues or replays <code>POST</code>, <code>PUT</code>, or <code>DELETE</code> requests.
+- An in-memory draft outbox can retain up to 25 unsent messages during a backend outage. Drafts are never auto-submitted after reconnection; the user must review and send them.
+- Interrupted streams and ambiguous mutations are marked as interrupted or **Outcome unknown**. PICO does not blindly retry them.
+- The UI distinguishes backend connectivity from local inference health and revalidates the operator session after reconnection.
+
+## Benchmarks and runtime tools
+
+### Local model benchmarks
+
+The benchmark runner in <code>tools/bench/</code> measures time to first token (TTFT), tokens per second, RAM, and GPU VRAM.
+
 ```powershell
-# Probe Ollama API tags endpoint
-curl.exe -s http://127.0.0.1:11434/api/tags
-
-# Or use the Ollama CLI
-ollama list
-```
-
-If Ollama is not installed or running, install it from https://ollama.ai and start it via `ollama serve`. To install the candidate model manually:
-```powershell
-ollama run qwen3.5:2b
-```
-
-### 2. Run Mock Benchmark (Offline Development Path)
-Test runner plumbing, timing calculations, and report generation without requiring Ollama or active models:
-```powershell
+# Offline plumbing/report test — not a hardware performance result
 .\.venv\Scripts\python.exe -m tools.bench.runner --mock --repetitions 3 --output-dir bench_reports
-```
-> [!NOTE]
-> A successful `--mock` test run exercises the runner tooling only and must **never** be cited as a completed hardware evaluation.
 
-### 3. Run Live Hardware Benchmark
-Once Ollama is running and `qwen3.5:2b` is installed:
-```powershell
-# Run 3 measured iterations (+ 1 warmup run)
+# Live benchmark after Ollama and the model are installed
 .\.venv\Scripts\python.exe -m tools.bench.runner --model qwen3.5:2b --repetitions 3 --output-dir bench_reports
 
-# Run with custom repetitions and context size
+# Custom context/output limits and quality gates
 .\.venv\Scripts\python.exe -m tools.bench.runner --model qwen3.5:2b --repetitions 5 --context-size 4096 --max-tokens 128
-
-# Run with quality gate thresholds (e.g. minimum 15 tok/s, max 1200ms TTFT)
 .\.venv\Scripts\python.exe -m tools.bench.runner --model qwen3.5:2b --repetitions 3 --min-tokens-per-sec 15.0 --max-ttft-ms 1200.0
 ```
 
-### 4. Reading Benchmark Reports
-Benchmark reports are saved to `bench_reports/` with unique UTC timestamps:
-- **Markdown summary**: Open `bench_reports/bench_qwen3.5_2b_<timestamp>.md` to view formatted tables with medians, min-max ranges, memory telemetry, and quality gate evaluations.
-- **Machine-readable JSON**: Open `bench_reports/bench_qwen3.5_2b_<timestamp>.json` for complete auditable per-run logs.
+Mock benchmarking checks runner behavior and report generation only. It must not be described as a completed hardware evaluation.
 
----
+Reports are written to <code>bench_reports/</code> as timestamped Markdown summaries and machine-readable JSON logs.
 
-## Safe Local Runtime Automation (PowerShell Scripts)
+<details>
+<summary><strong>PowerShell safety and verification scripts</strong></summary>
 
-PICO provides safe, repeatable PowerShell automation scripts under `scripts/` to validate local runtimes, inspect host hardware, run development verification checks, and execute benchmarks with strict safety invariants (no automatic downloads, no silent cloud routing, and strictly opt-in service startup).
+**Runtime preflight — <code>scripts/pico-preflight.ps1</code>**
 
-### 1. Local Runtime Preflight (`scripts/pico-preflight.ps1`)
-
-Verifies that local prerequisites are met prior to running live inference:
-- Probes for the Ollama CLI on PATH and default Windows install paths (`$env:LOCALAPPDATA\Programs\Ollama`).
-- Checks if the Ollama local API at `http://127.0.0.1:11434` is actively listening.
-- Verifies if the candidate model (`qwen3.5:2b` by default) has been pulled locally.
-- Inspects and reports system RAM and dedicated GPU VRAM (via `nvidia-smi`).
-- Emits explicit `[PASS]`, `[BLOCKED]`, or `[WARNING]` status badges with actionable guidance.
-- Returns exit code `0` on PASS and `2` on BLOCKED.
+Checks Ollama availability, installed model presence, system RAM, and dedicated GPU VRAM. It returns explicit <code>PASS</code>, <code>BLOCKED</code>, or <code>WARNING</code> states and never downloads a model.
 
 ```powershell
-# Run preflight verification in live mode
 .\scripts\pico-preflight.ps1
-
-# Run preflight verification targeting a specific model
 .\scripts\pico-preflight.ps1 -Model "qwen3.5:2b"
-
-# Run preflight verification in simulated mock mode (offline testing)
 .\scripts\pico-preflight.ps1 -Mock
 
-# Explicitly opt in to starting Ollama if not running (does not download models)
+# Starts Ollama only when explicitly requested; does not download models
 .\scripts\pico-preflight.ps1 -StartOllama
 ```
 
-> [!NOTE]
-> If Ollama is started via `-StartOllama`, PICO will check if it is already running first to avoid spawning duplicate processes. To stop the service later, run:
-> ```powershell
-> Stop-Process -Name "ollama" -Force
-> ```
+**Development verification — <code>scripts/pico-verify.ps1</code>**
 
-### 2. Development Verification Pipeline (`scripts/pico-verify.ps1`)
-
-Runs the continuous integration verification gate locally without committing, pushing, or discarding any working tree changes:
-1. **Python Bytecode Compilation**: Runs `python -m compileall -q pico tests tools` to ensure zero syntax errors across the workspace.
-2. **Git Whitespace & Marker Integrity**: Runs `git diff --check` to catch conflict markers and trailing whitespace errors.
-3. **Automated Test Suite**: Executes `pytest -v` across all unit, integration, and automation test suites.
+Runs Python bytecode compilation, <code>git diff --check</code>, and the backend test suite. It does not commit, push, or discard working-tree changes.
 
 ```powershell
-# Run full development verification (compilation, git diff check, and all tests)
 .\scripts\pico-verify.ps1
 
-# Run fast verification (compilation and git check only, skipping test execution)
+# Fast checks without running tests
 .\scripts\pico-verify.ps1 -SkipTests
 ```
 
-### 3. Safe Benchmark Wrapper (`scripts/pico-benchmark.ps1`)
+**Safe benchmark wrapper — <code>scripts/pico-benchmark.ps1</code>**
 
-Safely orchestrates hardware benchmarks:
-- Always executes `pico-preflight.ps1` before initiating any benchmark.
-- Halts with exit code `2` if preflight checks are BLOCKED (e.g. Ollama unreachable or model missing).
-- Never switches to cloud inference or pulls models automatically.
-- Supports offline mock benchmarking with prominent simulation disclaimers.
-- Preserves timestamped reports under `bench_reports/` and accurately propagates exit codes.
+Runs preflight before a live benchmark, stops when prerequisites are blocked, never silently falls back to cloud inference, and preserves timestamped reports.
 
 ```powershell
-# Run offline simulated benchmark (exercises plumbing and report generation)
 .\scripts\pico-benchmark.ps1 -Mock -Repetitions 3
-
-# Run live hardware benchmark on local Ollama (requires preflight pass)
 .\scripts\pico-benchmark.ps1 -Model "qwen3.5:2b" -Repetitions 3
-
-# Run live benchmark with custom context size and quality gates
 .\scripts\pico-benchmark.ps1 -Model "qwen3.5:2b" -Repetitions 5 -ContextSize 4096 -MaxTokens 128 -MinTokensPerSec 15.0 -MaxTtftMs 1200.0
 ```
 
----
+</details>
 
-## Home Assistant Integration (Milestones P7.1, P7.2 & P7.3)
+## Troubleshooting
 
-PICO integrates with Home Assistant as a local smart-home hub for situational awareness and bounded, verified physical actuation:
-- **Strictly Disabled by Default**:
-  - Read-Only: Set `HOME_ASSISTANT_ENABLED=true`, `HOME_ASSISTANT_BASE_URL`, and `HOME_ASSISTANT_ACCESS_TOKEN` in `.env` to enable read-only discovery.
-  - Physical Actuation: Set `HOME_ASSISTANT_ACTUATION_ENABLED=true` and `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID` (must be a single entity in the `light` domain).
-- **REST & Pure-Python WebSocket Clients (Stage A Read-Only Awareness)**:
-  - `GET /api/homeassistant/status` — Inspect integration health and connection state.
-  - `GET /api/homeassistant/entities` — Discover entities and reported states with sanitized attributes.
-  - `GET /api/homeassistant/entities/{entity_id}` — Inspect a specific entity.
-  - `GET /api/homeassistant/overview` — Bounded smart-home summary for assistant awareness.
-  - WebSocket command allowlist strictly enforced: `get_states`, `get_config`, `ping`. Zero mutation over WebSocket.
-- **First Verified Physical Action (Milestone P7.3 Single Test Light)**:
-  - `POST /api/homeassistant/actuation/plan` — Strictly read-only planning endpoint to inspect proposed actuation without side effects.
-  - `POST /api/homeassistant/actuation/propose` — Proposes an actuation execution requiring valid `X-Pico-Approval-Token`.
-  - `GET /api/homeassistant/actuation/{execution_id}` — Inspects actuation execution status and verification proof.
-  - Dedicated capability `homeassistant.test_light_actuate` with risk tier `HIGH` and `consequential=True`.
-- **Fail-Closed Physical Actuation Guardrails**:
-  - **Single Entity & Actions**: Only controls `HOME_ASSISTANT_P7_TEST_LIGHT_ENTITY_ID` with `turn_on` or `turn_off`. Any other entity or action (including `toggle` or non-light domains) fails closed.
-  - **Server-Side Token Authentication**: Physical proposal, approval, and execution require `X-Pico-Approval-Token` matching server `APPROVAL_SECRET_TOKEN`. Loopback callers are NOT exempt.
-  - **Dedicated Permission**: Requires `homeassistant:actuate`, which is strictly excluded from generic default tool permissions.
-  - **Triple-Digest Integrity**: Persisted input recomputed SHA-256 == stored execution digest == approval bound digest verified immediately before mutation dispatch.
-  - **Single-Use Replay Protection**: Approvals are single-use; any duplicate or replayed dispatch fails closed with `AuthorizationError`.
-  - **Zero Blind Retries**: Independent read-after-write verification polling via read-only state API; never automatically retries a mutation on timeout or failure.
-  - **Trusted Privacy Gate**: Household data defaults to `INTERNAL` (or `SENSITIVE` for locks, alarms, cameras, and entry points). Never sent to cloud models.
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| <code>BENCHMARK BLOCKED</code> | Ollama is unreachable or the selected model is missing. | Start Ollama; check <code>ollama list</code>; install the model manually if needed. |
+| <code>PROVIDER_CONNECTION_ERROR</code> (503) | <code>DEFAULT_PROVIDER=ollama</code>, but the Ollama service is not running. | Start Ollama Desktop or run <code>ollama serve</code>. |
+| <code>PROVIDER_MODEL_NOT_FOUND</code> (404) | Ollama is running, but the configured model is not installed. | Run <code>ollama pull qwen3.5:2b</code> manually. |
+| <code>PROVIDER_CONFIG_ERROR</code> (503) | Cloud inference was selected without explicit enablement or a usable key. | Check <code>CLOUD_ENABLED</code> and <code>CLOUD_API_KEY</code>; keep cloud disabled unless intended. |
+| Foreign-key error | A message or task references a missing conversation or project. | Create the parent conversation or project first. |
 
----
+## Run the tests
 
-## Troubleshooting & Common Failures
+PICO's test suites are designed for offline execution with deterministic mock transports, synthetic OS/filesystem/browser adapters, and isolated temporary SQLite databases.
 
-- **`BENCHMARK BLOCKED`**:
-  - Cause: Ollama is unreachable at `http://127.0.0.1:11434` or the requested model is missing.
-  - Fix: Start Ollama desktop or run `ollama serve`. If the model is missing, run `ollama run qwen3.5:2b`.
-- **`PROVIDER_CONNECTION_ERROR` (503)**:
-  - Cause: Ollama is selected (`DEFAULT_PROVIDER=ollama`) but the Ollama daemon is not running.
-  - Fix: Start Ollama desktop or run `ollama serve` in a separate terminal (or run `.\scripts\pico-preflight.ps1 -StartOllama`).
-- **`PROVIDER_MODEL_NOT_FOUND` (404)**:
-  - Cause: Ollama is running but `qwen3.5:2b` has not been pulled.
-  - Fix: Run `ollama pull qwen3.5:2b` manually. PICO will never trigger automatic background model downloads.
-- **`PROVIDER_CONFIG_ERROR` (503)**:
-  - Cause: Cloud profile was requested or routed, but `CLOUD_ENABLED` is false or `CLOUD_API_KEY` is missing.
-  - Fix: Enable cloud explicitly via `CLOUD_ENABLED=true` and provide `CLOUD_API_KEY`.
-- **`FOREIGN KEY constraint failed` (404/422)**:
-  - Cause: Message or task created with a non-existent conversation or project ID.
-  - Fix: Create parent conversation or project first.
-
----
-
-## Automated Tests
-
-Run the full automated test suite (offline, zero external network calls):
 ```powershell
-# Run backend pytest suite (723 tests across all subsystems)
+# Backend
 .\.venv\Scripts\pytest.exe
 
-# Run frontend test suite (125 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle)
-cd frontend
-pnpm run test
-pnpm run typecheck
-pnpm run build
-cd ..
+# Frontend
+pnpm --dir frontend run test
+pnpm --dir frontend run typecheck
+pnpm --dir frontend run build
 
-# Comprehensive verification script (executes all unit, integration, and security checks)
+# Full local verification gate
 powershell -ExecutionPolicy Bypass -File .\scripts\pico-verify.ps1
 ```
-All tests execute using deterministic mock transports, synthetic OS/filesystem/browser adapters, and isolated temporary SQLite databases.
+
+**Last recorded P10.3.3 verification snapshot:** 723 backend tests and 125 frontend tests passing; CI covers Python 3.12, 3.13, and 3.14. Test counts evolve, so run the commands above for the current result.
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Non-negotiable engineering rules, hardware constraints, and contributor guidance. |
+| [Architecture](docs/architecture.md) | System boundaries, components, and request/data flow. |
+| [Data model](docs/data-model.md) | SQLite persistence, relational models, WAL configuration, and migrations. |
+| [API contract](docs/api-contract.md) | REST endpoints, schemas, validation, and error envelopes. |
+| [Security and risk register](docs/security-and-risk-register.md) | Threat model, trust boundaries, and mitigations. |
+| [Implementation plan](docs/implementation-plan.md) | Canonical milestone status, verified scope, and remaining roadmap. |
+| [Model gateway design](docs/model-gateway-design.md) | Per-step routing, model profiles, and data-classification policy. |
+| [Evaluation framework](docs/evaluation/README.md) | Evaluation strategy and representative test cases. |
+
+---
+
+<div align="center">
+  <sub>Built local-first. Designed to be inspectable. Governed by explicit permission.</sub>
+</div>
