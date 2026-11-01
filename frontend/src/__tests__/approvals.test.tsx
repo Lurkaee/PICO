@@ -20,16 +20,18 @@ describe('ApprovalInbox & Operator Session Security', () => {
   });
 
   it('keeps approval controls locked and explains limitation when operator is unpaired', async () => {
-    vi.mocked(api.listExecutions).mockResolvedValueOnce([
-      {
-        id: 'exec_wipe_1',
-        capability_id: 'filesystem.apply_staged_diff',
-        capability_version: '1.0.0',
-        status: 'awaiting_approval',
-        input_data: { diff_path: '/tmp/staged.patch', root_id: 'workspace' },
-        created_at: '2026-10-22T10:00:00Z',
-      },
-    ]);
+    vi.mocked(api.listExecutions)
+      .mockResolvedValueOnce([
+        {
+          id: 'exec_wipe_1',
+          capability_id: 'filesystem.apply_staged_diff',
+          capability_version: '1.0.0',
+          status: 'awaiting_approval',
+          input_data: { diff_path: '/tmp/staged.patch', root_id: 'workspace' },
+          created_at: '2026-10-22T10:00:00Z',
+        },
+      ])
+      .mockResolvedValueOnce([]);
 
     const openPairing = vi.fn();
     render(<ApprovalInbox sessionState={{ paired: false }} onOpenPairingModal={openPairing} />);
@@ -49,16 +51,20 @@ describe('ApprovalInbox & Operator Session Security', () => {
   });
 
   it('allows approval review and explicit submission when operator session is active', async () => {
-    vi.mocked(api.listExecutions).mockResolvedValueOnce([
-      {
-        id: 'exec_app_1',
-        capability_id: 'os.launch_application',
-        capability_version: '1.0.0',
-        status: 'awaiting_approval',
-        input_data: { application_id: 'editor', working_dir: 'C:\\PICO' },
-        created_at: '2026-10-22T10:00:00Z',
-      },
-    ]);
+    vi.mocked(api.listExecutions)
+      .mockResolvedValueOnce([
+        {
+          id: 'exec_app_1',
+          capability_id: 'os.launch_application',
+          capability_version: '1.0.0',
+          status: 'awaiting_approval',
+          input_data: { application_id: 'editor', working_dir: 'C:\\PICO' },
+          created_at: '2026-10-22T10:00:00Z',
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
 
     vi.mocked(api.approveExecution).mockResolvedValueOnce({
       id: 'exec_app_1',
@@ -125,20 +131,20 @@ describe('ApprovalInbox & Operator Session Security', () => {
         resolveSlowFetch = resolve;
       });
 
-      vi.mocked(api.listExecutions).mockImplementationOnce(() => slowPromise as any);
+      vi.mocked(api.listExecutions).mockImplementation(() => slowPromise as any);
 
       render(<ApprovalInbox sessionState={{ paired: true }} onOpenPairingModal={vi.fn()} />);
 
-      // Request is in flight
-      expect(api.listExecutions).toHaveBeenCalledTimes(1);
+      // Independent status requests are in flight (awaiting + queued + in-flight)
+      expect(api.listExecutions).toHaveBeenCalledTimes(3);
 
       // Advance timers by 6 seconds (the polling frequency)
       await act(async () => {
         vi.advanceTimersByTime(6000);
       });
 
-      // No second request should have been initiated while first request was still in-flight
-      expect(api.listExecutions).toHaveBeenCalledTimes(1);
+      // No second request batch should have been initiated while first request batch was still in-flight
+      expect(api.listExecutions).toHaveBeenCalledTimes(3);
 
       // Resolve the slow request
       await act(async () => {
@@ -158,11 +164,11 @@ describe('ApprovalInbox & Operator Session Security', () => {
       expect(screen.getByText('filesystem.write_file')).toBeInTheDocument();
 
       // Next poll fires 6 seconds AFTER settlement
-      vi.mocked(api.listExecutions).mockResolvedValueOnce([]);
+      vi.mocked(api.listExecutions).mockResolvedValue([]);
       await act(async () => {
         vi.advanceTimersByTime(6000);
       });
-      expect(api.listExecutions).toHaveBeenCalledTimes(2);
+      expect(api.listExecutions).toHaveBeenCalledTimes(6);
     } finally {
       vi.useRealTimers();
     }
@@ -182,19 +188,23 @@ describe('ApprovalInbox & Operator Session Security', () => {
       expect(screen.getByText('Network offline or gateway timeout')).toBeInTheDocument();
 
       // Next background poll succeeds
-      vi.mocked(api.listExecutions).mockResolvedValueOnce([
-        {
-          id: 'exec_recovered_1',
-          capability_id: 'os.restart_service',
-          capability_version: '1.0.0',
-          status: 'awaiting_approval',
-          input_data: {},
-          created_at: '2026-10-22T10:00:00Z',
-        },
-      ]);
+      vi.mocked(api.listExecutions)
+        .mockResolvedValueOnce([
+          {
+            id: 'exec_recovered_1',
+            capability_id: 'os.restart_service',
+            capability_version: '1.0.0',
+            status: 'awaiting_approval',
+            input_data: {},
+            created_at: '2026-10-22T10:00:00Z',
+          },
+        ])
+        .mockResolvedValueOnce([]);
 
       await act(async () => {
         vi.advanceTimersByTime(6000);
+      });
+      await act(async () => {
         await Promise.resolve();
       });
 

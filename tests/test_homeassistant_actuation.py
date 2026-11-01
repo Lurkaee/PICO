@@ -497,7 +497,15 @@ def test_api_propose_and_inspect_lifecycle(monkeypatch: pytest.MonkeyPatch) -> N
         assert data["capability_id"] == "homeassistant.test_light_actuate"
 
         # 2. Inspect status via dedicated actuation endpoint
-        status_resp = client.get(f"/api/homeassistant/actuation/{exec_id}")
+        # Unauthenticated read fails closed with 403 under Workstream C
+        unauth_resp = client.get(f"/api/homeassistant/actuation/{exec_id}")
+        assert unauth_resp.status_code == 403
+
+        # Authenticated read with valid token succeeds
+        status_resp = client.get(
+            f"/api/homeassistant/actuation/{exec_id}",
+            headers={"X-Pico-Approval-Token": "valid_operator_secret_123"},
+        )
         assert status_resp.status_code == 200
         assert status_resp.json()["status"] == "awaiting_approval"
 

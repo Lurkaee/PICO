@@ -31,6 +31,14 @@ def test_api_list_and_get_capabilities(client: TestClient) -> None:
 
 
 def test_api_submit_and_execute_tool(client: TestClient) -> None:
+    # 1. Pair operator session to authorize execution inspection
+    from pico.services.operator_session import OperatorSessionService
+    service = OperatorSessionService.get_instance()
+    challenge = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": challenge.code})
+    assert pair_res.status_code == 200
+    csrf_token = pair_res.json()["csrf_token"]
+
     # Submit calculator job with execute_now=True
     res = client.post(
         "/api/tools/executions?execute_now=true",
@@ -39,6 +47,7 @@ def test_api_submit_and_execute_tool(client: TestClient) -> None:
             "input_data": {"expression": "25 * 4"},
             "idempotency_key": "api_test_calc_key_1",
         },
+        headers={"X-CSRF-Token": csrf_token},
     )
     assert res.status_code == 201
     data = res.json()
@@ -69,10 +78,15 @@ def test_unauthenticated_consequential_submission_fails_closed(client: TestClien
     missing 'admin:consequential' permission, create NO database execution record,
     and produce NO consequential side effect.
     """
-    # 1. Unauthenticated submission without credentials
-    before_res = client.get("/api/tools/executions?capability_id=test.consequential_action")
-    assert before_res.status_code == 200
-    initial_count = len(before_res.json()["items"])
+    # 1. Unauthenticated history read fails closed under Workstream C
+    unauth_hist_res = client.get("/api/tools/executions?capability_id=test.consequential_action")
+    assert unauth_hist_res.status_code == 403
+
+    from pico.db.session import SessionLocal
+    from pico.repositories.tool_execution_repo import ToolExecutionRepository
+    with SessionLocal() as db:
+        repo = ToolExecutionRepository(db)
+        initial_count = len(repo.list(capability_id="test.consequential_action"))
 
     res = client.post(
         "/api/tools/executions?execute_now=true",
@@ -82,12 +96,13 @@ def test_unauthenticated_consequential_submission_fails_closed(client: TestClien
         },
     )
     assert res.status_code == 403
-    assert "admin:consequential" in res.json()["detail"]
+    assert "fails closed" in res.json()["detail"].lower() or "admin:consequential" in res.json()["detail"].lower()
 
     # 2. Verify no execution record was created
-    after_res = client.get("/api/tools/executions?capability_id=test.consequential_action")
-    assert after_res.status_code == 200
-    assert len(after_res.json()["items"]) == initial_count
+    with SessionLocal() as db:
+        repo = ToolExecutionRepository(db)
+        after_count = len(repo.list(capability_id="test.consequential_action"))
+    assert after_count == initial_count
 
 
 def test_api_consequential_approval_and_execution(client: TestClient) -> None:

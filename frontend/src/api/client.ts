@@ -17,6 +17,7 @@ import {
   SystemHealth,
   ToolCapability,
   ToolExecution,
+  ToolExecutionListEnvelope,
   WorkflowCompensation,
   WorkflowRun,
   WorkingMemoryItem,
@@ -294,14 +295,29 @@ export const api = {
     return request<ToolCapability[]>('/api/tools/capabilities');
   },
 
-  async listExecutions(statusFilter?: string, limit = 50): Promise<ToolExecution[]> {
-    const url = `/api/tools/executions?limit=${limit}${statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : ''}`;
-    const res = await request<{ items: ToolExecution[]; total: number }>(url);
-    return res.items || [];
+  async listExecutions(
+    statusFilter?: string,
+    limit = 50,
+    offset = 0
+  ): Promise<ToolExecutionListEnvelope | ToolExecution[]> {
+    const url = `/api/tools/executions?limit=${limit}&offset=${offset}${statusFilter ? `&status=${encodeURIComponent(statusFilter)}` : ''}`;
+    const res = await request<ToolExecutionListEnvelope>(url);
+    return {
+      items: res.items || [],
+      total: typeof res.total === 'number' ? res.total : (res.items || []).length,
+      limit: typeof res.limit === 'number' ? res.limit : limit,
+      offset: typeof res.offset === 'number' ? res.offset : offset,
+    };
   },
 
   async getExecution(executionId: string): Promise<ToolExecution> {
     return request<ToolExecution>(`/api/tools/executions/${executionId}`);
+  },
+
+  async executeExecution(executionId: string): Promise<ToolExecution> {
+    return request<ToolExecution>(`/api/tools/executions/${executionId}/execute`, {
+      method: 'POST',
+    });
   },
 
   async approveExecution(executionId: string, notes?: string, approver?: string): Promise<ToolExecution> {

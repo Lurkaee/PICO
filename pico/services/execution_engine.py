@@ -360,6 +360,30 @@ class ToolExecutionEngine:
                     "Approval invalidated: Persisted input digest does not match recomputed or approved digest."
                 )
 
+            # Physical Home Assistant actuation server-side configuration gate
+            if execution.capability_id in (
+                "homeassistant.test_light_actuate",
+                "homeassistant.allowlisted_switch_actuate",
+                "homeassistant.allowlisted_climate_setpoint_actuate",
+                "homeassistant.allowlisted_climate_dual_setpoint_actuate",
+            ):
+                from pico.homeassistant.actuation import validate_approval_secret_configuration
+                try:
+                    validate_approval_secret_configuration()
+                except Exception as exc:
+                    self.ledger_repo.append(
+                        event_type="authorization_denied",
+                        execution_id=execution.id,
+                        task_id=execution.task_id,
+                        correlation_id=correlation_id,
+                        capability_id=execution.capability_id,
+                        payload_json={
+                            "reason": f"Physical actuation dispatch rejected: {exc}",
+                        },
+                        data_classification=execution.data_classification,
+                    )
+                    raise
+
             # OS application launch profile verification at execution boundary
             if execution.capability_id == "os.launch_application":
                 from pico.os_automation.allowlist import (

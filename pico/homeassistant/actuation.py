@@ -37,6 +37,21 @@ ALLOWED_SERVICES = {"turn_on", "turn_off"}
 ALLOWED_TARGET_STATES = {"on", "off"}
 
 
+def validate_approval_secret_configuration() -> str:
+    """Validate that APPROVAL_SECRET_TOKEN is securely configured on the server.
+
+    Required before any physical Home Assistant actuation dispatch can occur.
+    Rejects None, empty strings, and whitespace-only strings.
+    Fails closed with AuthorizationError.
+    """
+    secret = settings.APPROVAL_SECRET_TOKEN
+    if not secret or not secret.strip():
+        raise AuthorizationError(
+            "Physical Home Assistant actuation dispatch fails closed: APPROVAL_SECRET_TOKEN is not configured on the server."
+        )
+    return secret.strip()
+
+
 def validate_actuation_preconditions(
     target_entity_id: str | None = None,
     operation: str | None = None,
@@ -46,6 +61,9 @@ def validate_actuation_preconditions(
     Returns the validated test light entity ID.
     Raises AuthorizationError or ValidationError if any invariant fails.
     """
+    # 0. Mandatory physical actuation server-side configuration gate
+    validate_approval_secret_configuration()
+
     # 1. Integration must be enabled
     if not settings.HOME_ASSISTANT_ENABLED:
         raise AuthorizationError("Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).")
@@ -413,6 +431,9 @@ def validate_switch_actuation_preconditions(
     Returns the validated target switch entity ID.
     Raises AuthorizationError or ValidationError if any invariant fails.
     """
+    # 0. Mandatory physical actuation server-side configuration gate
+    validate_approval_secret_configuration()
+
     # 1. Integration must be enabled
     if not settings.HOME_ASSISTANT_ENABLED:
         raise AuthorizationError("Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).")
@@ -830,6 +851,9 @@ def validate_climate_actuation_preconditions(
     Returns the validated target climate entity ID.
     Raises AuthorizationError or ValidationError if any invariant fails.
     """
+    # 0. Mandatory physical actuation server-side configuration gate
+    validate_approval_secret_configuration()
+
     # 1. Integration must be enabled
     if not settings.HOME_ASSISTANT_ENABLED:
         raise AuthorizationError("Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).")
@@ -914,6 +938,9 @@ def validate_climate_dual_setpoint_actuation_preconditions(
     Returns the validated target climate entity ID.
     Raises AuthorizationError or ValidationError if any invariant fails.
     """
+    # 0. Mandatory physical actuation server-side configuration gate
+    validate_approval_secret_configuration()
+
     # 1. Integration must be enabled
     if not settings.HOME_ASSISTANT_ENABLED:
         raise AuthorizationError("Home Assistant integration is disabled by configuration (HOME_ASSISTANT_ENABLED=false).")

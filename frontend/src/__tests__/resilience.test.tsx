@@ -122,6 +122,7 @@ describe('UI Resilience & Safe Degradation', () => {
 
       vi.mocked(api.listExecutions)
         .mockResolvedValueOnce(mockItems)
+        .mockResolvedValueOnce([])
         .mockRejectedValue(new Error('Network drop'));
 
       render(
