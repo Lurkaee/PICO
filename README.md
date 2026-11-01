@@ -212,13 +212,17 @@ Local interactive clients on loopback (`127.0.0.1` / `localhost`) authorize cons
   # In a separate terminal with backend running, generate pairing challenge:
   python -m pico.cli.pair
 
-  # Output:
-  # ============================================================
-  # PICO Local Operator Pairing
-  # ============================================================
-  # Pairing Code: 482910
-  # Expires in:   300 seconds
-  # ============================================================
+  # Representative output (sample values for illustration):
+  # ==================================================
+  #  PICO Local Operator Pairing Code
+  # ==================================================
+  #  Pairing Code : 482910
+  #  Approver     : local_operator
+  #  Expires At   : 2026-11-01T23:45:00.000000+00:00 UTC
+  #  Valid for    : 300 seconds
+  # ==================================================
+  # Enter this 6-digit code in the PICO web interface to pair your session.
+  # ==================================================
   ```
 - The operator enters the 6-digit code into the UI pairing modal.
 - Challenges are persisted in SQLite (`operator_pairing_challenges`), salt-hashed, expire in 300 seconds, and lock out after 5 consecutive failures.
@@ -234,7 +238,13 @@ Remote systems or headless automation authorize consequential operations using t
 - When using the token path, loopback callers are not exempt from token validation.
 
 ### 3. Physical Home Assistant Actuation Configuration Gate
-Physical smart-home actuation (`homeassistant.test_light_actuate`) enforces an independent server-side `APPROVAL_SECRET_TOKEN` configuration gate. A valid paired local session does *not* waive this requirement: physical proposal, approval, and execution require the server-side token to be explicitly configured.
+Physical Home Assistant dispatch (`homeassistant.test_light_actuate`) fails closed unless the server-side `APPROVAL_SECRET_TOKEN` is explicitly configured. A valid paired local session can create and approve the proposal, but it does not waive this dispatch gate:
+1. A valid paired local operator session can authorize creation of a consequential proposal (`POST /api/homeassistant/actuation/propose`).
+2. The proposal is created in `awaiting_approval` status bound to a SHA-256 digest.
+3. The paired local operator may approve the proposal using the existing Policy A flow (`POST /api/operator/approvals/{approval_id}`).
+4. The server-side `APPROVAL_SECRET_TOKEN` configuration gate is independently enforced before physical dispatch.
+5. Without that server-side configuration, physical dispatch fails closed with an authorization error.
+6. A valid paired local session does not waive the physical-dispatch configuration gate.
 
 ### UI Authorization & Operator States
 The PICO desktop interface distinguishes six operator and action states:
@@ -406,11 +416,12 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
 - **REST & WebSocket Clients (Stage A Read-Only Awareness)**:
   - `GET /api/homeassistant/status` — Inspect integration health and connection state.
   - `GET /api/homeassistant/entities` — Discover entities and reported states with sanitized attributes.
+  - `GET /api/homeassistant/entities/{entity_id}` — Read-only inspection of one specific entity and its sanitized state.
   - `GET /api/homeassistant/overview` — Bounded smart-home summary for assistant awareness.
   - WebSocket command allowlist strictly enforced: `get_states`, `get_config`, `ping`. Zero mutation over WebSocket.
 - **Verified Physical Action (Milestone P7.3 Single Test Light)**:
   - `POST /api/homeassistant/actuation/plan` — Strictly read-only planning endpoint to inspect proposed actuation without side effects.
-  - `POST /api/homeassistant/actuation/propose` — Proposes an actuation execution requiring valid `X-Pico-Approval-Token`.
+  - `POST /api/homeassistant/actuation/propose` — Proposes an actuation execution requiring valid Policy A authorization (paired operator session or approval token).
   - `GET /api/homeassistant/actuation/{execution_id}` — Inspects actuation execution status and verification proof.
   - Dedicated capability `homeassistant.test_light_actuate` with risk tier `HIGH` and `consequential=True`.
 - **Fail-Closed Physical Actuation Guardrails**:

@@ -1,5 +1,5 @@
 # PICO Implementation Plan & Milestone Roadmap
-## Canonical P0–P10 Milestone Tracking
+## Canonical P0–P11 Milestone Tracking
 
 ---
 
@@ -9,7 +9,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - **Incomplete or Planned features are never marked as completed** until verified by concrete tests.
 - **Hardware constraints** (Intel i5-13420H, 16 GB RAM, RTX 3050 4 GB VRAM) govern all runtime allocations.
 - **Canonical data classifications** (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`) are enforced across all context compilation and model routing.
-- **Precedence Order**: B1 -> P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7 -> P8 -> P9 -> P10.
+- **Precedence Order**: B1 -> P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7 -> P8 -> P9 -> P10 -> P11.
 
 ---
 
@@ -17,7 +17,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 
 ### Milestone P0: Architecture & Repository Baseline
 - [x] **0.1 System Governance (`AGENTS.md`)**: Non-negotiable architectural invariants, data classifications, hardware limits.
-- [x] **0.2 Canonical Architecture Record (`docs/architecture.md`)**: Comprehensive system record with multimodal perception, Semantic Context Layer, JARVIS execution, capability inventory, and P0-P10 roadmap.
+- [x] **0.2 Canonical Architecture Record (`docs/architecture.md`)**: Comprehensive system record with multimodal perception, Semantic Context Layer, JARVIS execution, capability inventory, and P0-P11 roadmap.
 - [x] **0.3 Data Model Contract (`docs/data-model.md`)**: Relational models (SQLite WAL), migrations, future ledger/memory schemas.
 - [x] **0.4 API Contract (`docs/api-contract.md`)**: REST endpoints, SSE streaming specs, error envelopes.
 - [x] **0.5 Security Register (`docs/security-and-risk-register.md`)**: Threat models, trust boundaries, privacy safeguards.

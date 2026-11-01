@@ -1359,13 +1359,27 @@ Local-first desktop operator authentication and consequential action approval bo
 - **Response (403 Forbidden)**: Request originated from non-loopback address.
 
 #### `GET /api/operator/session`
-- **Description**: Inspects whether the calling browser context holds an active, unexpired operator session.
-- **Response (200 OK)**:
+- **Description**: Inspects whether the calling context holds an active, unexpired operator session. Unlike the pairing endpoint, this probe returns HTTP 200 rather than 403 when called from a non-loopback address or when no session exists.
+- **Caller Behavior**:
+  - **Non-loopback caller**: HTTP 200 with `paired: false`.
+  - **Loopback caller without active session**: HTTP 200 with `paired: false`.
+  - **Loopback caller with valid paired session**: HTTP 200 with `paired: true`, bounded approver identity, expiration timestamp, and session-bound CSRF token for subsequent mutating requests.
+- **Response (200 OK — Unpaired or Non-Loopback)**:
+  ```json
+  {
+    "paired": false,
+    "approver": null,
+    "expires_at": null,
+    "csrf_token": null
+  }
+  ```
+- **Response (200 OK — Paired Local Operator)**:
   ```json
   {
     "paired": true,
     "approver": "local_operator",
-    "expires_at": "2026-10-25T19:00:00Z"
+    "expires_at": "2026-10-25T19:00:00Z",
+    "csrf_token": "a1b2c3d4e5f607182930415263748596"
   }
   ```
 
