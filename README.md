@@ -6,7 +6,7 @@
 
 PICO is a local-first, privacy-first personal intelligence system engineered for verifiable persistence, private context compilation, transparent multi-model routing, and safe tool execution.
 
-Unlike a monolithic AI model or a generic chatbot wrapper, PICO is an autonomous, reliable coordinator for knowledge, context, memory, tasks, and tool execution on your personal workstation.
+PICO is an orchestrated multi-component system—not a monolithic model or generic chatbot wrapper. It is engineered to coordinate knowledge, context, memory, tasks, and capability execution with policy-bounded autonomy and human authorization on your personal workstation.
 
 ---
 
@@ -14,23 +14,28 @@ Unlike a monolithic AI model or a generic chatbot wrapper, PICO is an autonomous
 
 PICO is **not** an all-knowing monolithic model, and it is **not** a thin wrapper around third-party chat APIs.
 
-PICO **is** an orchestrated, multi-component coordinator designed to operate reliably under strict workstation hardware constraints (Windows 11, Intel Core i5, 16 GB RAM, 4 GB dedicated GPU VRAM):
+PICO **is** an orchestrated coordinator designed to operate reliably under strict workstation hardware constraints (Windows 11, Intel Core i5, 16 GB RAM, 4 GB dedicated GPU VRAM):
 
-- **Local Small Models by Default**: Fast classification, intent extraction, structured metadata generation, and memory proposals run locally via Ollama (`qwen3.5:2b`), preserving privacy and operating fully offline.
-- **Selective Cloud Routing**: Cloud-strong models (Anthropic, OpenAI, Gemini) are used strictly for complex reasoning over data explicitly classified as `PUBLIC`. Sensitive data is pinned locally (`RULE_PRIVATE_LOCAL_PIN`).
-- **Four-Part Memory Subsystem**: Working, Episodic (vector-indexed), Semantic, and Procedural knowledge stores maintain long-term context with decay, update, and pruning lifecycles.
-- **Append-Only Event Ledger**: An immutable historical record of all inputs, state transitions, tool executions, and model decisions enabling deterministic audit, replay, and recovery.
-- **Permission-Controlled Capability Registry**: Tools are not arbitrary scripts; they are strictly typed, allowlisted capabilities governed by risk tiers, Pydantic v2 schemas, and server-side authorization.
+- **Deterministic Mock Provider by Default**: For reproducible offline development, testing, and continuous integration, PICO defaults to a deterministic `mock` provider (`DEFAULT_PROVIDER="mock"`), requiring zero external daemons or credentials.
+- **Local Inference Support (`local-small`)**: When local inference is desired, PICO connects to Ollama running locally (`DEFAULT_PROVIDER="ollama"`) targeting the `local-small` profile (`qwen3.5:2b`), preserving privacy and operating fully offline. Multi-step autonomous planning for `local-small` is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind passing benchmark evaluations.
+- **Selective Cloud Routing (`PUBLIC` Context Only)**: A configurable OpenAI-compatible cloud provider can be enabled for eligible `PUBLIC` context under explicit cloud opt-in (`CLOUD_ENABLED=true`). Sensitive, internal, secret, and unclassified context remains pinned locally (`RULE_PRIVATE_LOCAL_PIN`) with zero silent cloud fallback.
+- **Four-Part Memory Subsystem**:
+  - *Working Memory*: Bounded, session-scoped active context and task state.
+  - *Episodic Memory*: Time-indexed historical event log, task execution outcomes, and reproducible errors.
+  - *Semantic Memory*: Source-grounded facts and preferences searchable via SQLite FTS5 full-text indexing.
+  - *Procedural Memory*: Reusable skills and workflow templates with strict draft, review, approval, and activation lifecycles.
+- **Append-Only Event Ledger**: An immutable historical audit log of inputs, state transitions, tool executions, and model decisions enabling deterministic audit and recovery. (Synthesized, revisable knowledge lives in the Memory Service; immutable historical audit records live in the Event Ledger).
+- **Permission-Controlled Capability Registry**: Tools are not arbitrary scripts; they are strictly typed, allowlisted capabilities governed by risk tiers (`READ_ONLY`, `MUTATION_REVERSIBLE`, `CONSEQUENTIAL`), Pydantic v2 schemas, and server-side authorization.
 - **Policy & Approval Engine (Policy A)**: Consequential actions (file mutations, external communications, physical smart-home actuation) require explicit human operator approval via single-use CLI challenges and cryptographic input digests.
-- **Sandboxed Execution Adapters**: Dedicated execution engines for host OS accessibility, reversible filesystem operations, sandboxed browser navigation, and Home Assistant smart-home devices.
+- **Sandboxed Execution Adapters**: Dedicated execution engines for host OS accessibility (`pico/os`), reversible filesystem operations (`pico/filesystem`), sandboxed browser navigation (`pico/browser`), and Home Assistant smart-home devices (`pico/homeassistant`).
 - **Independent Verification**: PICO never assumes an action succeeded simply because a tool was invoked. Every consequential execution is independently verified against authoritative postcondition evidence (HTTP responses, DOM landing, device states) before success is reported.
-- **Multi-Surface Experience Layer**: A polished desktop web command centre today, expanding to an expressive Windows desktop companion with animated eyes and local voice interaction in Milestone P11.
+- **Multi-Surface Experience Layer**: A polished desktop web command centre today (Phase 10), expanding to an expressive Windows desktop companion with animated eyes and local voice interaction in Milestone P11.
 
 ---
 
-## How PICO Works: The 7-Step Interaction Lifecycle
+## How PICO Is Designed to Work: The 7-Step Interaction Lifecycle
 
-Every interaction in PICO follows a disciplined, auditable pipeline:
+PICO is designed around a disciplined, auditable request-to-execution pipeline for workflow-driven interactions. The architecture connects perception, context compilation, model reasoning, authorization, sandboxed execution, and independent verification:
 
 ```
 [User Input] (Chat / Voice / Push-to-Talk)
@@ -57,13 +62,13 @@ Every interaction in PICO follows a disciplined, auditable pipeline:
 7. Independent Verification & Spoken Feedback (Authoritative postcondition proof; immutable ledger audit)
 ```
 
-1. **Perception & Ingestion**: Spoken input, typed messages, or desktop context enter PICO through clean perception adapters. Audio buffers and screen frames remain strictly transient in RAM and are never persisted or forwarded to external clouds.
-2. **Context Compilation & Budgeting**: The Context Compiler selectively gathers relevant working, episodic, and semantic memories within a strict 4096-token ceiling. Data classification tags (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`) are computed with highest-classification inheritance.
-3. **Deterministic Model Routing**: The Model Gateway routes requests based on sensitivity and task category. Requests containing `INTERNAL`, `SENSITIVE`, `SECRET`, or unclassified data are pinned strictly to local inference. Multi-step autonomous planning for `local-small` is gated behind passing benchmark evaluations.
-4. **Workflow Synthesis & Graph Validation**: Natural-language requests are compiled into typed `WorkflowDefinition` Directed Acyclic Graphs (DAGs). Graphs are checked for acyclicity (Kahn's algorithm), validated against declared capability schemas, and constrained to bounded execution limits (max 50 steps, max depth 20).
-5. **Policy A Authorization & Approval Gate**: The LLM may propose plans, but can never authorize or approve them. Safe, read-only actions execute automatically; consequential actions pause in `awaiting_approval`, requiring human operator confirmation bound to a SHA-256 canonical input digest.
-6. **Sandboxed Capability Execution**: Approved actions dispatch to isolated capability adapters (`os.*`, `filesystem.*`, `browser.*`, `homeassistant.*`, `memory.*`). Reversible operations generate compensation snapshots before mutating state.
-7. **Independent Postcondition Verification**: Multi-stage verifiers confirm actual outcome evidence (DOM elements, filesystem states, smart-home device attributes) before any success claim is emitted to the operator or spoken via local TTS.
+1. **Perception & Ingestion**: Spoken input, typed messages, or desktop context enter PICO through clean perception adapters. *(Implemented today: typed chat and P6 audio session lifecycle with mock STT/TTS adapters. Planned for P11.3: embedded local Whisper STT, local TTS, and optional wake-word; planned for P11.5: contextual screen understanding).* Audio buffers and screen frames remain strictly transient in RAM and are never persisted or forwarded to external clouds.
+2. **Context Compilation & Budgeting**: *(Implemented)* The Context Compiler selectively gathers relevant working, episodic, and semantic memories within a strict 4096-token ceiling. Data classification tags (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`) are computed with highest-classification inheritance.
+3. **Deterministic Model Routing**: *(Implemented)* The Model Gateway routes requests based on sensitivity and task category. Requests containing `INTERNAL`, `SENSITIVE`, `SECRET`, or unclassified data are pinned strictly to local inference. Multi-step autonomous planning for `local-small` is gated behind passing benchmark evaluations.
+4. **Workflow Synthesis & Graph Validation**: *(Engine implemented; conversational synthesis planned)* In Milestone P11.1, natural-language requests will be compiled into typed `WorkflowDefinition` Directed Acyclic Graphs (DAGs). The existing P9 workflow engine validates graphs for acyclicity (Kahn's algorithm), validates against declared capability schemas, and enforces bounded execution limits (max 50 steps, max depth 20).
+5. **Policy A Authorization & Approval Gate**: *(Implemented)* The LLM may propose plans, but can never authorize or approve them. Safe, read-only actions execute automatically; consequential actions pause in `awaiting_approval`, requiring human operator confirmation bound to a SHA-256 canonical input digest.
+6. **Sandboxed Capability Execution**: *(Implemented)* Approved actions dispatch to isolated capability adapters (`os.*`, `filesystem.*`, `browser.*`, `homeassistant.*`, `memory.*`). Reversible operations generate compensation snapshots before mutating state.
+7. **Independent Postcondition Verification**: *(Implemented verifier; spoken TTS feedback planned)* Multi-stage verifiers confirm actual outcome evidence (DOM elements, filesystem states, smart-home device attributes) before any success claim is emitted to the operator or spoken via local TTS.
 
 ---
 
@@ -86,7 +91,7 @@ Every interaction in PICO follows a disciplined, auditable pipeline:
 | :--- | :--- | :--- | :--- | :--- |
 | **P1** | Core Foundation & Gateway | FastAPI backend, SQLite WAL, model gateway (Mock, Ollama, Cloud), SSE chat streaming. | **VERIFIED** | Unit & integration tests |
 | **P2** | Relational Data Model | Conversations, messages, projects, tasks, routing decisions, Alembic migrations. | **VERIFIED** | DB schema tests |
-| **P3** | Memory Subsystem | Four-part memory (Working, Episodic, Semantic, Procedural), vector search, decay/pruning. | **VERIFIED** | Memory service tests |
+| **P3** | Memory Subsystem | Four-part memory (Working, Episodic time-indexed, Semantic FTS5, Procedural), decay/pruning. | **VERIFIED** | Memory service tests |
 | **P4** | Context Compilation | Context compiler, classification budgeting (`PUBLIC` to `SECRET`), `RULE_PRIVATE_LOCAL_PIN`. | **VERIFIED** | Compiler tests |
 | **P5** | Tool Execution Engine | Capability registry, risk tiers (`READ_ONLY`, `MUTATION_REVERSIBLE`, `CONSEQUENTIAL`), allowlist. | **VERIFIED** | Execution engine tests |
 | **P6** | Multimodal Perception | Audio session lifecycle (`AudioSessionManager`), mock STT/TTS adapters, visual mic states. | **VERIFIED** | Audio & perception tests |
@@ -175,6 +180,9 @@ pnpm run dev
 
 ### Production Build (Served Directly by FastAPI)
 ```powershell
+# Install frontend dependencies once
+pnpm --dir frontend install
+
 # Build static bundle to frontend/dist/
 pnpm --dir frontend run build
 
@@ -193,29 +201,40 @@ pnpm --dir frontend run build       # Production bundle build
 
 ---
 
-## Local Operator Pairing (Policy A Authorization)
+## Policy A Operator Authorization & Pairing
 
-Consequential tool-execution approvals and privileged workflow operations require a verified local operator session. No `APPROVAL_SECRET_TOKEN` is ever transmitted to the browser or stored client-side.
+Consequential operations (tool executions, approvals, compensations, and physical actuation) require verified authorization under Policy A. The backend strictly distinguishes between local interactive callers and remote/headless callers:
 
-```powershell
-# In a separate terminal with the backend running, generate a single-use 6-digit challenge:
-python -m pico.cli.pair
+### 1. Local Desktop & Browser Caller (Paired Operator Session)
+Local interactive clients on loopback (`127.0.0.1` / `localhost`) authorize consequential operations by establishing a paired operator session:
+- A human operator generates a single-use 6-digit challenge via the CLI:
+  ```powershell
+  # In a separate terminal with backend running, generate pairing challenge:
+  python -m pico.cli.pair
 
-# Output:
-# ============================================================
-# PICO Local Operator Pairing
-# ============================================================
-# Pairing Code: 482910
-# Expires in:   300 seconds
-# ============================================================
-```
+  # Output:
+  # ============================================================
+  # PICO Local Operator Pairing
+  # ============================================================
+  # Pairing Code: 482910
+  # Expires in:   300 seconds
+  # ============================================================
+  ```
+- The operator enters the 6-digit code into the UI pairing modal.
+- Challenges are persisted in SQLite (`operator_pairing_challenges`), salt-hashed, expire in 300 seconds, and lock out after 5 consecutive failures.
+- Browser-side code minting is strictly prohibited; the approver identity (`local_operator`) is bound to the challenge at CLI creation.
+- Upon successful verification, the backend issues an `HttpOnly; SameSite=Strict` cookie (`pico_operator_session`) and returns a session-bound CSRF token in JSON. Mutating requests require the matching `X-CSRF-Token` header.
+- **The browser never receives or stores `APPROVAL_SECRET_TOKEN`.**
 
-Enter the 6-digit code shown into the desktop UI's pairing modal:
-- Challenges are persisted in the local SQLite store (`operator_pairing_challenges`), bridging CLI and backend processes.
-- Codes are single-use, salt-hashed, expire in 300 seconds, and lock out after 5 consecutive failed attempts.
-- Browser-side code minting is strictly prohibited to maintain an uncompromised local trust boundary.
-- The approved identity (`local_operator`) is bound to the challenge at CLI generation.
-- Upon successful verification, the backend issues an `HttpOnly; SameSite=Strict` session cookie (`pico_operator_session`) and returns a session-bound CSRF token in JSON.
+### 2. Remote or Headless Caller (Approval Token Path)
+Remote systems or headless automation authorize consequential operations using the `X-Pico-Approval-Token` header:
+- The token must match the server-side `APPROVAL_SECRET_TOKEN` configuration.
+- Tokens are compared in constant time over UTF-8 bytes (`secrets.compare_digest`), failing closed on missing, malformed, or mismatched credentials.
+- Remote callers presenting only a browser operator-session cookie are strictly rejected.
+- When using the token path, loopback callers are not exempt from token validation.
+
+### 3. Physical Home Assistant Actuation Configuration Gate
+Physical smart-home actuation (`homeassistant.test_light_actuate`) enforces an independent server-side `APPROVAL_SECRET_TOKEN` configuration gate. A valid paired local session does *not* waive this requirement: physical proposal, approval, and execution require the server-side token to be explicitly configured.
 
 ### UI Authorization & Operator States
 The PICO desktop interface distinguishes six operator and action states:
@@ -244,7 +263,7 @@ PICO's desktop shell and recovery architecture are engineered to withstand backe
    - Interrupted SSE chat streams are visibly tagged as `[Response stream interrupted]` and marked with an ambiguous outcome notice. They are never marked as completed, and requests are never automatically retried.
    - Consequential mutations (approvals, tool dispatches, workflow advances, compensations) with ambiguous network outcomes are marked **"Outcome unknown"**. The UI never performs blind retries.
 4. **Operator Session Revalidation on Reconnect**:
-   - When the backend recovers from an offline state, the frontend immediately revalidates the operator session against `GET /api/operator/status`.
+   - When the backend recovers from an offline state, the frontend immediately revalidates the operator session against `GET /api/operator/session`.
    - Consequential approval controls remain locked in `pairing_required` until the backend confirms that the session cookie and CSRF token remain valid.
 
 ---
@@ -254,7 +273,7 @@ PICO's desktop shell and recovery architecture are engineered to withstand backe
 PICO features a provider-agnostic model gateway with per-step deterministic routing.
 
 ### 1. Exercise Streaming Chat with Development Mock (Default)
-The system defaults to a deterministic, offline `mock` provider requiring no external runtimes or credentials:
+The system defaults to a deterministic, offline `mock` provider (`DEFAULT_PROVIDER="mock"`) requiring no external runtimes or credentials:
 ```powershell
 # Create a conversation and invoke streaming chat in PowerShell
 $conv = Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/conversations" -Method Post -ContentType "application/json" -Body '{"title": "Demo Thread"}'
@@ -268,8 +287,8 @@ $body = @{
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/chat/stream" -Method Post -ContentType "application/json" -Body $body
 ```
 
-### 2. Connect to Local Ollama Inference
-To switch to local Ollama inference:
+### 2. Connect to Local Ollama Inference (Supported Local Profile)
+To enable live local inference with Ollama:
 ```powershell
 # 1. Verify Ollama is running on localhost
 curl.exe -s http://127.0.0.1:11434/api/tags
@@ -283,7 +302,7 @@ $env:OLLAMA_MODEL = "qwen3.5:2b"
 ```
 
 ### 3. Explicit Cloud Opt-In (PUBLIC Data Only)
-Cloud inference is strictly disabled by default. Private and secret data never leaves the machine. To explicitly enable cloud inference for `PUBLIC` data:
+Cloud inference is strictly disabled by default (`CLOUD_ENABLED=false`). Private and secret data never leaves the machine. To explicitly enable cloud inference for `PUBLIC` data using a configurable OpenAI-compatible cloud provider:
 ```powershell
 # Enable cloud access in .env or session
 $env:CLOUD_ENABLED = "true"
@@ -293,7 +312,7 @@ $env:CLOUD_API_KEY = "sk-..."  # Your private API key
 ```
 
 > [!IMPORTANT]
-> Any prompt marked `INTERNAL`, `SENSITIVE`, or `SECRET` will remain pinned to local inference even if cloud is enabled.
+> Any prompt marked `INTERNAL`, `SENSITIVE`, `SECRET`, or unclassified will remain pinned to local inference even if cloud is enabled. There is no silent cloud fallback.
 
 ---
 
@@ -326,7 +345,10 @@ ollama list
 .\.venv\Scripts\python.exe -m tools.bench.runner --model qwen3.5:2b --repetitions 3 --min-tokens-per-sec 15.0 --max-ttft-ms 1200.0
 ```
 
-Benchmark reports are saved to `bench_reports/` with unique UTC timestamps in both Markdown summary (`.md`) and machine-readable JSON (`.json`) formats.
+### 4. Reading Benchmark Reports
+Benchmark reports are saved to the specified output directory (default: `bench_reports/`):
+- **File format**: `bench_<model>_YYYYMMDD_HHMMSS.md` (Markdown summary) and `bench_<model>_YYYYMMDD_HHMMSS.json` (machine-readable data).
+- **Filename Collision Limitation**: Filenames use UTC timestamps with second-level resolution (`%Y%m%d_%H%M%S`). While each report contains a unique internal `benchmark_id`, executing multiple benchmark runs for the same model within the same second will overwrite existing report files. To prevent collisions, avoid running simultaneous benchmarks for the same model against the same directory, or specify distinct directories using `--output-dir`.
 
 ---
 

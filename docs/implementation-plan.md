@@ -277,7 +277,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - **Structured API Error Model**: Typed error hierarchy (`ApiError`, `NetworkError`, `TimeoutError`, `AuthenticationError`, `ProviderUnavailableError`) with bounded 15s timeouts; distinguishes transport failures from HTTP 401/403/404/422 status codes.
   - **In-Memory Draft Outbox**: Bounded in-memory queue (max 25 items) retaining unsent user messages during backend disconnections or conversation creation failures. Ephemeral memory-only lifecycle; zero auto-submission upon reconnection (explicit user dispatch required).
   - **Ambiguous Outcome & Zero Auto-Replay**: Interrupted SSE chat streams tagged `[Response stream interrupted]` and marked with an ambiguous outcome notice (never marked completed). Mutating operations (tool execution proposals, approvals, workflow advances, compensations, memory forget, voice sessions) with dropped responses marked "Outcome unknown"; strictly zero automatic retries or duplicate dispatches.
-  - **Operator Session Revalidation on Reconnect**: Immediate revalidation against `GET /api/operator/status` upon reconnection; consequential controls remain locked until session validity is confirmed by the backend.
+  - **Operator Session Revalidation on Reconnect**: Immediate revalidation against `GET /api/operator/session` upon reconnection; consequential controls remain locked until session validity is confirmed by the backend.
   - **State Retention & Stale Indicators**: Retains last in-memory views across `ChatPanel`, `WorkflowTimeline`, `ApprovalInbox`, `MemoryInspector`, `SystemStatus`, and `VoiceControl` with visible stale badges and timestamps.
   - **Test Suite**: 38 frontend tests passing (+18 new tests across `connectivity.test.ts`, `connectivity-context.test.tsx`, `offline-shell.test.ts`, and `resilience.test.tsx`), 470 backend tests passing.
   - **Acceptance criteria met**: Offline shell opens without live backend; zero private data persisted to browser caches; zero automatic replays of mutating actions; operator session revalidated on reconnect; `git diff --check` clean; frontend typecheck, vitest, and build clean; `scripts/pico-verify.ps1` clean pass.
@@ -348,7 +348,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 ---
 
 - [ ] **P11.1 Autonomous Conversational Task Decomposition & Workflow Synthesis**:
-  - **Objective**: Bridge natural-language conversational chat directly to PICO's persistent Task and Workflow Engine (`pico.services.workflow_service`).
+  - **Objective**: Bridge natural-language conversational chat directly to PICO's persistent Task and Workflow Engine (`pico.workflow.service`).
   - **Scope**:
     - Structured intent extraction & DAG proposal: Transform unstructured user requests into valid, typed workflow DAGs (`WorkflowDefinition`) with step keys, registered capability names, versions, dependencies, and parameter bindings. Multi-step autonomous planning for `local-small` (`qwen3.5:2b`) is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind passing benchmark evaluation; fails closed unless an approved model profile with passing benchmark evidence is active.
     - Strict schema validation: Synthesized DAGs validated before submission via Kahn's algorithm for acyclicity, schema compliance via `CapabilityRegistry`, bounded size (max 50 steps, max depth 20), and resolution of `$from_step` output bindings.
@@ -378,7 +378,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
       - `error` (truthful diagnostics badge)
     - System tray integration: Tray icon, context menu (Status, Open Full UI, Pause Perception, Settings, Quit), optional launch-at-login toggle.
     - Compact conversational panel: Quick flyout chat window for typing, viewing responses, and one-click access to approval tickets.
-    - Secure local bridge: Communicates with FastAPI backend exclusively over loopback IPv4 (`127.0.0.1` / `localhost`; bracketed IPv6 `[::1]` validation deferred); reuses Policy A paired operator session (`pico_operator_session` cookie + CSRF token) for mutating requests; zero plaintext secret storage in companion assets; zero alternate privileged execution paths.
+    - Secure local bridge: Communicates with FastAPI backend exclusively over loopback IPv4 (`127.0.0.1` / `localhost`; bracketed IPv6 `[::1]` validation deferred); requires a Policy A paired operator session (`pico_operator_session` cookie) for all bridge requests (including read-only status, conversation, and perception access) and validates the session-bound CSRF token (`X-CSRF-Token`) for mutating requests; zero plaintext secret storage in companion assets; zero alternate privileged execution paths.
     - Architectural Decision Record (ADR): Systematic evaluation of Windows desktop technologies (e.g., Tauri/Rust, PySide/Qt, Electron/C# WebView2) assessing packaging complexity, memory footprint (<100MB RAM target), native tray/window transparency, security, and developer ergonomics prior to implementation.
   - **Prerequisites**: P10.1, P10.2, P10.3.2.
   - **Acceptance Criteria**:
@@ -441,7 +441,7 @@ An end-to-end acceptance target validating the entire companion stack:
 1. PICO Desktop Companion launches as a lightweight, floating desktop widget with expressive eyes in `idle` state.
 2. Companion visual state synchronizes with the local PICO backend over the Policy A loopback bridge.
 3. User presses the companion push-to-talk button and speaks: *"PICO, search for the latest James Webb telescope video on YouTube."*
-4. Local STT transcribes the speech to text on device with zero cloud audio transmission.
+4. Local STT transcribes the speech-to-text on device with zero cloud audio transmission.
 5. PICO processes the transcription through the Context Compiler and Model Gateway over resident model meeting benchmark validation gates (e.g., benchmark-validated `local-small` or approved profile).
 6. PICO synthesizes a validated 1-step navigation workflow DAG:
    - Step 1: `browser.open_page` navigating to YouTube search query URL within approved origins (`https://www.youtube.com`). *(Note: Video selection and media playback require a future registered interaction capability with authoritative playback verification).*
