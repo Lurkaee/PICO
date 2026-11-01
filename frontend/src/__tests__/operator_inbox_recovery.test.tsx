@@ -532,4 +532,282 @@ describe('P10.3.2 Operator Inbox Recovery & Lifecycle Hardening', () => {
 
     vi.useRealTimers();
   });
+
+  it('enforces 30-poll limit across 6-second refreshes, pauses automatic polling, and keeps reconcile enabled', async () => {
+    vi.useFakeTimers();
+
+    const mockRunning: ToolExecution = {
+      id: 'exec_exhaust_1',
+      capability_id: 'homeassistant.allowlisted_switch_actuate',
+      capability_version: '1.0.0',
+      status: 'running',
+      input_data: { entity_id: 'switch.living_room' },
+      created_at: '2026-10-31T10:00:00Z',
+    };
+
+    vi.mocked(api.listExecutions).mockImplementation(async (status) => {
+      if (status === 'running,verifying') {
+        return { items: [mockRunning], total: 1, limit: 50, offset: 0 };
+      }
+      return { items: [], total: 0, limit: 10, offset: 0 };
+    });
+    vi.mocked(api.getExecution).mockResolvedValue(mockRunning);
+
+    render(
+      <ApprovalInbox
+        sessionState={{ paired: true, approver: 'local_operator', csrf_token: 'csrf_valid' }}
+        onOpenPairingModal={vi.fn()}
+      />
+    );
+
+    // Initial mount
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Ambiguous & Reconciling Executions \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Read-only background polling active\.\.\./)).toBeInTheDocument();
+
+    // Advance 30 polls (each 2000ms)
+    for (let i = 0; i < 30; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+        await Promise.resolve();
+      });
+    }
+
+    // Exactly 30 calls made
+    expect(vi.mocked(api.getExecution)).toHaveBeenCalledTimes(30);
+
+    // After 30 polls, limit reached error is surfaced
+    expect(
+      screen.getByText(/Background polling limit reached for execution exec_exhaust_1/i)
+    ).toBeInTheDocument();
+
+    // UI text accurately reflects that polling is exhausted, NOT active
+    expect(
+      screen.getByText(/Background polling budget exhausted\. Use Reconcile to inspect authoritative state\./i)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Read-only background polling active\.\.\./)).not.toBeInTheDocument();
+
+    // Reconcile control remains visible and enabled
+    const reconcileBtn = screen.getByRole('button', { name: /Reconcile/ });
+    expect(reconcileBtn).toBeInTheDocument();
+    expect(reconcileBtn).not.toBeDisabled();
+
+    // Now advance across three consecutive 6-second inbox refresh cycles (18,000 ms)
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await act(async () => {
+        vi.advanceTimersByTime(6000);
+        await Promise.resolve();
+      });
+    }
+
+    // Crucial assertion: ZERO additional getExecution calls were triggered by the 6s refresh cycles
+    expect(vi.mocked(api.getExecution)).toHaveBeenCalledTimes(30);
+
+    // The execution remains visible in ambiguous section with enabled Reconcile
+    expect(screen.getByText(/Ambiguous & Reconciling Executions \(1\)/)).toBeInTheDocument();
+    expect(reconcileBtn).not.toBeDisabled();
+
+    vi.useRealTimers();
+  });
+
+  it('manual reconcile resets exhausted polling, starts fresh bounded cycle if running, and never calls executeExecution', async () => {
+    vi.useFakeTimers();
+
+    const mockRunning: ToolExecution = {
+      id: 'exec_reconcile_reset_1',
+      capability_id: 'homeassistant.allowlisted_switch_actuate',
+      capability_version: '1.0.0',
+      status: 'running',
+      input_data: { entity_id: 'switch.living_room' },
+      created_at: '2026-10-31T10:00:00Z',
+    };
+
+    vi.mocked(api.listExecutions).mockImplementation(async (status) => {
+      if (status === 'running,verifying') {
+        return { items: [mockRunning], total: 1, limit: 50, offset: 0 };
+      }
+      return { items: [], total: 0, limit: 10, offset: 0 };
+    });
+    vi.mocked(api.getExecution).mockResolvedValue(mockRunning);
+
+    render(
+      <ApprovalInbox
+        sessionState={{ paired: true, approver: 'local_operator', csrf_token: 'csrf_valid' }}
+        onOpenPairingModal={vi.fn()}
+      />
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Advance 30 polls to exhaust budget
+    for (let i = 0; i < 30; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+        await Promise.resolve();
+      });
+    }
+
+    expect(vi.mocked(api.getExecution)).toHaveBeenCalledTimes(30);
+    expect(
+      screen.getByText(/Background polling budget exhausted\. Use Reconcile to inspect authoritative state\./i)
+    ).toBeInTheDocument();
+
+    // Operator clicks Reconcile
+    const reconcileBtn = screen.getByRole('button', { name: /Reconcile/ });
+    await act(async () => {
+      fireEvent.click(reconcileBtn);
+      await Promise.resolve();
+    });
+
+    // Invariant check: executeExecution must NEVER be invoked during manual reconciliation
+    expect(vi.mocked(api.executeExecution)).not.toHaveBeenCalled();
+
+    // getExecution was called once by reconcileExecution (31 total)
+    expect(vi.mocked(api.getExecution)).toHaveBeenCalledTimes(31);
+
+    // Exhausted state is cleared: UI switches back to "Read-only background polling active..."
+    expect(screen.getByText(/Read-only background polling active\.\.\./)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Background polling budget exhausted/)
+    ).not.toBeInTheDocument();
+
+    // A fresh bounded polling cycle has begun: advancing 2000ms triggers the next poll (call 32)
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(api.getExecution)).toHaveBeenCalledTimes(32);
+
+    vi.useRealTimers();
+  });
+
+  it('terminal reconciliation clears exhausted marker and transitions execution to authoritative outcomes without executeExecution', async () => {
+    vi.useFakeTimers();
+
+    const mockRunning: ToolExecution = {
+      id: 'exec_terminal_rec_1',
+      capability_id: 'filesystem.write_file',
+      capability_version: '1.0.0',
+      status: 'running',
+      input_data: { path: '/data/log.txt' },
+      created_at: '2026-10-31T10:00:00Z',
+    };
+    const mockTerminal: ToolExecution = {
+      ...mockRunning,
+      status: 'succeeded',
+      verification_status: 'passed',
+      output_data: { bytes_written: 1024 },
+    };
+
+    let isTerminal = false;
+    vi.mocked(api.listExecutions).mockImplementation(async (status) => {
+      if (status === 'running,verifying') {
+        return isTerminal ? { items: [], total: 0, limit: 50, offset: 0 } : { items: [mockRunning], total: 1, limit: 50, offset: 0 };
+      }
+      return { items: [], total: 0, limit: 10, offset: 0 };
+    });
+    vi.mocked(api.getExecution).mockImplementation(async () => {
+      return isTerminal ? mockTerminal : mockRunning;
+    });
+
+    render(
+      <ApprovalInbox
+        sessionState={{ paired: true, approver: 'local_operator', csrf_token: 'csrf_valid' }}
+        onOpenPairingModal={vi.fn()}
+      />
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Advance 30 polls to exhaust budget
+    for (let i = 0; i < 30; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+        await Promise.resolve();
+      });
+    }
+
+    expect(vi.mocked(api.getExecution)).toHaveBeenCalledTimes(30);
+    expect(screen.getByText(/Ambiguous & Reconciling Executions \(1\)/)).toBeInTheDocument();
+
+    // Now backend has completed execution
+    isTerminal = true;
+
+    // Operator clicks Reconcile
+    const reconcileBtn = screen.getByRole('button', { name: /Reconcile/ });
+    await act(async () => {
+      fireEvent.click(reconcileBtn);
+      await Promise.resolve();
+    });
+
+    // Never call executeExecution
+    expect(vi.mocked(api.executeExecution)).not.toHaveBeenCalled();
+
+    // Ambiguity card is removed
+    expect(screen.queryByText(/Ambiguous & Reconciling Executions/)).not.toBeInTheDocument();
+
+    // Rendered in Authoritative Dispatch Outcomes
+    expect(screen.getByText('Authoritative Dispatch Outcomes')).toBeInTheDocument();
+    expect(screen.getByText('PASSED')).toBeInTheDocument();
+    expect(screen.getByText(/bytes_written/)).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it('visibly exposes incomplete in-flight discovery when active records exceed 100 cap and marks inbox stale', async () => {
+    const makeItem = (i: number): ToolExecution => ({
+      id: `exec_active_${i}`,
+      capability_id: 'filesystem.write_file',
+      capability_version: '1.0.0',
+      status: 'running',
+      input_data: { path: `/file_${i}.txt` },
+      created_at: `2026-10-31T10:${(i % 60).toString().padStart(2, '0')}:00Z`,
+    });
+
+    // Total 125 active records in backend
+    vi.mocked(api.listExecutions).mockImplementation(async (status, limit, offset) => {
+      if (status === 'running,verifying') {
+        const off = offset || 0;
+        const lim = limit || 50;
+        const items = Array.from({ length: Math.min(lim, Math.max(0, 125 - off)) }, (_, i) => makeItem(off + i));
+        return {
+          items,
+          total: 125,
+          limit: lim,
+          offset: off,
+        };
+      }
+      return { items: [], total: 0, limit: 10, offset: 0 };
+    });
+
+    render(
+      <ApprovalInbox
+        sessionState={{ paired: true, approver: 'local_operator', csrf_token: 'csrf_valid' }}
+        onOpenPairingModal={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      // 1. Incomplete discovery alert is rendered with exact undiscovered count (125 - 100 = 25)
+      const incompleteAlert = screen.getByTestId('incomplete-discovery-warning');
+      expect(incompleteAlert).toBeInTheDocument();
+      expect(incompleteAlert).toHaveTextContent(/25 active execution\(s\) not retrieved/i);
+      expect(incompleteAlert).toHaveTextContent(/discovery capped at 100 of 125/i);
+
+      // 2. Error banner also explicitly notes incomplete discovery
+      expect(screen.getByText(/In-flight execution discovery is incomplete: 25 active execution\(s\) not retrieved/i)).toBeInTheDocument();
+
+      // 3. Inbox is NOT marked fully fresh — stale indicator is displayed
+      expect(screen.getByTestId('stale-indicator')).toBeInTheDocument();
+      expect(screen.getByTitle(/Data retained in-memory/i)).toBeInTheDocument();
+    });
+  });
 });

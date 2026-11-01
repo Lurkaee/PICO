@@ -74,6 +74,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
   const [ambiguousExecutions, setAmbiguousExecutions] = useState<Record<string, AmbiguousState>>({});
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
+  const [incompleteDiscovery, setIncompleteDiscovery] = useState<{ undiscovered: number; total: number } | null>(null);
 
   const requestSeq = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,6 +82,20 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
   const isMountedRef = useRef(true);
   const awaitingPageRef = useRef(0);
   const queuedPageRef = useRef(0);
+  const exhaustedPollsRef = useRef<Set<string>>(new Set());
+  const [exhaustedPolls, setExhaustedPolls] = useState<Set<string>>(new Set());
+
+  const markPollExhausted = (id: string) => {
+    exhaustedPollsRef.current.add(id);
+    setExhaustedPolls(new Set(exhaustedPollsRef.current));
+  };
+
+  const clearPollExhausted = (id: string) => {
+    if (exhaustedPollsRef.current.has(id)) {
+      exhaustedPollsRef.current.delete(id);
+      setExhaustedPolls(new Set(exhaustedPollsRef.current));
+    }
+  };
 
   useEffect(() => {
     awaitingPageRef.current = awaitingPage;
@@ -112,6 +127,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
     clearStatusPollTimer(id);
     if (!isMountedRef.current) return;
     if (count >= maxPolls) {
+      markPollExhausted(id);
       setActionError(
         `Background polling limit reached for execution ${id}. Use the Reconcile button to inspect authoritative state.`
       );
@@ -143,6 +159,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         } else {
           // Terminal status reached (succeeded, verification_failed, failed, cancelled, timed_out)
           clearStatusPollTimer(id);
+          clearPollExhausted(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -261,6 +278,22 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         setIsStale(true);
       } else {
         const inFlightEnv = inFlightResult.env;
+        const isDiscoveryIncomplete = inFlightEnv.total > inFlightEnv.items.length;
+        const undiscoveredCount = inFlightEnv.total - inFlightEnv.items.length;
+
+        if (isDiscoveryIncomplete) {
+          setIncompleteDiscovery({ undiscovered: undiscoveredCount, total: inFlightEnv.total });
+          setFetchError(
+            `In-flight execution discovery is incomplete: ${undiscoveredCount} active execution(s) not retrieved (discovery capped at ${inFlightEnv.items.length} of ${inFlightEnv.total}). Active execution state may be incomplete.`
+          );
+          setIsStale(true);
+        } else {
+          setIncompleteDiscovery(null);
+          setFetchError(null);
+          setIsStale(false);
+          setLastSuccessfulFetch(new Date());
+        }
+
         // Reload and recovery: discover active in-flight executions from authoritative backend state
         if (inFlightEnv.items && inFlightEnv.items.length > 0) {
           setDispatchResults((prev) => {
@@ -295,16 +328,12 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
 
           for (const item of inFlightEnv.items) {
             if (item.status === 'running' || item.status === 'verifying') {
-              if (!statusPollTimersRef.current[item.id]) {
+              if (!exhaustedPollsRef.current.has(item.id) && !statusPollTimersRef.current[item.id]) {
                 pollStatusUntilTerminal(item.id);
               }
             }
           }
         }
-
-        setLastSuccessfulFetch(new Date());
-        setIsStale(false);
-        setFetchError(null);
       }
     } catch (err) {
       if (!isMountedRef.current || seq !== requestSeq.current) return;
@@ -334,6 +363,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       }
       Object.values(statusPollTimersRef.current).forEach((timer) => clearTimeout(timer));
       statusPollTimersRef.current = {};
+      exhaustedPollsRef.current.clear();
     };
   }, []);
 
@@ -349,6 +379,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         if (execution.status === 'queued') {
           // Confirmed server state is still queued: dispatch claim was not consumed
           clearStatusPollTimer(id);
+          clearPollExhausted(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -360,6 +391,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           await fetchExecutions();
         } else if (execution.status === 'running' || execution.status === 'verifying') {
           // Server is currently processing: retain ambiguity lock, keep visible, continue bounded read-only polling
+          clearStatusPollTimer(id);
+          clearPollExhausted(id);
           setDispatchResults((prev) => ({ ...prev, [id]: execution }));
           setAmbiguousExecutions((prev) => ({
             ...prev,
@@ -375,11 +408,12 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           setActionError(
             `Reconciliation in progress: execution ${id} is ${execution.status} on the server. Read-only polling active.`
           );
-          pollStatusUntilTerminal(id);
+          pollStatusUntilTerminal(id, 0);
           await fetchExecutions();
         } else {
           // Terminal status reached (succeeded, verification_failed, failed, cancelled, timed_out)
           clearStatusPollTimer(id);
+          clearPollExhausted(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -392,9 +426,10 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           await fetchExecutions();
         }
       } else if (actionType === 'approve') {
+        clearStatusPollTimer(id);
+        clearPollExhausted(id);
         if (execution.status === 'awaiting_approval') {
           // Confirmed server state is still awaiting approval (approval was not applied)
-          clearStatusPollTimer(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -406,7 +441,6 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           await fetchExecutions();
         } else {
           // Execution advanced to queued or beyond
-          clearStatusPollTimer(id);
           setAmbiguousExecutions((prev) => {
             const next = { ...prev };
             delete next[id];
@@ -420,6 +454,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       } else {
         // Fallback for cancel or general reconciliation
         clearStatusPollTimer(id);
+        clearPollExhausted(id);
         setAmbiguousExecutions((prev) => {
           const next = { ...prev };
           delete next[id];
@@ -509,7 +544,8 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
       const result = await api.executeExecution(id);
       setDispatchResults((prev) => ({ ...prev, [id]: result }));
       if (result.status === 'running' || result.status === 'verifying') {
-        pollStatusUntilTerminal(id);
+        clearPollExhausted(id);
+        pollStatusUntilTerminal(id, 0);
       }
       await fetchExecutions();
     } catch (err) {
@@ -765,7 +801,11 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>Consequential Approval & Dispatch Inbox</h2>
             {isStale && lastSuccessfulFetch && (
-              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
+              <span
+                data-testid="stale-indicator"
+                className="stale-badge"
+                title="Data retained in-memory during offline disconnection"
+              >
                 <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
               </span>
             )}
@@ -870,6 +910,29 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
         </div>
       )}
 
+      {incompleteDiscovery && (
+        <div
+          data-testid="incomplete-discovery-warning"
+          style={{
+            padding: '10px 14px',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'rgba(245, 158, 11, 0.15)',
+            border: '1px solid rgba(245, 158, 11, 0.35)',
+            color: 'var(--warning)',
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+          role="alert"
+        >
+          <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+          <span>
+            <strong>Incomplete In-Flight Discovery:</strong> {incompleteDiscovery.undiscovered} active execution(s) not retrieved (discovery capped at 100 of {incompleteDiscovery.total} active executions). The inbox cannot guarantee complete visibility until existing in-flight executions are resolved.
+          </span>
+        </div>
+      )}
+
       {/* SECTION: Ambiguous & Reconciling Executions (Kept visible independently when not present in pending lists) */}
       {standaloneAmbiguous.length > 0 && (
         <div style={{ marginBottom: 20 }}>
@@ -890,6 +953,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {standaloneAmbiguous.map(([id, amb]) => {
               const isReconciling = reconcilingId === id;
+              const isExhausted = exhaustedPolls.has(id) || exhaustedPollsRef.current.has(id);
               const exec = amb.execution || dispatchResults[id];
               const statusDisplay = exec?.status || 'unconfirmed';
               const operationType = amb.action ? amb.action.toUpperCase() : 'UNKNOWN';
@@ -955,7 +1019,11 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ sessionState, onOp
 
                   {exec?.status && (exec.status === 'running' || exec.status === 'verifying') && (
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: 4 }}>
-                      <em>Authoritative server state is '{exec.status}'. Read-only background polling active...</em>
+                      {isExhausted ? (
+                        <em>Authoritative server state is '{exec.status}'. Background polling budget exhausted. Use Reconcile to inspect authoritative state.</em>
+                      ) : (
+                        <em>Authoritative server state is '{exec.status}'. Read-only background polling active...</em>
+                      )}
                     </div>
                   )}
 
