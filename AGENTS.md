@@ -42,6 +42,9 @@ Every agent, developer, and automated assistant contributing to this repository 
 11. **Safety and Integrity of Existing Work**
     Never introduce unrelated changes, overwrite files without review, perform destructive git operations (force push, reset), or introduce unreviewed destructive operations.
 
+12. **Desktop Companion is an Interaction Surface, Not an Independent Assistant**
+    The Windows desktop companion is strictly an expressive presentation and perception-input surface for the existing PICO personal intelligence system. It must never implement an independent LLM reasoning loop, duplicate memory stores, private tool execution paths, or bypass Policy A authorization. All companion actions and perceptions route through PICO Core APIs over authenticated local loopback connections.
+
 ---
 
 ## 2. Hardware Constraints & Local-First Strategy
