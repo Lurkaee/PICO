@@ -407,13 +407,13 @@ The Experience Layer exposes PICO's autonomous coordinator through two synchroni
 
 #### Reused Core Infrastructure
 The companion strictly reuses and integrates with:
-- **Model Gateway & Router**: Routes conversational prompts through the single resident local model (`qwen3.5:2b`), governed by `ResourceScheduler` fair priority queues (`interactive`, `workflow`, `background`) and single-model residency invariants.
+- **Model Gateway & Router**: Routes conversational prompts through the active model profile governed by `ResourceScheduler` fair priority queues (`interactive`, `workflow`, `background`) and single-model residency invariants. Multi-step autonomous workflow synthesis remains gated by task-category benchmark validation before enabling the `local-small` profile.
 - **Context Compiler & Memory Subsystem**: Assembles typed context items with provenance, enforces the conservative 4096-token budget ceiling, calculates effective sensitivity (`SECRET` > `SENSITIVE` > `INTERNAL` > `PUBLIC`), enforces `RULE_PRIVATE_LOCAL_PIN`, and queries Four-Part Memory (Working, Episodic, Semantic, Procedural).
 - **Multimodal Perception Layer**: Extends `pico.perception.audio` contracts, typed session lifecycles (`AudioSessionManager`), and visual indicator requirements.
 - **Capability Registry & Permission Enforcement**: Executes actions strictly through registered, allowlisted capabilities governed by Pydantic v2 schemas and risk tiers.
 - **Task & Workflow Engine**: Conversational requests synthesize into Kahn-validated DAG workflows (`WorkflowService`), executed in dependency order and audited by the multi-stage Verifier (Stages A–D) with reverse compensation support.
 - **Policy A Paired Operator Authorization**: Communicates over authenticated local loopback (`127.0.0.1`), presenting the paired operator session cookie (`pico_operator_session`) and session-bound CSRF token (`X-CSRF-Token`). Consequential actions halt in `awaiting_approval` and require explicit operator approval; the model cannot approve its own proposals.
-- **Append-Only Event Ledger**: Every companion speech capture, conversational turn, task synthesis, approval, and execution event is committed immutably to the SQLite ledger.
+- **Append-Only Event Ledger**: Every companion speech capture emits an immutable SQLite ledger event containing only non-audio metadata and a reference to the related perception event (`perception_event_id`). Raw or encoded audio is strictly prohibited and never stored in the generic event ledger. Speech transcription follows the existing `perception_events` retention, classification, and scrubbing contracts.
 - **Offline & Connectivity Resilience**: Inherits PICO's graceful degradation model: operates cleanly when inference or external networks are offline; zero caching of private memories, transcriptions, or audio in client-side persistent storage.
 
 #### Companion Visual Identity & State Machine
@@ -428,7 +428,7 @@ The companion renders an expressive animated face (two animated eyes or equivale
 - `error`: Diagnostic badge indicating honest failure without silent swallow.
 
 #### Secure Local Bridge & Boundary Architecture
-- **Transport**: Exclusively local loopback (`127.0.0.1` / `::1`), rejecting external or non-loopback network interfaces.
+- **Transport**: Exclusively local loopback over IPv4 (`127.0.0.1` / `localhost`), rejecting external or non-loopback network interfaces. (Full bracket-aware IPv6 loopback `[::1]` validation remains a planned future enhancement).
 - **Authentication**: Reuses Policy A paired operator sessions. No raw tokens or `APPROVAL_SECRET_TOKEN` are embedded in companion assets or client storage.
 - **Untrusted Input Isolation**: Spoken audio transcriptions, visible window titles, and screen captures are classified as untrusted external inputs. Adversarial content (e.g. prompt injection in documents or web pages) can NEVER grant permissions, alter tool schemas, or bypass approvals.
 
@@ -483,10 +483,10 @@ Target Environment:
 | **CAP-PC-01**  | Computer & Workspace Control | Sandboxed application, window, and file automation | Workspace | OS accessibility, Playwright | Tier 2 (Automation) | `INTERNAL` / `SENSITIVE` | Host OS | `pico/os/`, `pico/filesystem/`, `pico/browser/`, `tests/test_os_automation.py`, `tests/test_filesystem_diffs.py`, `tests/test_browser_automation.py` | **VERIFIED (P8)** | Reversible staged diffs, isolated browser profile, untrusted web content isolation, verification before success claims. |
 | **CAP-AGT-01** | Multi-Agent Coordination | Subtask delegation over Task Engine | Coordination | Task Engine, Single Model | Tier 1 (Orchestration)| All | Host CPU / GPU | `pico/services/workflow_service.py`, `pico/scheduler/`, `tests/test_workflow_coordination.py`, `tests/test_resource_scheduler.py`, `tests/test_workflow_verification.py` | **VERIFIED (P9)** | Logical workers scheduled over single resident model, independent verification of worker outputs. |
 | **CAP-EXP-01** | Unified PICO Experience | Real-time web UI, streaming chat, approval cards | Experience Layer | FastAPI, SSE, Web frontend | Tier 0 (Presentation) | All | Modern Browser | `frontend/`, `tests/test_p10_3_2_operator_execution_lifecycle.py`, Vitest test suite | **COMPLETED & VERIFIED (P10)**| Streaming chat, voice toggle, sensor indicators, memory inspection, approval interaction, offline resilience, standalone execution lifecycle. |
-| **CAP-SYN-01** | Conversational Workflow Synthesis | Compiles unstructured conversation into validated DAG workflows | Orchestration / Gateway | Task Engine, Model Gateway | Tier 1 (Synthesis) | All | Host CPU / GPU | `docs/architecture.md`, `pico.services.workflow_service` | **PLANNED (P11.1)** | Structured JSON DAG extraction, Kahn acyclicity verification, schema validation, human approval halts. |
+| **CAP-SYN-01** | Conversational Workflow Synthesis | Compiles unstructured conversation into validated DAG workflows | Orchestration / Gateway | Task Engine, Model Gateway | Tier 1 (Synthesis) | All | Host CPU / GPU | `docs/architecture.md`, `pico.services.workflow_service` | **PLANNED (P11.1)** | Structured JSON DAG extraction, Kahn acyclicity verification, schema validation, human approval halts; gated by benchmark readiness and feature flag. |
 | **CAP-CMP-01** | Windows Desktop Companion Shell | Compact, floating desktop companion with expressive visual identity | Experience Layer | Windows Desktop Shell | Tier 0 (Presentation) | All | Windows 11 Desktop | `docs/architecture.md` | **PLANNED (P11.2)** | Floating widget, expressive eyes state machine, system tray integration, Policy A loopback bridge. |
 | **CAP-VCE-01** | Local Voice Runtime & Wake-Word | Local STT, TTS, and optional privacy-safe wake-word | Perception / Audio | Local Whisper, Piper/SAPI | Tier 1 (Sensor) | `SENSITIVE` | Host Microphone / Speakers | `docs/architecture.md`, `pico.perception.audio` | **PLANNED (P11.3)** | Local-only transcription & speech synthesis, PTT primary, optional opt-in wake word, zero audio persistence. |
-| **CAP-DSK-01** | Contextual Desktop Screen Perception | On-demand screen/window visual understanding | Perception / Vision | Desktop Capture, Vision Model | Tier 1 (Sensor) | `INTERNAL` / `SENSITIVE` | Host Display | `docs/architecture.md`, `pico.perception.vision` | **PLANNED (P11.5)** | Explicit user trigger, ephemeral RAM-only frames, untrusted content isolation, zero automatic cloud forwarding. |
+| **CAP-DSK-01** | Contextual Desktop Screen Perception | On-demand screen/window visual understanding | Perception / Vision | Desktop Capture, Vision Model | Tier 1 (Sensor) | `INTERNAL` / `SENSITIVE` | Host Display | `docs/architecture.md`, `pico.perception.vision` | **PLANNED (P11.5)** | Explicit user trigger, ephemeral RAM-only frames, strict zero-retention baseline, untrusted content isolation, zero automatic cloud forwarding. |
 
 ---
 
@@ -697,7 +697,7 @@ Target Environment:
 
 ### Milestone P11: Conversational Autonomy & Windows Desktop Companion
 - **P11.1 Autonomous Conversational Task Decomposition & Workflow Synthesis**:
-  - Structured intent extraction: compiles unstructured user conversation into typed `WorkflowDefinition` DAG graphs with steps, capability bindings, and dependencies.
+  - Structured intent extraction: compiles unstructured user conversation into typed `WorkflowDefinition` DAG graphs with steps, capability bindings, and dependencies. Multi-step autonomous planning for `local-small` (`qwen3.5:2b`) is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind passing benchmark evaluation; fails closed unless an approved model profile with passing benchmark evidence is active.
   - Pre-dispatch graph validation: acyclicity check via Kahn's algorithm, `CapabilityRegistry` schema validation, bound limits (max 50 steps, max depth 20), output dependency `$from_step` mapping.
   - Strict human approval invariant: the LLM may propose plans, but can never authorize or approve them; consequential actions halt at `awaiting_approval`.
   - Conversational explanation: model articulates steps, required permissions, and risk tiers clearly before submission.
@@ -712,7 +712,7 @@ Target Environment:
   - Genuine local STT/TTS: embedded local Whisper runtime (e.g., `faster-whisper` / `whisper.cpp`) and lightweight local TTS (e.g., `piper-tts` / Windows SAPI) replacing P6 mock adapters.
   - Push-to-Talk primary interaction: explicit companion button or global hotkey (`Win+Alt+P`) initiating bounded audio capture.
   - Optional local wake-word: highly optimized on-device wake-word detection (e.g., `openWakeWord` for "Hey PICO"); disabled by default (`WAKE_WORD_ENABLED=False`); explicit toggle and immediate mute control.
-  - Privacy safeguards: prominent visual mic indicator; zero raw audio buffers persisted to disk; zero cloud audio forwarding.
+  - Privacy safeguards: prominent visual mic indicator; zero raw audio buffers persisted to disk; zero raw or base64 audio in generic event ledger (companion speech-capture ledger events record only non-audio metadata and a reference to `perception_events` via `perception_event_id`); zero cloud audio forwarding.
   - *Status*: **PLANNED**.
 - **P11.4 Conversational Voice-to-Action Integration**:
   - End-to-end voice intent execution: spoken commands transcribed locally -> routed through Context Compiler and Model Gateway -> synthesized into DAG workflow -> validated and authorized -> executed via existing capabilities (`os.*`, `browser.*`, `filesystem.*`, `homeassistant.*`, `memory.*`).
@@ -724,17 +724,17 @@ Target Environment:
   - Explicit on-demand desktop vision: user-triggered active window or full screen capture ("PICO, what is this error?"). Cameras and screen capture off by default.
   - Untrusted data boundary: screen pixels and OCR text carry `INTERNAL` or `SENSITIVE` classification; prompt injections on screen cannot elevate privileges or trigger unapproved tools.
   - Local visual reasoning: on-device visual analysis (lightweight quantized VLM or OCR + LLM); zero automatic cloud transmission of desktop screenshots.
-  - Ephemeral frame lifecycle: RAM-only transient buffers discarded immediately after inference; zero persistent screenshot history.
+  - Ephemeral frame lifecycle: strict zero-retention baseline — RAM-only transient buffers discarded immediately after inference; zero persistent screenshot history or frame export.
   - *Status*: **PLANNED**.
 
 #### Thin Vertical-Slice Acceptance Demonstration
 1. PICO Desktop Companion launches as a lightweight floating widget with animated eyes in `idle` state.
 2. Companion visual state synchronizes with local PICO backend over the Policy A loopback bridge.
-3. User presses push-to-talk and speaks: *"PICO, search for the latest James Webb telescope video on YouTube and play it."*
+3. User presses push-to-talk and speaks: *"PICO, search for the latest James Webb telescope video on YouTube."*
 4. Local STT transcribes speech to text on device with zero cloud transmission.
-5. PICO processes transcription through Context Compiler and Model Gateway over resident `qwen3.5:2b` model.
-6. PICO synthesizes a validated 2-step workflow DAG (YouTube search URL -> select first result).
+5. PICO processes transcription through Context Compiler and Model Gateway over resident model meeting benchmark validation gates (e.g., benchmark-validated `local-small` or approved profile).
+6. PICO synthesizes a validated 1-step navigation workflow DAG (open YouTube search query URL within approved origins). *(Note: Video selection and media playback require a future registered interaction capability with authoritative playback verification).*
 7. Capability Registry validates schemas, permissions, and origin allowlists (`browser:open`, `https://www.youtube.com`).
-8. Playwright browser adapter navigates in a sandboxed, ephemeral browser context. *(Note: Online video streaming requires internet connectivity, whereas speech recognition, task synthesis, and workflow coordination execute fully offline).*
+8. Playwright browser adapter navigates in a sandboxed, ephemeral browser context. *(Note: Online navigation requires internet connectivity, whereas speech recognition, task synthesis, and workflow coordination execute fully offline).*
 9. Independent verifier verifies HTTP response and DOM landing evidence.
-10. Companion transitions to `speaking` state and delivers a concise spoken confirmation via local TTS: *"Playing the latest James Webb Space Telescope video on YouTube."*
+10. Companion transitions to `speaking` state and delivers a concise spoken confirmation via local TTS: *"Opened YouTube search results for latest James Webb telescope videos."*

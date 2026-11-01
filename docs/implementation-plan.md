@@ -342,7 +342,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 
 #### Hardware Target & Operational Baseline:
 - **Host**: Windows 11 on Intel Core i5-13420H, 16 GB System RAM, NVIDIA RTX 3050 Laptop GPU (4 GB VRAM), ~60 GB available disk.
-- **Inference**: Strict single-model residency in local inference runtime (`qwen3.5:2b` via Ollama), 4096-token budget ceiling, zero unreviewed/automatic model downloads.
+- **Inference**: Strict single-model residency in local inference runtime (`qwen3.5:2b` via Ollama), 4096-token budget ceiling, zero unreviewed/automatic model downloads. Multi-step autonomous planning for `local-small` is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind passing benchmark evaluation.
 - **Privacy & Security**: Highest data classification wins (`SECRET` > `SENSITIVE` > `INTERNAL` > `PUBLIC`); non-PUBLIC data pinned locally (`RULE_PRIVATE_LOCAL_PIN`); raw audio and screen frames are sensitive and never retained or forwarded to cloud; all consequential actions require explicit human operator approval under Policy A; physical Home Assistant actuation requires server-side `APPROVAL_SECRET_TOKEN` configuration.
 
 ---
@@ -350,7 +350,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 - [ ] **P11.1 Autonomous Conversational Task Decomposition & Workflow Synthesis**:
   - **Objective**: Bridge natural-language conversational chat directly to PICO's persistent Task and Workflow Engine (`pico.services.workflow_service`).
   - **Scope**:
-    - Structured intent extraction & DAG proposal: Transform unstructured user requests into valid, typed workflow DAGs (`WorkflowDefinition`) with step keys, registered capability names, versions, dependencies, and parameter bindings.
+    - Structured intent extraction & DAG proposal: Transform unstructured user requests into valid, typed workflow DAGs (`WorkflowDefinition`) with step keys, registered capability names, versions, dependencies, and parameter bindings. Multi-step autonomous planning for `local-small` (`qwen3.5:2b`) is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind passing benchmark evaluation; fails closed unless an approved model profile with passing benchmark evidence is active.
     - Strict schema validation: Synthesized DAGs validated before submission via Kahn's algorithm for acyclicity, schema compliance via `CapabilityRegistry`, bounded size (max 50 steps, max depth 20), and resolution of `$from_step` output bindings.
     - Non-negotiable invariant: The LLM may propose plans, but can NEVER grant itself capabilities, permissions, or approvals. Consequential steps pause at `awaiting_approval`.
     - Conversational explanation: Model articulates proposed workflow steps, inputs, risks, and required approvals clearly to the user before submitting.
@@ -378,7 +378,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
       - `error` (truthful diagnostics badge)
     - System tray integration: Tray icon, context menu (Status, Open Full UI, Pause Perception, Settings, Quit), optional launch-at-login toggle.
     - Compact conversational panel: Quick flyout chat window for typing, viewing responses, and one-click access to approval tickets.
-    - Secure local bridge: Communicates with FastAPI backend exclusively over loopback (`127.0.0.1`); reuses Policy A paired operator session (`pico_operator_session` cookie + CSRF token) for mutating requests; zero plaintext secret storage in companion assets; zero alternate privileged execution paths.
+    - Secure local bridge: Communicates with FastAPI backend exclusively over loopback IPv4 (`127.0.0.1` / `localhost`; bracketed IPv6 `[::1]` validation deferred); reuses Policy A paired operator session (`pico_operator_session` cookie + CSRF token) for mutating requests; zero plaintext secret storage in companion assets; zero alternate privileged execution paths.
     - Architectural Decision Record (ADR): Systematic evaluation of Windows desktop technologies (e.g., Tauri/Rust, PySide/Qt, Electron/C# WebView2) assessing packaging complexity, memory footprint (<100MB RAM target), native tray/window transparency, security, and developer ergonomics prior to implementation.
   - **Prerequisites**: P10.1, P10.2, P10.3.2.
   - **Acceptance Criteria**:
@@ -395,7 +395,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
     - Local Text-to-Speech (TTS): Replace mock TTS with an efficient, natural local TTS engine (e.g., `piper-tts` or Windows native SAPI/Media Foundation) producing low-latency spoken responses without external cloud calls.
     - Push-to-Talk primary mode: Companion push-to-talk button or configurable global Windows hotkey (e.g., `Win+Alt+P`) initiating explicit audio capture session.
     - Optional wake-word detection: Highly optimized, local-only wake-word engine (e.g., `openWakeWord`) listening strictly for "Hey PICO" or "PICO". Disabled by default (`WAKE_WORD_ENABLED=False`).
-    - Explicit privacy controls: Prominent microphone-active indicator on companion face and tray; global mic mute toggle; instant capture cancellation (`Esc` or release); zero raw audio persistence on disk; zero cloud audio forwarding.
+    - Explicit privacy controls: Prominent microphone-active indicator on companion face and tray; global mic mute toggle; instant capture cancellation (`Esc` or release); zero raw audio persistence on disk; zero raw or base64 audio in generic event ledger (companion speech-capture ledger events record only non-audio metadata and a reference to `perception_events` via `perception_event_id`); zero cloud audio forwarding.
     - Audio session lifecycle: Integrates with `AudioSessionManager` and typed `AudioCaptureState` (`CAPTURING` -> `PROCESSING` -> `COMPLETED`/`CANCELLED`).
   - **Prerequisites**: P6, P10.2.2, P11.2.
   - **Acceptance Criteria**:
@@ -425,7 +425,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
     - Explicit on-demand capture: Screen capture or active window snapshot initiated strictly by explicit user command ("PICO, what is this error?") or explicit toggle. Cameras/screen capture off by default.
     - Untrusted data boundary: Screen contents, OCR text, and visual elements carry conservative `INTERNAL` or `SENSITIVE` classification and are treated as untrusted input. Adversarial text in windows (e.g. prompt injection in browser pages) can NEVER grant permissions or elevate caller privileges.
     - Local visual reasoning: Multimodal understanding performed locally via quantized vision-language model (e.g. lightweight Moondream / Qwen2-VL) or structured OCR text extraction; zero automatic cloud forwarding of desktop screenshots.
-    - Ephemeral frame lifecycle: Captured bitmap frames reside strictly in transient RAM and are discarded immediately post-inference; zero screenshot history persisted to disk without explicit user export.
+    - Ephemeral frame lifecycle: Strict zero-retention baseline — captured bitmap frames reside strictly in transient RAM and are discarded immediately post-inference; zero screenshot history or frame export persisted to disk.
     - Contextual explanation: PICO answers questions about visible UI elements, error dialogs, terminal outputs, and application state.
   - **Prerequisites**: P6, P8.1, P11.1, P11.2.
   - **Acceptance Criteria**:
@@ -440,14 +440,13 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 An end-to-end acceptance target validating the entire companion stack:
 1. PICO Desktop Companion launches as a lightweight, floating desktop widget with expressive eyes in `idle` state.
 2. Companion visual state synchronizes with the local PICO backend over the Policy A loopback bridge.
-3. User presses the companion push-to-talk button and speaks: *"PICO, search for the latest James Webb telescope video on YouTube and play it."*
+3. User presses the companion push-to-talk button and speaks: *"PICO, search for the latest James Webb telescope video on YouTube."*
 4. Local STT transcribes the speech to text on device with zero cloud audio transmission.
-5. PICO processes the transcription through the Context Compiler and Model Gateway over the resident `qwen3.5:2b` model.
-6. PICO synthesizes a validated 2-step workflow DAG:
-   - Step 1: `browser.open_page` navigating to YouTube search URL within approved origins (`https://www.youtube.com`).
-   - Step 2: `browser.open_page` navigating to the first search result URL.
+5. PICO processes the transcription through the Context Compiler and Model Gateway over resident model meeting benchmark validation gates (e.g., benchmark-validated `local-small` or approved profile).
+6. PICO synthesizes a validated 1-step navigation workflow DAG:
+   - Step 1: `browser.open_page` navigating to YouTube search query URL within approved origins (`https://www.youtube.com`). *(Note: Video selection and media playback require a future registered interaction capability with authoritative playback verification).*
 7. Capability Registry validates schemas, permissions, and origin allowlists (`RiskTier.READ_ONLY`, `browser:open`).
 8. Playwright browser adapter executes the navigation in a sandboxed, ephemeral browser context.
-   *(Note: Video playback requires active internet connectivity, while speech recognition, intent formulation, and workflow coordination execute fully offline).*
+   *(Note: Online navigation requires active internet connectivity, while speech recognition, intent formulation, and workflow coordination execute fully offline).*
 9. Independent verifier verifies HTTP response and DOM landing evidence.
-10. Companion transitions to `speaking` state and delivers a concise spoken confirmation via local TTS: *"Playing the latest James Webb Space Telescope video on YouTube."*
+10. Companion transitions to `speaking` state and delivers a concise spoken confirmation via local TTS: *"Opened YouTube search results for latest James Webb telescope videos."*
