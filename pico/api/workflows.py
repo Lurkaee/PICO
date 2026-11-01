@@ -1,6 +1,11 @@
 import secrets
 from typing import Optional
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
+from pico.schemas.workflow_synthesis import (
+    WorkflowSynthesizeRequest,
+    WorkflowSynthesizeResponse,
+)
+from pico.workflow.synthesis_service import WorkflowSynthesisService
 from sqlalchemy.orm import Session
 
 from pico.api.operator import get_operator_session_optional
@@ -157,6 +162,24 @@ def list_workflows(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post(
+    "/synthesize",
+    response_model=WorkflowSynthesizeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Synthesize workflow proposal",
+    description="Decomposes a conversation user turn into a structured, validated workflow proposal.",
+)
+async def synthesize_workflow(
+    payload: WorkflowSynthesizeRequest,
+    raw_request: Request,
+    db: Session = Depends(get_db),
+) -> WorkflowSynthesizeResponse:
+    override_provider = getattr(raw_request.app.state, "provider_override", None)
+    scheduler = getattr(raw_request.app.state, "scheduler", None)
+    service = WorkflowSynthesisService(db=db, scheduler=scheduler)
+    return await service.synthesize(payload, override_provider=override_provider)
 
 
 @router.get(

@@ -112,3 +112,8 @@ class BenchmarkReport(BaseModel):
     aggregates: AggregateMetrics = Field(default_factory=AggregateMetrics)
     per_prompt_summary: dict[str, Any] = Field(default_factory=dict)
     quality_gates: list[QualityGateResult] = Field(default_factory=list)
+
+    # Task category benchmark qualification metadata (Milestone P11.1)
+    task_category: str | None = None
+    suite_id: str | None = None
+    suite_version: str | None = None

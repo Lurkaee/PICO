@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Square, AlertTriangle, Shield, Cpu, RefreshCw, FileText, Trash2, Edit3, ArrowUpRight } from 'lucide-react';
+import { Send, Square, AlertTriangle, Shield, Cpu, RefreshCw, FileText, Trash2, Edit3, ArrowUpRight, GitFork, CheckCircle, X, HelpCircle, Layers } from 'lucide-react';
 import { api } from '../../api/client';
 import { streamChat } from '../../api/sse';
-import { Conversation, DataClassification, Message, RoutingMetadata } from '../../types';
+import { Conversation, DataClassification, Message, RoutingMetadata, WorkflowSynthesizeResponse, WorkflowCreatePayload } from '../../types';
 import { useConnectivity } from '../../context/ConnectivityContext';
 import { VoiceControl } from '../voice/VoiceControl';
 
@@ -29,6 +29,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [ambiguousOutcome, setAmbiguousOutcome] = useState(false);
   const [isCancelled, setIsCancelled] = useState(false);
+  const [synthesizingMessageId, setSynthesizingMessageId] = useState<string | null>(null);
+  const [synthesisResponse, setSynthesisResponse] = useState<WorkflowSynthesizeResponse | null>(null);
+  const [synthesisError, setSynthesisError] = useState<string | null>(null);
+  const [isSubmittingWorkflow, setIsSubmittingWorkflow] = useState(false);
+  const [submittedWorkflowId, setSubmittedWorkflowId] = useState<string | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -123,6 +128,44 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     scrollToBottom();
   }, [messages, streamingContent]);
 
+  const handlePlanWorkflow = async (msg: Message) => {
+    if (!isBackendReachable || streaming || synthesizingMessageId !== null) return;
+    setSynthesizingMessageId(msg.id);
+    setSynthesisError(null);
+    setSynthesisResponse(null);
+    setSubmittedWorkflowId(null);
+    try {
+      const res = await api.synthesizeWorkflow({
+        conversation_id: msg.conversation_id,
+        user_message_id: msg.id,
+      });
+      setSynthesisResponse(res);
+    } catch (err) {
+      setSynthesisError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSynthesizingMessageId(null);
+    }
+  };
+
+  const handleSubmitWorkflow = async (proposal: WorkflowCreatePayload) => {
+    if (!isBackendReachable || isSubmittingWorkflow) return;
+    setIsSubmittingWorkflow(true);
+    try {
+      const run = await api.submitWorkflow(proposal);
+      setSubmittedWorkflowId(run.id);
+    } catch (err) {
+      setSynthesisError(`Failed to submit workflow: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsSubmittingWorkflow(false);
+    }
+  };
+
+  const handleDismissProposal = () => {
+    setSynthesisResponse(null);
+    setSynthesisError(null);
+    setSubmittedWorkflowId(null);
+  };
+
   const handleSendMessage = async () => {
     const trimmed = input.trim();
     if (!trimmed || streaming) return;
@@ -196,6 +239,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           onMeta: (meta) => {
             if (activeConversationIdRef.current !== convId || activeStreamIdRef.current !== streamId) {
               return;
+            }
+            if (meta.user_message_id) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === userMessage.id ? { ...m, id: meta.user_message_id! } : m
+                )
+              );
             }
             if (meta.provider && meta.model) {
               const routing: RoutingMetadata = {
@@ -428,6 +478,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
             <div className="message-content">{msg.content}</div>
 
+            {msg.role === 'user' && !msg.id.startsWith('local_user_') && (
+              <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => handlePlanWorkflow(msg)}
+                  disabled={streaming || !isBackendReachable || synthesizingMessageId !== null}
+                  style={{
+                    fontSize: '0.72rem',
+                    padding: '3px 8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    opacity: streaming || !isBackendReachable ? 0.6 : 1,
+                  }}
+                  title={
+                    !isBackendReachable
+                      ? 'Backend offline — workflow planning unavailable'
+                      : streaming
+                      ? 'Streaming in progress'
+                      : 'Decompose and plan this request as a structured workflow'
+                  }
+                  aria-label={`Plan request ${msg.id} as workflow`}
+                >
+                  <GitFork style={{ width: 12, height: 12 }} />
+                  {synthesizingMessageId === msg.id ? 'Planning...' : 'Plan as Workflow'}
+                </button>
+              </div>
+            )}
+
             {msg.routing_metadata && (
               <div className="routing-meta-tag">
                 <span>{msg.routing_metadata.provider}</span>
@@ -605,6 +685,257 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Workflow Synthesis Proposal & Feedback Cards */}
+      {(synthesisResponse || synthesisError || submittedWorkflowId) && (
+        <div
+          style={{
+            margin: '0 16px 12px 16px',
+            padding: 14,
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'var(--bg-surface-elevated)',
+            border: '1px solid var(--border-default)',
+            boxShadow: 'var(--shadow-md)',
+            maxHeight: '320px',
+            overflowY: 'auto',
+          }}
+          data-testid="workflow-proposal-card"
+        >
+          {synthesisError && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                color: 'var(--danger)',
+                fontSize: '0.85rem',
+                gap: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
+                <span>{synthesisError}</span>
+              </div>
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={handleDismissProposal}
+                title="Close"
+                aria-label="Close"
+              >
+                <X style={{ width: 14, height: 14 }} />
+              </button>
+            </div>
+          )}
+
+          {submittedWorkflowId && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--success)' }}>
+                  <CheckCircle style={{ width: 18, height: 18 }} />
+                  <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Workflow Submitted Successfully</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon"
+                  onClick={handleDismissProposal}
+                  title="Close"
+                  aria-label="Close"
+                >
+                  <X style={{ width: 14, height: 14 }} />
+                </button>
+              </div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                Registered pending workflow run <code>{submittedWorkflowId}</code>. Execution is separate and explicit: switch to the <strong>Workflows</strong> tab to inspect steps, approve consequential actions, and advance execution.
+              </p>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={handleDismissProposal}>
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
+
+          {synthesisResponse && !submittedWorkflowId && (
+            <div>
+              {synthesisResponse.status === 'needs_clarification' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--warning)' }}>
+                      <HelpCircle style={{ width: 18, height: 18 }} />
+                      <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Clarification Required</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={handleDismissProposal}
+                      title="Close"
+                      aria-label="Close"
+                    >
+                      <X style={{ width: 14, height: 14 }} />
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                    {synthesisResponse.clarification_question}
+                  </p>
+                  {synthesisResponse.explanation && (
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      {synthesisResponse.explanation}
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={handleDismissProposal}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {synthesisResponse.status === 'unsupported' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--danger)' }}>
+                      <AlertTriangle style={{ width: 18, height: 18 }} />
+                      <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Workflow Unsupported</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={handleDismissProposal}
+                      title="Close"
+                      aria-label="Close"
+                    >
+                      <X style={{ width: 14, height: 14 }} />
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    {synthesisResponse.explanation || 'This request cannot be fulfilled by registered capabilities or exceeds system safety boundaries.'}
+                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={handleDismissProposal}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {synthesisResponse.status === 'ready' && synthesisResponse.workflow_proposal && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Layers style={{ width: 16, height: 16, color: 'var(--primary)' }} />
+                        <span style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                          {synthesisResponse.workflow_proposal.name}
+                        </span>
+                        <span className={`classification-badge ${synthesisResponse.effective_classification}`}>
+                          {synthesisResponse.effective_classification}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                        Synthesized via {synthesisResponse.selected_profile} ({synthesisResponse.provider}/{synthesisResponse.model_name}) • {synthesisResponse.step_details.length} steps
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={handleDismissProposal}
+                      title="Close"
+                      aria-label="Close"
+                    >
+                      <X style={{ width: 14, height: 14 }} />
+                    </button>
+                  </div>
+
+                  {synthesisResponse.explanation && (
+                    <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                      {synthesisResponse.explanation}
+                    </p>
+                  )}
+
+                  {/* Step Breakdown */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '4px 0' }}>
+                    {synthesisResponse.step_details.map((step, idx) => (
+                      <div
+                        key={step.step_key}
+                        style={{
+                          padding: '6px 10px',
+                          borderRadius: 'var(--radius-sm)',
+                          backgroundColor: 'var(--bg-surface)',
+                          border: '1px solid var(--border-subtle)',
+                          fontSize: '0.78rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {idx + 1}. {step.step_key} <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({step.capability_id})</span>
+                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span
+                              style={{
+                                padding: '1px 5px',
+                                borderRadius: 3,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                                backgroundColor: step.risk_tier === 'HIGH' ? 'var(--danger-subtle)' : 'var(--primary-subtle)',
+                                color: step.risk_tier === 'HIGH' ? 'var(--danger)' : 'var(--primary)',
+                              }}
+                            >
+                              {step.risk_tier}
+                            </span>
+                            {step.consequential && (
+                              <span
+                                style={{
+                                  padding: '1px 5px',
+                                  borderRadius: 3,
+                                  fontSize: '0.7rem',
+                                  fontWeight: 500,
+                                  backgroundColor: 'var(--warning-subtle)',
+                                  color: 'var(--warning)',
+                                }}
+                              >
+                                Consequential
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.73rem' }}>
+                          {step.capability_description}
+                        </div>
+                        {step.dependencies.length > 0 && (
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: 2 }}>
+                            Depends on: {step.dependencies.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Footer Actions */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleDismissProposal}
+                      disabled={isSubmittingWorkflow}
+                    >
+                      Discard
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSubmitWorkflow(synthesisResponse.workflow_proposal!)}
+                      disabled={isSubmittingWorkflow || !isBackendReachable}
+                    >
+                      {isSubmittingWorkflow ? 'Submitting...' : 'Submit Workflow'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -347,7 +347,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 
 ---
 
-- [ ] **P11.1 Autonomous Conversational Task Decomposition & Workflow Synthesis**:
+- [ ] **P11.1 Autonomous Conversational Task Decomposition & Workflow Synthesis** (Implementation Complete, Awaiting Hardware Qualification):
   - **Objective**: Bridge natural-language conversational chat directly to PICO's persistent Task and Workflow Engine (`pico.workflow.service`).
   - **Scope**:
     - Structured intent extraction & DAG proposal: Transform unstructured user requests into valid, typed workflow DAGs (`WorkflowDefinition`) with step keys, registered capability names, versions, dependencies, and parameter bindings. Multi-step autonomous planning for `local-small` (`qwen3.5:2b`) is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind passing benchmark evaluation; fails closed unless an approved model profile with passing benchmark evidence is active.
