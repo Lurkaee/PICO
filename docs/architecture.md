@@ -640,7 +640,7 @@ Target Environment:
 - **P10.3.3 Independent Post-Merge Assurance & Canonical Roadmap Reconciliation**:
   - Independent post-merge security and architecture audit verifying Policy A authorization, mandatory physical actuation configuration gate (`APPROVAL_SECRET_TOKEN`), protected execution history/status reads across all 9 caller combinations, and desktop standalone execution lifecycle.
   - Test suite resilience hardening: increased PowerShell test runner timeout ceiling in `tests/test_automation_scripts.py` from 30s to 60s to eliminate flakiness under system disk contention.
-  - Comprehensive repository verification: 723 backend tests passing (100% pass rate in `scripts/pico-verify.ps1`), 125 frontend unit and integration tests passing (`pnpm run test`), strict TypeScript type checking clean (`pnpm run typecheck`), production Vite bundle building cleanly (`pnpm run build`), and zero git whitespace or conflict marker errors (`git diff --check`).
+  - Comprehensive repository verification: 723 backend tests passing (100% pass rate in `scripts/pico-verify.ps1`), 125 frontend unit and integration tests passing (`pnpm --dir frontend run test`), strict TypeScript type checking clean (`pnpm --dir frontend run typecheck`), production Vite bundle building cleanly (`pnpm --dir frontend run build`), and zero git whitespace or conflict marker errors (`git diff --check`).
   - Canonical documentation synchronization across `docs/implementation-plan.md`, `docs/architecture.md`, `README.md`, and `AGENTS.md`.
   - Comprehensive remaining roadmap assessment identifying functional integration gaps and proposing next canonical milestones.
   - *Status*: **P10.3.3 COMPLETED & VERIFIED**.
