@@ -91,7 +91,7 @@ uvicorn pico.main:app --host 127.0.0.1 --port 8000
 
 ```powershell
 cd frontend
-pnpm run test           # Vitest — all 38 frontend tests
+pnpm run test           # Vitest — all 125 frontend tests
 pnpm run typecheck      # TypeScript strict type check
 ```
 
@@ -160,7 +160,7 @@ PICO features an offline-resilient desktop shell and safe recovery architecture 
 #### 5. Local Testing of Offline & Degraded Scenarios
 - **Backend Disconnection**: Stop the FastAPI backend (`Ctrl+C` in the backend terminal). The UI displays a calm offline banner with the time since the last successful check, retains current in-memory views labeled with a stale badge, preserves drafts, and locks consequential controls.
 - **Model/Provider Failure**: If Ollama is stopped or the model is missing while the backend is online, the UI enters a `Degraded` state. The system accurately reports backend reachability while flagging inference as unavailable, avoiding misleading full-system "offline" alerts.
-- **Frontend Test Suite**: Run `pnpm run test` in `frontend/` to execute all 38 unit and integration tests (including connectivity manager, context outbox, offline shell, and resilience tests).
+- **Frontend Test Suite**: Run `pnpm run test` in `frontend/` to execute all 125 unit and integration tests (including connectivity manager, context outbox, offline shell, approvals, and resilience tests).
 
 ---
 
@@ -388,10 +388,10 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
 
 Run the full automated test suite (offline, zero external network calls):
 ```powershell
-# Run backend pytest suite (470 tests across all subsystems)
+# Run backend pytest suite (723 tests across all subsystems)
 .\.venv\Scripts\pytest.exe
 
-# Run frontend test suite (38 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell)
+# Run frontend test suite (125 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle)
 cd frontend
 pnpm run test
 pnpm run typecheck

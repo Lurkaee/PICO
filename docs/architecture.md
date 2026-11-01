@@ -424,19 +424,19 @@ Target Environment:
 | **CAP-SEC-01** | Central Privacy Gate | Deterministic enforcement of data routing policy | Security / Router | `pico.services.routing_service` | Tier 0 (Gatekeeper) | All | None | `tests/test_routing_service.py`, `tests/test_chat_stream_api.py` | **VERIFIED** | Only PUBLIC context reaches cloud; effective context sensitivity computation; hard local pin for private data. |
 | **CAP-TEL-01** | Hardware Benchmark Runner | Telemetry harness for TTFT, tok/s, RAM, VRAM | Observability | `tools/bench/` | Tier 0 (Diagnostics) | `INTERNAL` | Windows kernel32, nvidia-smi | `tests/test_bench_runner.py`, `tests/test_automation_scripts.py` | **VERIFIED** | Preflight checks, zero automatic model downloads, synthetic benchmark prompts, JSON/MD reporting. |
 | **CAP-CTX-01** | Context Compiler v0 | Typed context assembly, token budgeting & provenance | Context / Memory | `pico.services.context_compiler` | Tier 0 (Compute) | All | None | `pico/services/context_compiler.py`, `tests/test_context_compiler.py` | **VERIFIED (P2)** | 4096-token budget enforced via conservative budget strategy (3328 prompt ceiling, 512 completion reserve, 256 headroom), conservative BPE upper-bound, fail-closed classification, provenance tags, inspectable decisions. |
-| **CAP-MEM-01** | Four-Part Memory Service | Working, episodic, semantic, and procedural knowledge | Memory | SQLite FTS5, Context Compiler | Tier 0 (Storage) | `INTERNAL` / `SENSITIVE` | SQLite | Documented spec in `docs/architecture.md` | **PLANNED (P4)** | Memory items carry provenance and approval status; proposed vs approved facts separated; FTS5 search. |
-| **CAP-TSK-01** | Stateful Task Engine | Persistent multi-step execution coordinator | Task Engine | SQLite, Context Compiler | Tier 1 (Execution) | `INTERNAL` | SQLite | Documented spec in `docs/architecture.md` | **PLANNED (P5)** | Persistent DAG states, idempotency keys, interrupt recovery, bounded retries. |
-| **CAP-TOOL-01**| Capability Registry | Sandboxed tool allowlist with strict JSON schemas | Tools / Execution | Pydantic v2, Task Engine | Tier 1 (Execution) | Scoped | Host OS | Documented spec in `docs/architecture.md` | **PLANNED (P5)** | Schema validation on all proposals, least-privilege scoping, clear error envelopes. |
-| **CAP-POL-01** | Policy & Approval Engine | Human-in-the-loop gatekeeper for consequential actions | Security | Capability Registry | Tier 0 (Gatekeeper) | All | Experience Layer | Documented spec in `docs/security-and-risk-register.md` | **PLANNED (P5)** | Interactive approval ticket with diff display for consequential writes/deletions/transfers. |
-| **CAP-AUD-01** | Append-Only Event Ledger | Immutable audit trail for all inputs, actions, proofs | Auditability | SQLite, Task Engine | Tier 0 (Audit) | All | SQLite | Documented spec in `docs/data-model.md` | **PLANNED (P5)** | Write-once append-only log, cryptographic hash chains, deterministic replay for debugging. |
-| **CAP-PER-01** | Push-to-Talk Voice Interface | Local voice input and transcription | Perception | Local STT, Audio capture | Tier 1 (Sensor) | `SENSITIVE` | Host Microphone | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Explicit PTT activation, visible mic active indicator, local-only transcription, instant cancel. |
-| **CAP-PER-02** | Visual Inspection Adapter | User-requested screenshots & camera snapshots | Perception | Screen capture, OpenCV/Camera | Tier 1 (Sensor) | `SENSITIVE` | Host Display, Webcam | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Cameras off by default, temporary frames discarded post-inference, explicit capture trigger. |
-| **CAP-PER-03** | Movement & Motion Sensor | Motion event ingestion and change detection | Perception | Camera diffing, PIR sensor | Tier 1 (Sensor) | `INTERNAL` | Host Camera / PIR Hub | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Confidence-rated motion events, event normalization, cooldown deduplication, zero covert tracking. |
-| **CAP-PER-04** | Environmental Telemetry | Sensor ingestion for temperature, light, presence | Perception | MQTT / Home Assistant API | Tier 0 (Ingest) | `INTERNAL` | Sensor network / Hub | Documented spec in `docs/architecture.md` | **PLANNED (P6)** | Normalized sensor contracts, offline test doubles, rate limiting. |
+| **CAP-MEM-01** | Four-Part Memory Service | Working, episodic, semantic, and procedural knowledge | Memory | SQLite FTS5, Context Compiler | Tier 0 (Storage) | `INTERNAL` / `SENSITIVE` | SQLite | `pico/services/memory_service.py`, `tests/test_memory_api.py`, `tests/test_memory_context_compiler.py` | **VERIFIED (P4)** | Memory items carry provenance and approval status; proposed vs approved facts separated; FTS5 search. |
+| **CAP-TSK-01** | Stateful Task Engine | Persistent multi-step execution coordinator | Task Engine | SQLite, Context Compiler | Tier 1 (Execution) | `INTERNAL` | SQLite | `pico/services/task_service.py`, `tests/test_task_service.py` | **VERIFIED (P5)** | Persistent DAG states, idempotency keys, interrupt recovery, bounded retries. |
+| **CAP-TOOL-01**| Capability Registry | Sandboxed tool allowlist with strict JSON schemas | Tools / Execution | Pydantic v2, Task Engine | Tier 1 (Execution) | Scoped | Host OS | `pico/services/capability_registry.py`, `tests/test_capability_registry.py` | **VERIFIED (P5)** | Schema validation on all proposals, least-privilege scoping, clear error envelopes. |
+| **CAP-POL-01** | Policy & Approval Engine | Human-in-the-loop gatekeeper for consequential actions | Security | Capability Registry | Tier 0 (Gatekeeper) | All | Experience Layer | `pico/services/execution_engine.py`, `tests/test_tool_authorization_approval.py`, `tests/test_p10_3_2_operator_execution_lifecycle.py` | **VERIFIED (P5 / P10)** | Interactive approval ticket with diff display for consequential writes/deletions/transfers, Policy A paired operator sessions. |
+| **CAP-AUD-01** | Append-Only Event Ledger | Immutable audit trail for all inputs, actions, proofs | Auditability | SQLite, Task Engine | Tier 0 (Audit) | All | SQLite | `pico/services/event_ledger.py`, `tests/test_event_ledger.py` | **VERIFIED (P5)** | Write-once append-only log, cryptographic hash chains, deterministic replay for debugging. |
+| **CAP-PER-01** | Push-to-Talk Voice Interface | Local voice input and transcription | Perception | Local STT, Audio capture | Tier 1 (Sensor) | `SENSITIVE` | Host Microphone | `pico/perception/audio.py`, `tests/test_perception_api.py`, `frontend/src/components/voice/VoiceControl.tsx` | **VERIFIED (P6 / P10)** | Explicit PTT activation, visible mic active indicator, local-only transcription, instant cancel. |
+| **CAP-PER-02** | Visual Inspection Adapter | User-requested screenshots & camera snapshots | Perception | Screen capture, OpenCV/Camera | Tier 1 (Sensor) | `SENSITIVE` | Host Display, Webcam | `pico/perception/visual.py`, `tests/test_perception_hardening.py` | **VERIFIED (P6)** | Cameras off by default, temporary frames discarded post-inference, explicit capture trigger. |
+| **CAP-PER-03** | Movement & Motion Sensor | Motion event ingestion and change detection | Perception | Camera diffing, PIR sensor | Tier 1 (Sensor) | `INTERNAL` | Host Camera / PIR Hub | `pico/perception/motion.py`, `tests/test_perception_hardening.py` | **VERIFIED (P6)** | Confidence-rated motion events, event normalization, cooldown deduplication, zero covert tracking. |
+| **CAP-PER-04** | Environmental Telemetry | Sensor ingestion for temperature, light, presence | Perception | MQTT / Home Assistant API | Tier 0 (Ingest) | `INTERNAL` | Sensor network / Hub | `pico/perception/environmental.py`, `tests/test_perception_hardening.py` | **VERIFIED (P6)** | Normalized sensor contracts, offline test doubles, rate limiting. |
 | **CAP-HA-01**  | Home Assistant Appliance Control | Physical smart home awareness and actuation | Physical World | Home Assistant API | Tier 2 (Actuation) | `INTERNAL` | Home Assistant Hub | `tests/test_homeassistant_actuation.py`, `tests/test_homeassistant_switch_actuation.py`, `tests/test_homeassistant_climate_actuation.py` | **VERIFIED (Stage A, B, C, D Single- & Dual-Setpoint)** | Stage A (read-only), Stage B (verified light toggle), Stage C (allowlisted switches/plugs), Stage D (allowlisted single- and dual-setpoint climate) verified. Mode, fan, and preset switching remain planned. High-impact security controls remain blocked. |
-| **CAP-PC-01**  | Computer & Workspace Control | Sandboxed application, window, and file automation | Workspace | OS accessibility, Playwright | Tier 2 (Automation) | `INTERNAL` / `SENSITIVE` | Host OS | Documented spec in `docs/architecture.md` | **PLANNED (P8)** | Reversible staged diffs, isolated browser profile, untrusted web content isolation, verification before success claims. |
-| **CAP-AGT-01** | Multi-Agent Coordination | Subtask delegation over Task Engine | Coordination | Task Engine, Single Model | Tier 1 (Orchestration)| All | Host CPU / GPU | Documented spec in `docs/architecture.md` | **PLANNED (P9)** | Logical workers scheduled over single resident model, independent verification of worker outputs. |
-| **CAP-EXP-01** | Unified PICO Experience | Real-time web UI, streaming chat, approval cards | Experience Layer | FastAPI, SSE, Web frontend | Tier 0 (Presentation) | All | Modern Browser | Documented spec in `docs/api-contract.md` | **PLANNED (P10)**| Streaming chat, voice toggle, sensor indicators, memory inspection, approval interaction, offline resilience. |
+| **CAP-PC-01**  | Computer & Workspace Control | Sandboxed application, window, and file automation | Workspace | OS accessibility, Playwright | Tier 2 (Automation) | `INTERNAL` / `SENSITIVE` | Host OS | `pico/os/`, `pico/filesystem/`, `pico/browser/`, `tests/test_os_automation.py`, `tests/test_filesystem_diffs.py`, `tests/test_browser_automation.py` | **VERIFIED (P8)** | Reversible staged diffs, isolated browser profile, untrusted web content isolation, verification before success claims. |
+| **CAP-AGT-01** | Multi-Agent Coordination | Subtask delegation over Task Engine | Coordination | Task Engine, Single Model | Tier 1 (Orchestration)| All | Host CPU / GPU | `pico/services/workflow_service.py`, `pico/scheduler/`, `tests/test_workflow_coordination.py`, `tests/test_resource_scheduler.py`, `tests/test_workflow_verification.py` | **VERIFIED (P9)** | Logical workers scheduled over single resident model, independent verification of worker outputs. |
+| **CAP-EXP-01** | Unified PICO Experience | Real-time web UI, streaming chat, approval cards | Experience Layer | FastAPI, SSE, Web frontend | Tier 0 (Presentation) | All | Modern Browser | `frontend/`, `tests/test_p10_3_2_operator_execution_lifecycle.py`, Vitest test suite | **COMPLETED & VERIFIED (P10)**| Streaming chat, voice toggle, sensor indicators, memory inspection, approval interaction, offline resilience, standalone execution lifecycle. |
 
 ---
 
@@ -466,34 +466,34 @@ Target Environment:
 - Fail-closed sensitivity computation: Payload sensitivity equals highest severity item; invalid classifications default to `INTERNAL`.
 - Full inspectable selection logs (included, truncated, excluded decisions with reasons).
 - Integrated into `POST /api/chat/stream` pipeline.
-- *Status*: **ACTIVE / IMPLEMENTATION TARGET**.
+- *Status*: **VERIFIED** (`tests/test_context_compiler.py`).
 
 ### Milestone P3: Hardware Benchmarks & Quality Gates
 - Execute multi-repetition benchmark suite measuring TTFT, tokens/sec, RAM, and VRAM.
 - Measure available `qwen3.5:2b` baseline and evaluate proposed `qwen3.5:4b` under single-model residency.
 - Preflight availability gate preventing unreviewed model downloads.
 - Machine-readable benchmark reports in `bench_reports/`.
-- *Status*: **FOUNDATION BUILT (`tools/bench/`), PENDING P2 COMPLETION**.
+- *Status*: **VERIFIED** (`tests/test_bench_runner.py`, `tests/test_automation_scripts.py`).
 
 ### Milestone P4: Memory v1 (Four-Part Subsystem)
 - Implement Working, Episodic, Semantic, and Procedural memory stores.
 - SQLite FTS5 search and retrieval for semantic memory.
 - Provenance tags and distinction between proposed facts and human-approved knowledge.
-- *Status*: **PLANNED**.
+- *Status*: **VERIFIED** (`tests/test_memory_api.py`, `tests/test_memory_context_compiler.py`, `tests/test_working_memory.py`).
 
 ### Milestone P5: Task Engine, Capability Registry & Event Ledger
 - Persistent stateful workflow coordinator with DAG execution.
 - Sandboxed capability registry with strict JSON schema validation.
 - Policy & Approval Engine with interactive approval tickets for consequential actions.
 - Append-only Event Ledger with idempotency keys and replay capability.
-- *Status*: **PLANNED**.
+- *Status*: **VERIFIED** (`tests/test_task_service.py`, `tests/test_capability_registry.py`, `tests/test_tool_execution_engine.py`, `tests/test_event_ledger.py`).
 
 ### Milestone P6: Multimodal Perception Layer
 - Push-to-Talk voice adapter with local STT/TTS and visible indicators.
 - On-demand screen and camera capture with instant frame disposal.
 - Motion event detection and environmental sensor ingestion (MQTT/Home Assistant).
 - Normalized sensor event fusion framework.
-- *Status*: **PLANNED**.
+- *Status*: **VERIFIED** (`tests/test_perception_api.py`, `tests/test_perception_hardening.py`).
 
 ### Milestone P7: Home Automation & Physical Actuation
 - **P7.1 Home Assistant Hub Connector**: Authenticated REST and WebSocket client with token protection, request/response correlation, and strict read-only command allowlist.
@@ -636,4 +636,11 @@ Target Environment:
     - Single-use approval ticket, atomic compare-and-set claim (`running` state), input-digest binding, and replay protection prevent double-dispatch.
     - Ambiguous network failures lock controls and present an explicit "Reconcile" action querying authoritative backend state before releasing locks.
     - Independent verification results (`passed`, `failed`, `inconclusive`) and execution terminal statuses (`succeeded`, `failed`, `verification_failed`, `cancelled`, `timed_out`) are rendered truthfully and distinctly.
-  - *Status*: **P10.3.2 Implemented on PR #46 (Branch Verified, Pending Canonical Merge)**.
+  - *Status*: **P10.3.2 COMPLETED & MERGED (PR #46, Commit `c210136`)**.
+- **P10.3.3 Independent Post-Merge Assurance & Canonical Roadmap Reconciliation**:
+  - Independent post-merge security and architecture audit verifying Policy A authorization, mandatory physical actuation configuration gate (`APPROVAL_SECRET_TOKEN`), protected execution history/status reads across all 9 caller combinations, and desktop standalone execution lifecycle.
+  - Test suite resilience hardening: increased PowerShell test runner timeout ceiling in `tests/test_automation_scripts.py` from 30s to 60s to eliminate flakiness under system disk contention.
+  - Comprehensive repository verification: 723 backend tests passing (100% pass rate in `scripts/pico-verify.ps1`), 125 frontend unit and integration tests passing (`pnpm --dir frontend run test`), strict TypeScript type checking clean (`pnpm --dir frontend run typecheck`), production Vite bundle building cleanly (`pnpm --dir frontend run build`), and zero git whitespace or conflict marker errors (`git diff --check`).
+  - Canonical documentation synchronization across `docs/implementation-plan.md`, `docs/architecture.md`, `README.md`, and `AGENTS.md`.
+  - Comprehensive remaining roadmap assessment identifying functional integration gaps and proposing next canonical milestones.
+  - *Status*: **P10.3.3 COMPLETED & VERIFIED**.
