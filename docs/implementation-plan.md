@@ -217,7 +217,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Untrusted data & prompt injection defense: page observations carry explicit source provenance and conservative `INTERNAL` classification; strictly pinned locally via `RULE_PRIVATE_LOCAL_PIN` (zero cloud transmission); adversarial page content cannot elevate caller permissions, alter tool schemas, or bypass approvals.
   - Registered capability: `browser.open_page` (`RiskTier.READ_ONLY`, `browser:open` permission, `INTERNAL` classification, idempotent, zero retries, independent verification).
   - 15 dedicated adversarial and functional tests in `tests/test_browser_automation.py` passing 100% offline without live internet access or browser binary downloads.
-- **Status**: **P8.1, P8.2 & P8.3 COMPLETED & VERIFIED; P9 PLANNED**.
+- **Status**: **P8.1, P8.2 & P8.3 COMPLETED & VERIFIED; P9 COMPLETED & VERIFIED**.
 
 ### Milestone P9: Multi-Agent Workflow Coordination
 - [x] **P9.1 Task Delegation — Subtask Execution over Persistent Task Engine**:
@@ -305,7 +305,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - **Detached Manager Quiescence**: When `ConnectivityProvider` detaches from an externally owned manager, the manager stops cleanly and remains idle after in-flight probes settle, with zero timers or DOM listeners.
   - **Test Suite**: 83 frontend tests passing (+11 new tests across `connectivity.test.ts` and `connectivity-context.test.tsx`), 470 backend tests passing.
   - **Acceptance criteria met**: Stopped managers never schedule subsequent automatic timers; in-flight probe resolution after `stop()` cannot restart polling; restart works cleanly without listener duplication; disposal remains permanent; `git diff --check` clean; frontend typecheck, vitest, and build clean; `scripts/pico-verify.ps1` clean pass.
-- [ ] **P10.3.2 Operator Authorization & Standalone Execution Lifecycle Closure** (PR #46 Open — Pending Canonical Merge): Full closure of consequential execution authorization, Home Assistant physical-actuation configuration gates, protected execution history reads, and standalone execution dispatch lifecycle.
+- [x] **P10.3.2 Operator Authorization & Standalone Execution Lifecycle Closure** (COMPLETED & MERGED, PR #46, Commit `c210136`): Full closure of consequential execution authorization, Home Assistant physical-actuation configuration gates, protected execution history reads, and standalone execution dispatch lifecycle.
   - **Policy A — Paired Local Operator Authorization**: Unified authorization model distinguishing loopback clients from remote clients:
     - *Local desktop browser*: Requires valid paired operator session (HttpOnly cookie) + session-bound CSRF token (`X-CSRF-Token`) for mutating requests, validated strictly on genuine loopback connections (`127.0.0.1`, `::1`). Non-loopback clients presenting operator session cookies are strictly rejected fail-closed.
     - *Remote/headless API client*: Requires valid `X-Pico-Approval-Token` matching server-side `APPROVAL_SECRET_TOKEN` via constant-time comparison.
@@ -324,6 +324,13 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
     - Atomic compare-and-set claim (`running` state) and triple-digest binding prevent double-dispatch and tampering.
     - Network failure during dispatch marks outcome uncertain, locks controls, and displays an explicit "Reconcile" action querying authoritative backend state before releasing locks.
     - Authoritative execution outcomes and independent verification statuses (`passed`, `failed`, `inconclusive`) are rendered distinctly.
-  - **Test Suite**: 719 backend tests passing (+13 new tests in `tests/test_p10_3_2_operator_execution_lifecycle.py`), 108 frontend tests passing (+4 new tests in `standalone_execution_lifecycle.test.tsx`).
+  - **Test Suite**: 723 backend tests passing (+13 new tests in `tests/test_p10_3_2_operator_execution_lifecycle.py`), 125 frontend tests passing (+4 new tests in `standalone_execution_lifecycle.test.tsx`).
   - **Acceptance criteria met**: Strict Policy A enforcement across generic and Home Assistant endpoints; mandatory physical-actuation configuration gate across all 4 capabilities; execution history reads protected against unauthorized local and remote callers; standalone approval-to-dispatch lifecycle fully closed in desktop UI; `git diff --check` clean; frontend typecheck, vitest, and build clean; full test suites passing.
-- **Status**: **P10.1, P10.1.1, P10.1.2, P10.2, P10.2.1, P10.2.2, P10.2.3 & P10.2.4 COMPLETED & VERIFIED; P10.3.2 IMPLEMENTED ON PR #46 (PENDING CANONICAL MERGE)**.
+- [x] **P10.3.3 Independent Post-Merge Assurance & Canonical Roadmap Reconciliation**:
+  - Independent post-merge security and architecture audit verifying Policy A authorization, mandatory physical actuation configuration gate (`APPROVAL_SECRET_TOKEN`), protected execution history/status reads across all 9 caller combinations, and desktop standalone execution lifecycle.
+  - Test suite resilience hardening: increased PowerShell test runner timeout ceiling in `tests/test_automation_scripts.py` from 30s to 60s to eliminate flakiness under system disk contention.
+  - Comprehensive repository verification: 723 backend tests passing (100% pass rate in `scripts/pico-verify.ps1`), 125 frontend unit and integration tests passing (`pnpm run test`), strict TypeScript type checking clean (`pnpm run typecheck`), production Vite bundle building cleanly (`pnpm run build`), and zero git whitespace or conflict marker errors (`git diff --check`).
+  - Canonical documentation synchronization across `docs/implementation-plan.md`, `docs/architecture.md`, `README.md`, and `AGENTS.md`.
+  - Comprehensive remaining roadmap assessment identifying functional integration gaps and proposing next canonical milestones.
+  - **Test Suite**: 723 backend tests passing, 125 frontend tests passing (100% pass rate).
+- **Status**: **P10.1, P10.1.1, P10.1.2, P10.2, P10.2.1, P10.2.2, P10.2.3, P10.2.4, P10.3.2 & P10.3.3 COMPLETED & VERIFIED**.

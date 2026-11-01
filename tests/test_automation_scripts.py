@@ -18,7 +18,7 @@ def run_powershell_script(script_rel_path: str, args: list[str]) -> subprocess.C
         cmd,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
 
