@@ -162,6 +162,9 @@ PICO features an offline-resilient desktop shell and safe recovery architecture 
 - **Model/Provider Failure**: If Ollama is stopped or the model is missing while the backend is online, the UI enters a `Degraded` state. The system accurately reports backend reachability while flagging inference as unavailable, avoiding misleading full-system "offline" alerts.
 - **Frontend Test Suite**: Run `pnpm run test` in `frontend/` to execute all 125 unit and integration tests (including connectivity manager, context outbox, offline shell, approvals, and resilience tests).
 
+### 6. Forward Roadmap: Windows Desktop Companion (Phase 11)
+PICO's canonical roadmap extends the Experience Layer with a first-class **Windows Desktop Companion** development track. It introduces a compact, floating desktop companion with expressive animated eyes, local voice push-to-talk, optional wake-word detection, and conversational task synthesis into validated execution DAGs. The companion functions strictly as an interaction surface for the existing PICO core architecture. See [docs/implementation-plan.md](docs/implementation-plan.md) and [docs/architecture.md](docs/architecture.md) for detailed milestone specifications and invariants.
+
 ---
 
 

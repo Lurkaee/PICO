@@ -334,3 +334,120 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - Comprehensive remaining roadmap assessment identifying functional integration gaps and proposing next canonical milestones.
   - **Test Suite**: 723 backend tests passing, 125 frontend tests passing (100% pass rate).
 - **Status**: **P10.1, P10.1.1, P10.1.2, P10.2, P10.2.1, P10.2.2, P10.2.3, P10.2.4, P10.3.2 & P10.3.3 COMPLETED & VERIFIED**.
+
+### Milestone P11: Conversational Autonomy & Windows Desktop Companion
+
+**Core Principle**:
+> The PICO Desktop Companion is an expressive presentation, perception-input, and interaction surface for the existing PICO personal intelligence system. It is not an independent assistant. It strictly reuses PICO's model gateway, context compiler, memory subsystem, perception adapters, capability registry, workflow engine, Policy A authorization, append-only event ledger, and offline resilience infrastructure. It does not introduce duplicate reasoning, memory, authorization, or execution systems.
+
+#### Hardware Target & Operational Baseline:
+- **Host**: Windows 11 on Intel Core i5-13420H, 16 GB System RAM, NVIDIA RTX 3050 Laptop GPU (4 GB VRAM), ~60 GB available disk.
+- **Inference**: Strict single-model residency in local inference runtime (`qwen3.5:2b` via Ollama), 4096-token budget ceiling, zero unreviewed/automatic model downloads.
+- **Privacy & Security**: Highest data classification wins (`SECRET` > `SENSITIVE` > `INTERNAL` > `PUBLIC`); non-PUBLIC data pinned locally (`RULE_PRIVATE_LOCAL_PIN`); raw audio and screen frames are sensitive and never retained or forwarded to cloud; all consequential actions require explicit human operator approval under Policy A; physical Home Assistant actuation requires server-side `APPROVAL_SECRET_TOKEN` configuration.
+
+---
+
+- [ ] **P11.1 Autonomous Conversational Task Decomposition & Workflow Synthesis**:
+  - **Objective**: Bridge natural-language conversational chat directly to PICO's persistent Task and Workflow Engine (`pico.services.workflow_service`).
+  - **Scope**:
+    - Structured intent extraction & DAG proposal: Transform unstructured user requests into valid, typed workflow DAGs (`WorkflowDefinition`) with step keys, registered capability names, versions, dependencies, and parameter bindings.
+    - Strict schema validation: Synthesized DAGs validated before submission via Kahn's algorithm for acyclicity, schema compliance via `CapabilityRegistry`, bounded size (max 50 steps, max depth 20), and resolution of `$from_step` output bindings.
+    - Non-negotiable invariant: The LLM may propose plans, but can NEVER grant itself capabilities, permissions, or approvals. Consequential steps pause at `awaiting_approval`.
+    - Conversational explanation: Model articulates proposed workflow steps, inputs, risks, and required approvals clearly to the user before submitting.
+    - REST API & Desktop UI integration: `/api/workflows/synthesize` endpoint returning proposed DAG for review; visual representation in `WorkflowTimeline`.
+  - **Prerequisites**: P9.1, P9.2, P9.3, P10.1, P10.3.2.
+  - **Acceptance Criteria**:
+    - Unstructured prompt compiles into valid multi-step DAG matching declared capability schemas.
+    - Invalid schemas, cyclic dependencies, or unregistered capability proposals fail closed with structured validation errors.
+    - Consequential steps pause execution and require explicit operator authorization via Policy A.
+    - Reversible steps bind to registered compensations.
+    - 100% test pass rate across new adversarial synthesis tests without live model or network dependencies.
+
+- [ ] **P11.2 Windows Desktop Companion Shell & Secure Local Bridge**:
+  - **Objective**: Establish a compact, unobtrusive Windows desktop presentation and interaction surface for PICO.
+  - **Scope**:
+    - Compact floating presence: Frameless, transparent or styled desktop widget with draggable positioning, minimize-to-tray, and hide/pause controls.
+    - Expressive visual identity: Animated two-eye display or expressive PICO iconography reflecting real-time backend state:
+      - `idle` (calm ambient scanning/blinking)
+      - `listening` (active audio capture indicator)
+      - `thinking` (model scheduling / inference lease acquired)
+      - `speaking` (local TTS playback in progress)
+      - `executing` (active tool execution / workflow in flight)
+      - `awaiting_approval` (pulsing amber indicator directing attention to approval inbox)
+      - `offline` (calm disconnected indicator, cached shell)
+      - `error` (truthful diagnostics badge)
+    - System tray integration: Tray icon, context menu (Status, Open Full UI, Pause Perception, Settings, Quit), optional launch-at-login toggle.
+    - Compact conversational panel: Quick flyout chat window for typing, viewing responses, and one-click access to approval tickets.
+    - Secure local bridge: Communicates with FastAPI backend exclusively over loopback (`127.0.0.1`); reuses Policy A paired operator session (`pico_operator_session` cookie + CSRF token) for mutating requests; zero plaintext secret storage in companion assets; zero alternate privileged execution paths.
+    - Architectural Decision Record (ADR): Systematic evaluation of Windows desktop technologies (e.g., Tauri/Rust, PySide/Qt, Electron/C# WebView2) assessing packaging complexity, memory footprint (<100MB RAM target), native tray/window transparency, security, and developer ergonomics prior to implementation.
+  - **Prerequisites**: P10.1, P10.2, P10.3.2.
+  - **Acceptance Criteria**:
+    - ADR documented and approved before code implementation.
+    - Shell launches on Windows 11 with transparent background and system tray integration.
+    - Visual state transitions mirror authoritative backend state without latency lag or desync.
+    - Companion authenticates via Policy A paired operator session; unauthorized mutations fail closed.
+    - Memory footprint stays within baseline budget (<100 MB RAM idle).
+
+- [ ] **P11.3 Local Voice Runtime & Optional Wake-Word**:
+  - **Objective**: Extend P6 audio infrastructure with genuine local speech recognition and text-to-speech runtimes, with an optional privacy-safe wake-word detector.
+  - **Scope**:
+    - Local Speech-to-Text (STT): Replace mock STT with an embedded, efficient local Whisper runtime (e.g., `faster-whisper` / `whisper.cpp` int8/fp16 quantized model) running on CPU or dedicated RTX 3050 VRAM without violating single-model residency.
+    - Local Text-to-Speech (TTS): Replace mock TTS with an efficient, natural local TTS engine (e.g., `piper-tts` or Windows native SAPI/Media Foundation) producing low-latency spoken responses without external cloud calls.
+    - Push-to-Talk primary mode: Companion push-to-talk button or configurable global Windows hotkey (e.g., `Win+Alt+P`) initiating explicit audio capture session.
+    - Optional wake-word detection: Highly optimized, local-only wake-word engine (e.g., `openWakeWord`) listening strictly for "Hey PICO" or "PICO". Disabled by default (`WAKE_WORD_ENABLED=False`).
+    - Explicit privacy controls: Prominent microphone-active indicator on companion face and tray; global mic mute toggle; instant capture cancellation (`Esc` or release); zero raw audio persistence on disk; zero cloud audio forwarding.
+    - Audio session lifecycle: Integrates with `AudioSessionManager` and typed `AudioCaptureState` (`CAPTURING` -> `PROCESSING` -> `COMPLETED`/`CANCELLED`).
+  - **Prerequisites**: P6, P10.2.2, P11.2.
+  - **Acceptance Criteria**:
+    - Push-to-talk transcribes spoken English locally within target latency (<1.5s for 5s utterance on target hardware).
+    - Local TTS synthesizes responses with <500ms time-to-first-audio chunk.
+    - Wake-word requires explicit opt-in, consumes <3% CPU when idle, and can be disabled instantly.
+    - Raw audio buffers scrubbed immediately from RAM after transcription; zero audio saved to disk.
+    - Visual indicator illuminates whenever microphone capture is active.
+
+- [ ] **P11.4 Conversational Voice-to-Action Integration**:
+  - **Objective**: Connect local speech recognition to P11.1 task synthesis and PICO's existing capability execution engine.
+  - **Scope**:
+    - End-to-end voice intent execution: Spoken user commands transcribed locally -> routed through Context Compiler and Model Gateway -> synthesized into DAG workflow -> validated and authorized -> executed via existing capabilities (`os.launch_application`, `browser.open_page`, `filesystem.*`, `homeassistant.*`, `memory.*`).
+    - Capability bounds & honest limitations: Actions strictly map to registered, allowlisted capabilities; unsupported commands are reported honestly with clear explanations rather than hallucinating success or fabricating mock actions.
+    - Consequential action gating: Consequential operations halt at `awaiting_approval`; companion enters `awaiting_approval` state, explains the action, and requires explicit operator confirmation via Policy A.
+    - Independent verification & voice confirmation: Outbound spoken response reports the verified postcondition outcome.
+  - **Prerequisites**: P11.1, P11.2, P11.3, P8, P7.4.
+  - **Acceptance Criteria**:
+    - Voice commands trigger appropriate workflows and capabilities across supported domains.
+    - Consequential actions halt for human approval; model cannot approve its own actions.
+    - Spoken responses accurately reflect independent verification outcomes, never claiming unverified success.
+    - Zero hardcoded demo bypasses or special-cased automations.
+
+- [ ] **P11.5 Contextual Desktop Perception & Screen Understanding**:
+  - **Objective**: Grant PICO contextual visual awareness of the user's desktop workspace with strict privacy and security boundaries.
+  - **Scope**:
+    - Explicit on-demand capture: Screen capture or active window snapshot initiated strictly by explicit user command ("PICO, what is this error?") or explicit toggle. Cameras/screen capture off by default.
+    - Untrusted data boundary: Screen contents, OCR text, and visual elements carry conservative `INTERNAL` or `SENSITIVE` classification and are treated as untrusted input. Adversarial text in windows (e.g. prompt injection in browser pages) can NEVER grant permissions or elevate caller privileges.
+    - Local visual reasoning: Multimodal understanding performed locally via quantized vision-language model (e.g. lightweight Moondream / Qwen2-VL) or structured OCR text extraction; zero automatic cloud forwarding of desktop screenshots.
+    - Ephemeral frame lifecycle: Captured bitmap frames reside strictly in transient RAM and are discarded immediately post-inference; zero screenshot history persisted to disk without explicit user export.
+    - Contextual explanation: PICO answers questions about visible UI elements, error dialogs, terminal outputs, and application state.
+  - **Prerequisites**: P6, P8.1, P11.1, P11.2.
+  - **Acceptance Criteria**:
+    - Screen capture occurs only with explicit user trigger; visible capture indicator displayed.
+    - Captured frames discarded from RAM immediately after analysis; 0 frames saved to disk.
+    - Prompt injections present on screen cannot alter system prompts, invoke unapproved tools, or bypass Policy A gates.
+    - Unclassified or sensitive screen data is strictly barred from cloud inference (`RULE_PRIVATE_LOCAL_PIN`).
+
+---
+
+#### Thin Vertical-Slice Acceptance Demonstration:
+An end-to-end acceptance target validating the entire companion stack:
+1. PICO Desktop Companion launches as a lightweight, floating desktop widget with expressive eyes in `idle` state.
+2. Companion visual state synchronizes with the local PICO backend over the Policy A loopback bridge.
+3. User presses the companion push-to-talk button and speaks: *"PICO, search for the latest James Webb telescope video on YouTube and play it."*
+4. Local STT transcribes the speech to text on device with zero cloud audio transmission.
+5. PICO processes the transcription through the Context Compiler and Model Gateway over the resident `qwen3.5:2b` model.
+6. PICO synthesizes a validated 2-step workflow DAG:
+   - Step 1: `browser.open_page` navigating to YouTube search URL within approved origins (`https://www.youtube.com`).
+   - Step 2: `browser.open_page` navigating to the first search result URL.
+7. Capability Registry validates schemas, permissions, and origin allowlists (`RiskTier.READ_ONLY`, `browser:open`).
+8. Playwright browser adapter executes the navigation in a sandboxed, ephemeral browser context.
+   *(Note: Video playback requires active internet connectivity, while speech recognition, intent formulation, and workflow coordination execute fully offline).*
+9. Independent verifier verifies HTTP response and DOM landing evidence.
+10. Companion transitions to `speaking` state and delivers a concise spoken confirmation via local TTS: *"Playing the latest James Webb Space Telescope video on YouTube."*
