@@ -113,6 +113,16 @@ class Settings(BaseSettings):
     WORKFLOW_SYNTHESIS_BENCHMARK_FILE: str | None = None
     WORKFLOW_SYNTHESIS_BENCHMARK_REPORTS_DIR: str | None = None
     WORKFLOW_SYNTHESIS_MAX_BENCHMARK_AGE_HOURS: int = 720  # 30 days freshness window
+    WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS: int = 1024
+
+    @field_validator('WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS')
+    @classmethod
+    def validate_workflow_synthesis_completion_budget(cls, v: int) -> int:
+        if v < 128 or v > 2048:
+            raise ValueError(
+                f'WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS must be between 128 and 2048 tokens; got {v}.'
+            )
+        return v
 
     @field_validator("BROWSER_ALLOWED_ORIGINS", mode="before")
     @classmethod

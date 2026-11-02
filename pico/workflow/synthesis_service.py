@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pydantic import ValidationError as PydanticValidationError
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -61,7 +62,7 @@ class WorkflowSynthesisService:
         self.db = db
         self.scheduler = scheduler or get_scheduler()
         self.capability_registry = capability_registry or default_registry
-        completion_budget = getattr(settings, "WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS", 1024)
+        completion_budget = settings.WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS
         self.context_compiler = context_compiler or ContextCompiler(completion_reserve=completion_budget)
         self.routing_service = routing_service or RoutingService()
         self.gate = gate or WorkflowSynthesisGate()
@@ -105,14 +106,29 @@ class WorkflowSynthesisService:
         try:
             data = json.loads(cleaned)
         except Exception as exc:
-            logger.warning("Failed to decode model JSON for workflow synthesis: %s (raw length: %d)", exc, len(raw_text))
-            raise ValidationError(f"Model output is not valid JSON: {exc}")
+            lineno = getattr(exc, "lineno", None)
+            colno = getattr(exc, "colno", None)
+            loc_str = f" at line {lineno} col {colno}" if lineno is not None else ""
+            logger.warning(
+                "Failed to decode model JSON for workflow synthesis: JSONDecodeError%s (raw length: %d)",
+                loc_str,
+                len(raw_text),
+            )
+            raise ValidationError(f"Model output is not valid JSON (syntax error{loc_str}).")
 
         try:
             return WorkflowSynthesisPlan.model_validate(data)
-        except Exception as exc:
-            logger.warning("Model output failed WorkflowSynthesisPlan validation: %s", exc)
-            raise ValidationError(f"Model output violates workflow synthesis schema: {exc}")
+        except PydanticValidationError as exc:
+            safe_errs = [
+                f"{'.'.join(str(p) for p in err.get('loc', ()))} ({err.get('type', 'invalid')})"
+                for err in exc.errors()
+            ]
+            safe_summary = ", ".join(safe_errs) if safe_errs else "schema_violation"
+            logger.warning(
+                "Model output failed WorkflowSynthesisPlan validation: %s",
+                safe_summary,
+            )
+            raise ValidationError(f"Model output violates workflow synthesis schema: {safe_summary}")
 
     async def synthesize(
         self,
@@ -144,7 +160,7 @@ class WorkflowSynthesisService:
             )
 
         # 2. Context compilation & classification with synchronized completion budget
-        completion_budget = getattr(settings, "WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS", 1024)
+        completion_budget = settings.WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS
         self.context_compiler.completion_reserve = completion_budget
         system_prompt = self._build_system_prompt()
         compiled = self.context_compiler.compile_conversation_context(
@@ -337,10 +353,17 @@ class WorkflowSynthesisService:
                 provider=decision.provider,
                 model_name=decision.model_name,
             )
-        except Exception as exc:
+        except ValidationError as exc:
             self.routing_decision_repo.update_outcome(
                 decision_id=decision.decision_id,
                 outcome="failed",
                 error_message=str(exc),
+            )
+            raise
+        except Exception as exc:
+            self.routing_decision_repo.update_outcome(
+                decision_id=decision.decision_id,
+                outcome="failed",
+                error_message=f"{type(exc).__name__}: execution failure",
             )
             raise

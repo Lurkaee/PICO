@@ -40,6 +40,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const activeConversationIdRef = useRef<string | null>(activeConversation?.id ?? null);
   const activeStreamIdRef = useRef<number>(0);
   const streamConversationIdRef = useRef<string | null>(null);
+  const synthesisRequestIdRef = useRef<number>(0);
 
   activeConversationIdRef.current = activeConversation?.id ?? streamConversationIdRef.current ?? null;
 
@@ -118,6 +119,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     return () => {
       isMounted = false;
+      synthesisRequestIdRef.current += 1;
+      setSynthesizingMessageId(null);
+      setSynthesisResponse(null);
+      setSynthesisError(null);
+      setSubmittedWorkflowId(null);
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -130,6 +136,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const handlePlanWorkflow = async (msg: Message) => {
     if (!isBackendReachable || streaming || synthesizingMessageId !== null) return;
+    const reqId = ++synthesisRequestIdRef.current;
+    const targetConvId = msg.conversation_id;
     setSynthesizingMessageId(msg.id);
     setSynthesisError(null);
     setSynthesisResponse(null);
@@ -139,11 +147,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         conversation_id: msg.conversation_id,
         user_message_id: msg.id,
       });
-      setSynthesisResponse(res);
+      if (synthesisRequestIdRef.current === reqId && activeConversationIdRef.current === targetConvId) {
+        setSynthesisResponse(res);
+      }
     } catch (err) {
-      setSynthesisError(err instanceof Error ? err.message : String(err));
+      if (synthesisRequestIdRef.current === reqId && activeConversationIdRef.current === targetConvId) {
+        setSynthesisError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setSynthesizingMessageId(null);
+      if (synthesisRequestIdRef.current === reqId) {
+        setSynthesizingMessageId(null);
+      }
     }
   };
 
@@ -161,6 +175,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   const handleDismissProposal = () => {
+    synthesisRequestIdRef.current += 1;
+    setSynthesizingMessageId(null);
     setSynthesisResponse(null);
     setSynthesisError(null);
     setSubmittedWorkflowId(null);

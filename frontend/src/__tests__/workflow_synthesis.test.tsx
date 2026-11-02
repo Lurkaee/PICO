@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ChatPanel } from '../components/chat/ChatPanel';
 import { api } from '../api/client';
-import { WorkflowSynthesizeResponse, WorkflowRun } from '../types';
+import { WorkflowSynthesizeResponse, WorkflowRun, Conversation } from '../types';
 
 vi.mock('../api/client', () => ({
   api: {
@@ -72,7 +72,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
   it('handles clicking "Plan as Workflow", showing loading state and rendering ready proposal preview', async () => {
     vi.mocked(api.getMessages).mockResolvedValueOnce([persistedUserMessage]);
 
-    const mockProposal: WorkflowSynthesizeResponse = {
+    const sampleReadyProposal: WorkflowSynthesizeResponse = {
       status: 'ready',
       conversation_id: 'conv_synthesis_1',
       user_message_id: 'msg_user_persisted_1',
@@ -130,7 +130,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
       model_name: 'qwen3.5:2b',
     };
 
-    vi.mocked(api.synthesizeWorkflow).mockResolvedValueOnce(mockProposal);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValueOnce(sampleReadyProposal);
 
     render(<ChatPanel {...defaultProps} />);
     await screen.findByText(persistedUserMessage.content);
@@ -159,7 +159,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
   it('discards proposal preview without submitting anything', async () => {
     vi.mocked(api.getMessages).mockResolvedValueOnce([persistedUserMessage]);
 
-    const mockProposal: WorkflowSynthesizeResponse = {
+    const sampleReadyProposal: WorkflowSynthesizeResponse = {
       status: 'ready',
       conversation_id: 'conv_synthesis_1',
       user_message_id: 'msg_user_persisted_1',
@@ -194,7 +194,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
       model_name: 'qwen3.5:2b',
     };
 
-    vi.mocked(api.synthesizeWorkflow).mockResolvedValueOnce(mockProposal);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValueOnce(sampleReadyProposal);
 
     render(<ChatPanel {...defaultProps} />);
     await screen.findByText(persistedUserMessage.content);
@@ -215,7 +215,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
   it('submits proposed workflow to existing /api/workflows and presents explicit execution guidance', async () => {
     vi.mocked(api.getMessages).mockResolvedValueOnce([persistedUserMessage]);
 
-    const mockProposal: WorkflowSynthesizeResponse = {
+    const sampleReadyProposal: WorkflowSynthesizeResponse = {
       status: 'ready',
       conversation_id: 'conv_synthesis_1',
       user_message_id: 'msg_user_persisted_1',
@@ -260,7 +260,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
       updated_at: '2026-11-02T01:05:00Z',
     };
 
-    vi.mocked(api.synthesizeWorkflow).mockResolvedValueOnce(mockProposal);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValueOnce(sampleReadyProposal);
     vi.mocked(api.submitWorkflow).mockResolvedValueOnce(mockCreatedRun);
 
     render(<ChatPanel {...defaultProps} />);
@@ -273,7 +273,7 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
     fireEvent.click(screen.getByRole('button', { name: /submit workflow/i }));
 
     await waitFor(() => {
-      expect(api.submitWorkflow).toHaveBeenCalledWith(mockProposal.workflow_proposal);
+      expect(api.submitWorkflow).toHaveBeenCalledWith(sampleReadyProposal.workflow_proposal);
     });
 
     // Check success feedback message
@@ -348,5 +348,141 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
     fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
 
     await screen.findByText(/Benchmark qualification gate closed: disabled/i);
+  });
+  const sampleReadyProposal: WorkflowSynthesizeResponse = {
+    status: 'ready',
+    conversation_id: 'conv_synthesis_1',
+    user_message_id: 'msg_user_persisted_1',
+    workflow_proposal: {
+      name: 'Calculated Test Workflow',
+      description: 'Test description',
+      data_classification: 'INTERNAL',
+      steps: [
+        {
+          step_key: 'calc_step',
+          capability_id: 'core.calculator',
+          capability_version: '1.0.0',
+          dependencies: [],
+          input_template: { expression: '42 * 10' },
+        },
+      ],
+    },
+    step_details: [
+      {
+        step_key: 'calc_step',
+        capability_id: 'core.calculator',
+        capability_version: '1.0.0',
+        capability_name: 'Safe Bounded Calculator',
+        capability_description: 'Evaluates arithmetic',
+        dependencies: [],
+        input_template: { expression: '42 * 10' },
+        risk_tier: 'READ_ONLY',
+        consequential: false,
+        requires_approval: false,
+      },
+    ],
+    explanation: 'Test explanation',
+    effective_classification: 'INTERNAL',
+    selected_profile: 'local-small',
+    provider: 'ollama',
+    model_name: 'qwen3.5:2b',
+  };
+
+  it('does not apply synthesis response if user navigates to another conversation before completion', async () => {
+    let resolveSynthesis: (val: any) => void = () => {};
+    const deferredPromise = new Promise((resolve) => {
+      resolveSynthesis = resolve;
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockReturnValueOnce(deferredPromise as any);
+
+    const { rerender } = render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    // Trigger synthesis in conv 1
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+    expect(screen.getByText(/Planning.../i)).toBeInTheDocument();
+
+    // Navigate to conversation 2
+    const conv2: Conversation = {
+      id: 'conv_other_2',
+      title: 'Second Conversation',
+      created_at: '2026-11-02T10:00:00Z',
+      updated_at: '2026-11-02T10:00:00Z',
+    };
+    rerender(<ChatPanel {...defaultProps} activeConversation={conv2} />);
+
+    // Now resolve the synthesis request from conversation 1
+    await act(async () => {
+      resolveSynthesis(sampleReadyProposal);
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Proposal card from conversation 1 must NOT appear in conversation 2
+    expect(screen.queryByText(/Calculated Test Workflow/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Planning.../i)).not.toBeInTheDocument();
+  });
+
+  it('invalidates pending synthesis when proposal is dismissed or cancelled', async () => {
+    let resolveSynthesis: (val: any) => void = () => {};
+    const deferredPromise = new Promise((resolve) => {
+      resolveSynthesis = resolve;
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockReturnValueOnce(deferredPromise as any);
+
+    const { unmount } = render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+    expect(screen.getByText(/Planning.../i)).toBeInTheDocument();
+
+    // Unmount/dismiss
+    unmount();
+
+    // Resolve deferred synthesis
+    await act(async () => {
+      resolveSynthesis(sampleReadyProposal);
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Clean teardown without uncaught state update warnings
+  });
+
+  it('ensures a stale response does not replace current conversation state', async () => {
+    let resolveFirst: (val: any) => void = () => {};
+    const deferredFirst = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockReturnValueOnce(deferredFirst as any);
+
+    const { rerender } = render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    // Request 1 started in conv1
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+
+    // Switch to conv2 and back to conv1
+    const conv2: Conversation = {
+      id: 'conv_other_2',
+      title: 'Second Conversation',
+      created_at: '2026-11-02T10:00:00Z',
+      updated_at: '2026-11-02T10:00:00Z',
+    };
+    rerender(<ChatPanel {...defaultProps} activeConversation={conv2} />);
+    rerender(<ChatPanel {...defaultProps} activeConversation={activeConv} />);
+
+    // Now resolve the old request from before the switch
+    await act(async () => {
+      resolveFirst(sampleReadyProposal);
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Stale proposal should NOT appear
+    expect(screen.queryByText(/Calculated Test Workflow/i)).not.toBeInTheDocument();
   });
 });

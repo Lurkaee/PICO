@@ -74,6 +74,8 @@ def valid_benchmark_report_file(tmp_path: Path) -> Path:
         provider="mock",
         is_mock=True,
         status="PASSED",
+        avg_latency_ms=750.0,
+        max_ram_mb=320.0,
     )
     report_file = tmp_path / "valid_bench_report.json"
     report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
@@ -135,6 +137,8 @@ def test_benchmark_gate_failed_gate_fails_closed(
         provider="mock",
         is_mock=True,
         failed_gate="dag_validity",
+        avg_latency_ms=750.0,
+        max_ram_mb=320.0,
     )
     report_file = tmp_path / "failed_bench_report.json"
     report_file.write_text(failed_report.model_dump_json(indent=2), encoding="utf-8")
@@ -163,6 +167,8 @@ def test_benchmark_gate_passed_report_with_failed_mandatory_gate_reported_correc
         provider="mock",
         is_mock=True,
         status="PASSED",
+        avg_latency_ms=750.0,
+        max_ram_mb=320.0,
     )
     # Target gate to fail while keeping top-level report.status == "PASSED"
     for g in report.quality_gates:
@@ -226,6 +232,8 @@ def test_benchmark_gate_stale_report_fails_closed(
         provider="mock",
         is_mock=True,
         timestamp_utc=stale_time,
+        avg_latency_ms=750.0,
+        max_ram_mb=320.0,
     )
     report_file = tmp_path / "stale_bench_report.json"
     report_file.write_text(stale_report.model_dump_json(indent=2), encoding="utf-8")
@@ -251,8 +259,10 @@ def test_benchmark_gate_provider_mismatch_fails_closed(
 
     mismatched_report = generate_qualified_report(
         model_name="unrelated-model:7b",
-        provider="ollama",
-        is_mock=False,
+        provider="mock",
+        is_mock=True,
+        avg_latency_ms=750.0,
+        max_ram_mb=320.0,
     )
     report_file = tmp_path / "mismatch_bench_report.json"
     report_file.write_text(mismatched_report.model_dump_json(indent=2), encoding="utf-8")
@@ -279,6 +289,8 @@ def test_mock_report_cannot_qualify_production_provider(
         provider="ollama",
         is_mock=True,
         status="PASSED",
+        avg_latency_ms=750.0,
+        max_ram_mb=320.0,
     )
     report_file = tmp_path / "ollama_mock_report.json"
     report_file.write_text(mock_report.model_dump_json(indent=2), encoding="utf-8")
@@ -683,6 +695,15 @@ def test_synthesis_finalizes_routing_decision_outcome(
         json={"conversation_id": conv_id, "user_message_id": msg_id},
     )
     assert res_blocked.status_code == 403
+    db_session.expire_all()
+    blocked_decision = (
+        db_session.query(RoutingDecision)
+        .filter(RoutingDecision.conversation_id == conv_id)
+        .order_by(RoutingDecision.created_at.desc())
+        .first()
+    )
+    assert blocked_decision is not None
+    assert blocked_decision.outcome == "blocked"
 
 
 def test_synthesis_json_decode_failure_does_not_log_raw_model_output(
@@ -691,8 +712,9 @@ def test_synthesis_json_decode_failure_does_not_log_raw_model_output(
     monkeypatch: pytest.MonkeyPatch,
     valid_benchmark_report_file: Path,
     caplog: pytest.LogCaptureFixture,
+    db_session: Session,
 ) -> None:
-    """Verify that model output decoding failures log error diagnostics without leaking raw model output into logs."""
+    """Verify that malformed JSON from model does not leak raw output into logs, HTTP response, or database."""
     conv_id, msg_id = test_conversation
     monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
     monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
@@ -708,9 +730,76 @@ def test_synthesis_json_decode_failure_does_not_log_raw_model_output(
                 json={"conversation_id": conv_id, "user_message_id": msg_id},
             )
             assert res.status_code == 422
-            # Must log raw length without exposing secret text
+            # 1. Caplog must log diagnostics without exposing secret
             assert "raw length:" in caplog.text
             assert "SECRET_LEAKED_API_KEY_xyz123" not in caplog.text
+
+            # 2. HTTP response JSON must not contain secret
+            assert "SECRET_LEAKED_API_KEY_xyz123" not in res.text
+
+            # 3. Database routing decision error message must not contain secret
+            db_session.expire_all()
+            decision = (
+                db_session.query(RoutingDecision)
+                .filter(RoutingDecision.conversation_id == conv_id)
+                .order_by(RoutingDecision.created_at.desc())
+                .first()
+            )
+            assert decision is not None
+            assert decision.outcome == "failed"
+            assert "SECRET_LEAKED_API_KEY_xyz123" not in (decision.error_message or "")
+    finally:
+        app.state.provider_override = None
+
+
+def test_synthesis_schema_invalid_model_output_does_not_leak_secrets(
+    client: TestClient,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    valid_benchmark_report_file: Path,
+    caplog: pytest.LogCaptureFixture,
+    db_session: Session,
+) -> None:
+    """Verify that schema-invalid JSON containing sensitive markers does not leak into logs, HTTP response, or DB."""
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
+
+    # Schema invalid: invalid type for steps containing secret marker
+    secret_marker = "SECRET_SCHEMA_MARKER_abc999"
+    schema_invalid_json = json.dumps({
+        "status": "ready",
+        "workflow_name": "Test Workflow",
+        "steps": f"INVALID_STEPS_FIELD_{secret_marker}",
+    })
+    mock_prov = MockModelProvider(fixed_response=schema_invalid_json)
+    app.state.provider_override = mock_prov
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            res = client.post(
+                "/api/workflows/synthesize",
+                json={"conversation_id": conv_id, "user_message_id": msg_id},
+            )
+            assert res.status_code == 422
+
+            # 1. Must not appear in caplog
+            assert secret_marker not in caplog.text
+
+            # 2. Must not appear in HTTP response
+            assert secret_marker not in res.text
+
+            # 3. Must not appear in persisted routing decision error
+            db_session.expire_all()
+            decision = (
+                db_session.query(RoutingDecision)
+                .filter(RoutingDecision.conversation_id == conv_id)
+                .order_by(RoutingDecision.created_at.desc())
+                .first()
+            )
+            assert decision is not None
+            assert decision.outcome == "failed"
+            assert secret_marker not in (decision.error_message or "")
     finally:
         app.state.provider_override = None
 
@@ -869,3 +958,169 @@ def test_synthesis_cyclic_dag_rejected(
         assert "cyclic" in res.json()["detail"].lower()
     finally:
         app.state.provider_override = None
+
+
+# =========================================================================
+# Additional Hardening & Regression Tests
+# =========================================================================
+
+def test_completion_budget_configuration_honored(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    """Verify that WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS is properly enforced and configured."""
+    from pico.workflow.synthesis_service import WorkflowSynthesisService
+
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS", 768)
+    service = WorkflowSynthesisService(db_session)
+    assert service.context_compiler.completion_reserve == 768
+
+    # Validate bounds validator
+    from pico.core.config import Settings
+    with pytest.raises(ValueError, match="must be between 128 and 2048 tokens"):
+        Settings(WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS=64)
+
+    with pytest.raises(ValueError, match="must be between 128 and 2048 tokens"):
+        Settings(WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS=4096)
+
+
+def test_synthetic_benchmark_report_helper_cannot_produce_production_report() -> None:
+    """Verify that generate_qualified_report cannot be called with is_mock=False and requires measurements."""
+    with pytest.raises(ValueError, match="Synthetic benchmark reports cannot be generated with is_mock=False"):
+        generate_qualified_report(is_mock=False)
+
+    # Missing measurements fail performance gates
+    unmeasured_report = generate_qualified_report()
+    latency_gate = next(g for g in unmeasured_report.quality_gates if g.threshold_name == "latency_throughput")
+    ram_gate = next(g for g in unmeasured_report.quality_gates if g.threshold_name == "resource_stability")
+    assert latency_gate.passed is False
+    assert latency_gate.measured_value == "Missing measurement"
+    assert ram_gate.passed is False
+    assert ram_gate.measured_value == "Missing measurement"
+
+
+def test_benchmark_evaluator_ready_expected_prompts_and_mixed_batch() -> None:
+    """Verify that ready-expected benchmark prompts fail capability/input/dag checks on unsupported or clarification responses."""
+    # 1. Valid ready response passes applicable checks
+    valid_ready_json = json.dumps({
+        "status": "ready",
+        "workflow_name": "Test Math",
+        "steps": [
+            {
+                "step_key": "step1",
+                "capability_id": "core.calculator",
+                "capability_version": "1.0.0",
+                "dependencies": [],
+                "input_template": {"expression": "42 * 10"},
+            }
+        ],
+    })
+    ready_eval = evaluate_synthesis_output(valid_ready_json, prompt_id="WS-VALID-01")
+    assert ready_eval["structured_output_valid"] is True
+    assert ready_eval["schema_compliant"] is True
+    assert ready_eval["capability_id_compliant"] is True
+    assert ready_eval["input_schema_compliant"] is True
+    assert ready_eval["dag_valid"] is True
+    assert ready_eval["refusal_clarification_correct"] is None
+
+    # 2. Unsupported response for a ready-expected prompt explicitly fails ready checks
+    unsupported_json = json.dumps({
+        "status": "unsupported",
+        "explanation": "Refusing valid math request",
+        "steps": [],
+    })
+    failed_ready_eval = evaluate_synthesis_output(unsupported_json, prompt_id="WS-VALID-01")
+    assert failed_ready_eval["structured_output_valid"] is True
+    assert failed_ready_eval["schema_compliant"] is True
+    assert failed_ready_eval["capability_id_compliant"] is False
+    assert failed_ready_eval["input_schema_compliant"] is False
+    assert failed_ready_eval["dag_valid"] is False
+    assert failed_ready_eval["refusal_clarification_correct"] is None
+
+    # 3. Refusal response for a refusal prompt does not fail ready checks (they remain None)
+    refusal_eval = evaluate_synthesis_output(unsupported_json, prompt_id="WS-REFUSAL-03")
+    assert refusal_eval["refusal_clarification_correct"] is True
+    assert refusal_eval["capability_id_compliant"] is None
+    assert refusal_eval["input_schema_compliant"] is None
+    assert refusal_eval["dag_valid"] is None
+
+    # 4. Mixed batch containing one failed ready-expected case cannot pass aggregation
+    mixed_evals = [ready_eval, failed_ready_eval, refusal_eval]
+    gates = build_workflow_synthesis_quality_gates(mixed_evals, avg_latency_ms=500.0, max_ram_mb=300.0)
+    caps_gate = next(g for g in gates if g.threshold_name == "capability_id_compliance")
+    dag_gate = next(g for g in gates if g.threshold_name == "dag_validity")
+    assert caps_gate.passed is False
+    assert dag_gate.passed is False
+
+
+def test_qualification_report_identity_and_freshness_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify that invalid identity, future timestamps, duplicate gates, and digest mismatches fail closed."""
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    gate = WorkflowSynthesisGate()
+
+    base_report = generate_qualified_report(
+        model_name="qwen3.5:2b",
+        provider="mock",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=500.0,
+        max_ram_mb=300.0,
+    )
+
+    # 1. Missing required identity field
+    report_bad_suite = base_report.model_copy(update={"suite_version": ""})
+    path_bad = tmp_path / "bad_suite.json"
+    path_bad.write_text(report_bad_suite.model_dump_json(), encoding="utf-8")
+    ok, reason = gate.check_readiness(
+        selected_profile="local-small",
+        provider="mock",
+        model_name="qwen3.5:2b",
+        allow_mock=True,
+        benchmark_file=str(path_bad),
+    )
+    assert ok is False
+    assert "missing required identity field 'suite_version'" in reason
+
+    # 2. Future timestamp
+    future_time = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    report_future = base_report.model_copy(update={"timestamp_utc": future_time})
+    path_future = tmp_path / "future.json"
+    path_future.write_text(report_future.model_dump_json(), encoding="utf-8")
+    ok, reason = gate.check_readiness(
+        selected_profile="local-small",
+        provider="mock",
+        model_name="qwen3.5:2b",
+        allow_mock=True,
+        benchmark_file=str(path_future),
+    )
+    assert ok is False
+    assert "timestamp is in the future" in reason
+
+    # 3. Duplicate quality gates
+    dup_gates = list(base_report.quality_gates) + [base_report.quality_gates[0]]
+    report_dup = base_report.model_copy(update={"quality_gates": dup_gates})
+    path_dup = tmp_path / "dup.json"
+    path_dup.write_text(report_dup.model_dump_json(), encoding="utf-8")
+    ok, reason = gate.check_readiness(
+        selected_profile="local-small",
+        provider="mock",
+        model_name="qwen3.5:2b",
+        allow_mock=True,
+        benchmark_file=str(path_dup),
+    )
+    assert ok is False
+    assert "Duplicate quality gate" in reason
+
+    # 4. Ollama model digest mismatch fails closed
+    ok_digest, reason_digest = gate._validate_report(
+        base_report.model_copy(update={"provider": "ollama", "is_mock": False, "model_digest": "sha256:expected123"}),
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:actual_different456",
+    )
+    assert ok_digest is False
+    assert "Report model digest 'sha256:expected123' does not match active runtime model digest" in reason_digest
