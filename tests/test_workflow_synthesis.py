@@ -651,59 +651,56 @@ def test_synthesis_finalizes_routing_decision_outcome(
     app.state.provider_override = mock_prov
 
     try:
+        existing_ids_a = {d.id for d in db_session.query(RoutingDecision).all()}
         res = client.post(
             "/api/workflows/synthesize",
             json={"conversation_id": conv_id, "user_message_id": msg_id},
         )
         assert res.status_code == 200
         db_session.expire_all()
-        latest_decision = (
-            db_session.query(RoutingDecision)
-            .filter(RoutingDecision.conversation_id == conv_id)
-            .order_by(RoutingDecision.created_at.desc())
-            .first()
-        )
-        assert latest_decision is not None
-        assert latest_decision.outcome == "success"
+        new_decisions_a = [
+            d for d in db_session.query(RoutingDecision).all()
+            if d.id not in existing_ids_a
+        ]
+        assert len(new_decisions_a) == 1
+        assert new_decisions_a[0].outcome == "success"
 
         # Case B: Validation error finalizes outcome="failed"
         bad_prov = MockModelProvider(fixed_response="Invalid Non-JSON response")
         app.state.provider_override = bad_prov
 
+        existing_ids_b = {d.id for d in db_session.query(RoutingDecision).all()}
         res_bad = client.post(
             "/api/workflows/synthesize",
             json={"conversation_id": conv_id, "user_message_id": msg_id},
         )
         assert res_bad.status_code == 422
         db_session.expire_all()
-        failed_decision = (
-            db_session.query(RoutingDecision)
-            .filter(RoutingDecision.conversation_id == conv_id)
-            .order_by(RoutingDecision.created_at.desc())
-            .first()
-        )
-        assert failed_decision is not None
-        assert failed_decision.outcome == "failed"
+        new_decisions_b = [
+            d for d in db_session.query(RoutingDecision).all()
+            if d.id not in existing_ids_b
+        ]
+        assert len(new_decisions_b) == 1
+        assert new_decisions_b[0].outcome == "failed"
 
     finally:
         app.state.provider_override = None
 
     # Case C: Gate blocked finalizes outcome="blocked"
     monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", False)
+    existing_ids_c = {d.id for d in db_session.query(RoutingDecision).all()}
     res_blocked = client.post(
         "/api/workflows/synthesize",
         json={"conversation_id": conv_id, "user_message_id": msg_id},
     )
     assert res_blocked.status_code == 403
     db_session.expire_all()
-    blocked_decision = (
-        db_session.query(RoutingDecision)
-        .filter(RoutingDecision.conversation_id == conv_id)
-        .order_by(RoutingDecision.created_at.desc())
-        .first()
-    )
-    assert blocked_decision is not None
-    assert blocked_decision.outcome == "blocked"
+    new_decisions_c = [
+        d for d in db_session.query(RoutingDecision).all()
+        if d.id not in existing_ids_c
+    ]
+    assert len(new_decisions_c) == 1
+    assert new_decisions_c[0].outcome == "blocked"
 
 
 def test_synthesis_json_decode_failure_does_not_log_raw_model_output(
@@ -1124,3 +1121,337 @@ def test_qualification_report_identity_and_freshness_invariants(
     )
     assert ok_digest is False
     assert "Report model digest 'sha256:expected123' does not match active runtime model digest" in reason_digest
+
+
+
+def test_synthesis_capability_static_input_schema_validation_leakage_prevented(
+    client: TestClient,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    valid_benchmark_report_file: Path,
+    caplog: pytest.LogCaptureFixture,
+    db_session: Session,
+) -> None:
+    """Verify that schema validation failures on capability static inputs never leak rejected values."""
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
+
+    secret_marker = "SUPER_SECRET_TOKEN_XYZ_98765"
+    # core.calculator requires expression: str; provide an invalid dict containing the secret marker
+    leaking_plan = WorkflowSynthesisPlan(
+        status="ready",
+        workflow_name="Secret Calculator Workflow",
+        steps=[
+            {
+                "step_key": "step_calc",
+                "capability_id": "core.calculator",
+                "capability_version": "1.0.0",
+                "dependencies": [],
+                "input_template": {"expression": {"nested_secret": secret_marker}},
+            }
+        ],
+    )
+    mock_prov = MockModelProvider(fixed_response=leaking_plan.model_dump_json())
+    app.state.provider_override = mock_prov
+
+    try:
+        existing_ids = {d.id for d in db_session.query(RoutingDecision).all()}
+        with caplog.at_level(logging.WARNING):
+            res = client.post(
+                "/api/workflows/synthesize",
+                json={"conversation_id": conv_id, "user_message_id": msg_id},
+            )
+            assert res.status_code == 422
+
+            # 1. Assert marker does NOT appear in HTTP 422 response
+            assert secret_marker not in res.text
+            # Useful diagnostic preserved
+            assert "expression" in res.text
+            assert "Step 'step_calc' static input fails schema validation for 'core.calculator'" in res.text
+
+            # 2. Assert marker does NOT appear in captured logs
+            assert secret_marker not in caplog.text
+
+            # 3. Assert marker does NOT appear in persisted RoutingDecision.error_message
+            db_session.expire_all()
+            new_decisions = [
+                d for d in db_session.query(RoutingDecision).all()
+                if d.id not in existing_ids
+            ]
+            assert len(new_decisions) == 1
+            assert new_decisions[0].outcome == "failed"
+            assert secret_marker not in (new_decisions[0].error_message or "")
+            assert "Step 'step_calc' static input fails schema validation" in (new_decisions[0].error_message or "")
+    finally:
+        app.state.provider_override = None
+
+
+def test_ollama_model_digest_exact_matching(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify exact canonical model tag matching without prefix false positives."""
+    from pico.workflow.synthesis_gate import resolve_ollama_model_digest
+
+    daemon_models = [
+        {"name": "qwen3.5:latest", "digest": "sha256:digest_latest_111"},
+        {"name": "qwen3.5:2b", "digest": "sha256:digest_2b_222"},
+        {"name": "qwen3.5:2b-instruct", "digest": "sha256:digest_instruct_333"},
+        {"name": "qwen3.5:2b-fp16", "digest": "sha256:digest_fp16_444"},
+        {"name": "llama3:8b", "digest": "sha256:digest_llama_555"},
+    ]
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"models": daemon_models}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url):
+            return FakeResponse()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    # 1. Untagged model where both :latest and another tag exist -> resolves :latest
+    assert resolve_ollama_model_digest("qwen3.5") == "sha256:digest_latest_111"
+
+    # 2. Explicitly tagged model matches exact tag only
+    assert resolve_ollama_model_digest("qwen3.5:2b") == "sha256:digest_2b_222"
+    assert resolve_ollama_model_digest("qwen3.5:2b-instruct") == "sha256:digest_instruct_333"
+
+    # 3. Missing expected tag returns None
+    assert resolve_ollama_model_digest("qwen3.5:4b") is None
+    assert resolve_ollama_model_digest("llama3") is None  # llama3:latest does not exist, only llama3:8b
+
+    # 4. Prefix match does not resolve similarly named variants
+    assert resolve_ollama_model_digest("qwen") is None
+    assert resolve_ollama_model_digest("qwen3") is None
+
+
+@pytest.mark.anyio
+async def test_synthesis_readiness_check_does_not_block_event_loop(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_benchmark_report_file: Path,
+) -> None:
+    """Verify that asynchronous synthesis request dispatches gate.check_readiness off the event loop."""
+    import asyncio
+    from pico.workflow.synthesis_service import WorkflowSynthesisService
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from pico.schemas.workflow_synthesis import WorkflowSynthesizeRequest
+
+    conv_repo = ConversationRepository(db_session)
+    msg_repo = MessageRepository(db_session)
+    conv = conv_repo.create(conversation_id="conv_async_101", title="Async Test")
+    msg = msg_repo.create(
+        message_id="msg_async_202",
+        conversation_id=conv.id,
+        role="user",
+        content="Calculate 42*10",
+    )
+
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
+
+    gate = WorkflowSynthesisGate()
+    orig_check = gate.check_readiness
+
+    import time
+    def slow_check_readiness(*args, **kwargs):
+        # Simulate blocking I/O (e.g. disk or HTTP check)
+        time.sleep(0.08)
+        return orig_check(*args, **kwargs)
+
+    monkeypatch.setattr(gate, "check_readiness", slow_check_readiness)
+
+    plan = WorkflowSynthesisPlan(status="unsupported", explanation="Test refusal", steps=[])
+    mock_prov = MockModelProvider(fixed_response=plan.model_dump_json())
+
+    service = WorkflowSynthesisService(db=db_session, gate=gate)
+
+    loop_ticks = 0
+    async def ticker():
+        nonlocal loop_ticks
+        for _ in range(6):
+            await asyncio.sleep(0.01)
+            loop_ticks += 1
+
+    req = WorkflowSynthesizeRequest(conversation_id=conv.id, user_message_id=msg.id)
+    # Run synthesis concurrently with event loop ticker
+    res, _ = await asyncio.gather(
+        service.synthesize(request=req, override_provider=mock_prov, allow_mock=True),
+        ticker(),
+    )
+
+    assert res.status == "unsupported"
+    # Ticker was able to run concurrently because check_readiness was offloaded via asyncio.to_thread!
+    assert loop_ticks >= 2
+
+
+def test_evaluate_synthesis_output_exact_capability_version() -> None:
+    """Verify that evaluate_synthesis_output enforces exact capability_version without silent substitution."""
+    from tools.bench.workflow_synthesis import evaluate_synthesis_output
+
+    # 1. Correct version passes
+    valid_plan = json.dumps({
+        "status": "ready",
+        "workflow_name": "Valid Version Plan",
+        "steps": [
+            {
+                "step_key": "calc",
+                "capability_id": "core.calculator",
+                "capability_version": "1.0.0",
+                "dependencies": [],
+                "input_template": {"expression": "1 + 1"},
+            }
+        ],
+    })
+    res_valid = evaluate_synthesis_output(valid_plan, "WS-VALID-01")
+    assert res_valid["capability_id_compliant"] is True
+    assert res_valid["input_schema_compliant"] is True
+    assert res_valid["dag_valid"] is True
+
+    # 2. Incorrect version fails capability_id_compliant
+    wrong_version_plan = json.dumps({
+        "status": "ready",
+        "workflow_name": "Wrong Version Plan",
+        "steps": [
+            {
+                "step_key": "calc",
+                "capability_id": "core.calculator",
+                "capability_version": "2.0.0",
+                "dependencies": [],
+                "input_template": {"expression": "1 + 1"},
+            }
+        ],
+    })
+    res_wrong = evaluate_synthesis_output(wrong_version_plan, "WS-VALID-01")
+    assert res_wrong["capability_id_compliant"] is False
+    assert res_wrong["input_schema_compliant"] is False
+    assert res_wrong["dag_valid"] is False
+
+    # 3. Missing version fails capability_id_compliant
+    missing_version_plan = json.dumps({
+        "status": "ready",
+        "workflow_name": "Missing Version Plan",
+        "steps": [
+            {
+                "step_key": "calc",
+                "capability_id": "core.calculator",
+                "capability_version": None,
+                "dependencies": [],
+                "input_template": {"expression": "1 + 1"},
+            }
+        ],
+    })
+    res_missing = evaluate_synthesis_output(missing_version_plan, "WS-VALID-01")
+    assert res_missing["capability_id_compliant"] is False
+
+
+@pytest.mark.anyio
+async def test_workflow_synthesis_benchmark_runner_mock_execution(tmp_path: Path) -> None:
+    """Verify that WorkflowSynthesisBenchmarkRunner executes all prompts and produces report with telemetry."""
+    from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
+
+    class MockSynthesisProvider:
+        async def stream_chat(self, messages, options):
+            user_msg = messages[-1].content
+            from pico.providers.types import TokenEvent, DoneEvent
+            if "Calculate" in user_msg or "task_100" in user_msg:
+                resp = json.dumps({
+                    "status": "ready",
+                    "workflow_name": "Synthesized",
+                    "steps": [
+                        {
+                            "step_key": "s1",
+                            "capability_id": "core.calculator",
+                            "capability_version": "1.0.0",
+                            "dependencies": [],
+                            "input_template": {"expression": "42 * 10"},
+                        }
+                    ],
+                })
+            elif "math on that number" in user_msg:
+                resp = json.dumps({
+                    "status": "needs_clarification",
+                    "clarification_question": "Which number from earlier should be multiplied?",
+                })
+            else:
+                resp = json.dumps({
+                    "status": "unsupported",
+                    "explanation": "Action is unsupported or violates safety boundary.",
+                })
+
+            for ch in resp:
+                yield TokenEvent(delta=ch)
+            yield DoneEvent(finish_reason="stop")
+
+    runner = WorkflowSynthesisBenchmarkRunner(
+        model_name="qwen3.5:2b",
+        provider_name="ollama",
+        provider=MockSynthesisProvider(),
+        is_mock=True,
+        output_dir=tmp_path,
+    )
+
+    report = await runner.execute()
+    assert report.task_category == "workflow_synthesis"
+    assert report.suite_id == "pico_workflow_synthesis_v1"
+    assert report.suite_version == "1.0.0"
+    assert len(report.measured_runs) == 6
+    assert len(report.quality_gates) == 10
+    assert report.status == "PASSED"
+
+    # Verify JSON artifact was saved
+    saved_file = tmp_path / f"{report.benchmark_id}.json"
+    assert saved_file.is_file()
+
+
+def test_workflow_synthesis_missing_prompt_fails_quality_gates() -> None:
+    """Verify that omitting required benchmark prompts strictly fails quality gates."""
+    from tools.bench.workflow_synthesis import build_workflow_synthesis_quality_gates
+
+    # Evaluations covering only 2 of the 6 prompts
+    partial_evals = [
+        {
+            "prompt_id": "WS-VALID-01",
+            "structured_output_valid": True,
+            "schema_compliant": True,
+            "capability_id_compliant": True,
+            "input_schema_compliant": True,
+            "dag_valid": True,
+            "refusal_clarification_correct": None,
+            "security_boundary_respected": True,
+            "injection_resistant": True,
+        },
+        {
+            "prompt_id": "WS-CHAIN-02",
+            "structured_output_valid": True,
+            "schema_compliant": True,
+            "capability_id_compliant": True,
+            "input_schema_compliant": True,
+            "dag_valid": True,
+            "refusal_clarification_correct": None,
+            "security_boundary_respected": True,
+            "injection_resistant": True,
+        },
+    ]
+
+    gates = build_workflow_synthesis_quality_gates(
+        evaluations=partial_evals,
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+    )
+    # Missing prompts WS-REFUSAL-03, WS-CLARIFY-04, etc. must fail gates
+    assert any(not g.passed for g in gates)
+    caps_gate = next(g for g in gates if g.threshold_name == "capability_id_compliance")
+    assert caps_gate.passed is False

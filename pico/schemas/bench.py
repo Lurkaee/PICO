@@ -121,3 +121,5 @@ class BenchmarkReport(BaseModel):
     task_category: str | None = None
     suite_id: str | None = None
     suite_version: str | None = None
+    git_commit: str | None = None
+    evaluator_version: str | None = None

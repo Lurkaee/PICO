@@ -41,6 +41,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const activeStreamIdRef = useRef<number>(0);
   const streamConversationIdRef = useRef<string | null>(null);
   const synthesisRequestIdRef = useRef<number>(0);
+  const submissionRequestIdRef = useRef<number>(0);
 
   activeConversationIdRef.current = activeConversation?.id ?? streamConversationIdRef.current ?? null;
 
@@ -74,6 +75,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       setCurrentRouting(null);
       setIsCancelled(false);
       streamConversationIdRef.current = null;
+      synthesisRequestIdRef.current += 1;
+      submissionRequestIdRef.current += 1;
+      setIsSubmittingWorkflow(false);
+      setSynthesizingMessageId(null);
+      setSynthesisResponse(null);
+      setSynthesisError(null);
+      setSubmittedWorkflowId(null);
       return;
     }
 
@@ -120,6 +128,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     return () => {
       isMounted = false;
       synthesisRequestIdRef.current += 1;
+      submissionRequestIdRef.current += 1;
+      setIsSubmittingWorkflow(false);
       setSynthesizingMessageId(null);
       setSynthesisResponse(null);
       setSynthesisError(null);
@@ -163,19 +173,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const handleSubmitWorkflow = async (proposal: WorkflowCreatePayload) => {
     if (!isBackendReachable || isSubmittingWorkflow) return;
+    const reqId = ++submissionRequestIdRef.current;
+    const targetConvId = activeConversation?.id ?? null;
     setIsSubmittingWorkflow(true);
+    setSynthesisError(null);
     try {
       const run = await api.submitWorkflow(proposal);
-      setSubmittedWorkflowId(run.id);
+      if (
+        submissionRequestIdRef.current === reqId &&
+        activeConversationIdRef.current === targetConvId
+      ) {
+        setSubmittedWorkflowId(run.id);
+      }
     } catch (err) {
-      setSynthesisError(`Failed to submit workflow: ${err instanceof Error ? err.message : String(err)}`);
+      if (
+        submissionRequestIdRef.current === reqId &&
+        activeConversationIdRef.current === targetConvId
+      ) {
+        setSynthesisError(`Failed to submit workflow: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
-      setIsSubmittingWorkflow(false);
+      if (submissionRequestIdRef.current === reqId) {
+        setIsSubmittingWorkflow(false);
+      }
     }
   };
 
   const handleDismissProposal = () => {
     synthesisRequestIdRef.current += 1;
+    submissionRequestIdRef.current += 1;
+    setIsSubmittingWorkflow(false);
     setSynthesizingMessageId(null);
     setSynthesisResponse(null);
     setSynthesisError(null);

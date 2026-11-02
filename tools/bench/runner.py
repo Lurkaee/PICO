@@ -84,12 +84,15 @@ async def check_ollama_preflight(
             models = data.get("models", [])
             installed_names = [m.get("name", "") for m in models]
 
-            # Check exact match or base tag match (e.g. qwen3.5:2b vs qwen3.5:2b:latest)
+            # Exact canonical tag matching without prefix-based false positives
+            target = target_model.strip()
+            target_tag = target if ":" in target else f"{target}:latest"
             matched_digest = None
             found = False
             for m in models:
-                name = m.get("name", "")
-                if name == target_model or name.startswith(f"{target_model}:") or target_model.startswith(f"{name}:"):
+                name = m.get("name", "").strip()
+                model_field = m.get("model", "").strip()
+                if name == target_tag or model_field == target_tag:
                     found = True
                     matched_digest = m.get("digest")
                     break
@@ -784,6 +787,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional quality gate: minimum acceptable quality pass rate (0.0 - 1.0)",
     )
     parser.add_argument(
+        "--task-category",
+        type=str,
+        default="default",
+        choices=["default", "workflow_synthesis"],
+        help="Benchmark suite task category (default or workflow_synthesis)",
+    )
+    parser.add_argument(
         "--max-vram-mb",
         type=float,
         default=None,
@@ -794,6 +804,22 @@ def parse_args() -> argparse.Namespace:
 
 async def main_async() -> int:
     args = parse_args()
+    if args.task_category == "workflow_synthesis":
+        from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
+        runner = WorkflowSynthesisBenchmarkRunner(
+            model_name=args.model,
+            base_url=args.base_url,
+            repetitions=args.repetitions,
+            output_dir=args.output_dir,
+            is_mock=args.mock,
+        )
+        report = await runner.execute()
+        print(f"[+] Status: {report.status}")
+        print(f"    Reason: {report.status_reason}")
+        for g in report.quality_gates:
+            gate_status = "PASSED" if g.passed else "FAILED"
+            print(f"    Gate [{g.threshold_name}]: {gate_status} ({g.measured_value})")
+        return 0 if report.status == "PASSED" else 1
     runner = LocalBenchmarkRunner(
         model_name=args.model,
         base_url=args.base_url,

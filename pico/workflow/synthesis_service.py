@@ -8,6 +8,7 @@ creates WorkflowRuns, dispatches tools, or grants approvals.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -199,9 +200,10 @@ class WorkflowSynthesisService:
             metadata_json={"reason": decision.reason, "fallback_profiles": decision.fallback_profiles},
         )
 
-        # 4. Benchmark Qualification Gate
+        # 4. Benchmark Qualification Gate (dispatched off event loop via asyncio.to_thread)
         effective_allow_mock = allow_mock or (decision.provider == "mock") or (override_provider is not None)
-        is_qualified, gate_reason = self.gate.check_readiness(
+        is_qualified, gate_reason = await asyncio.to_thread(
+            self.gate.check_readiness,
             selected_profile=decision.selected_profile,
             provider=decision.provider,
             model_name=decision.model_name,
@@ -357,7 +359,7 @@ class WorkflowSynthesisService:
             self.routing_decision_repo.update_outcome(
                 decision_id=decision.decision_id,
                 outcome="failed",
-                error_message=str(exc),
+                error_message=f"ValidationError: {exc.message}",
             )
             raise
         except Exception as exc:

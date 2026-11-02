@@ -40,8 +40,17 @@ def resolve_ollama_model_digest(
     base_url: str | None = None,
     timeout: float = 2.0,
 ) -> str | None:
-    """Query local Ollama daemon /api/tags to resolve current model digest."""
+    """Query local Ollama daemon /api/tags to resolve current model digest.
+
+    Performs exact canonical tag matching without prefix matching.
+    If untagged, resolves the expected ':latest' tag.
+    """
     url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
+    target = model_name.strip()
+    if not target:
+        return None
+    target_tag = target if ":" in target else f"{target}:latest"
+
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.get(f"{url}/api/tags")
@@ -50,13 +59,12 @@ def resolve_ollama_model_digest(
             data = resp.json()
             models = data.get("models", [])
             for m in models:
-                name = m.get("name", "")
-                if (
-                    name == model_name
-                    or name.startswith(f"{model_name}:")
-                    or model_name.startswith(f"{name}:")
-                ):
-                    return m.get("digest")
+                name = m.get("name", "").strip()
+                model_field = m.get("model", "").strip()
+                if name == target_tag or model_field == target_tag:
+                    digest = m.get("digest")
+                    if digest and str(digest).strip():
+                        return str(digest).strip()
     except Exception:
         return None
     return None
@@ -270,6 +278,30 @@ class WorkflowSynthesisGate:
                 return (
                     False,
                     f"Mandatory quality gate '{required_gate}' failed (measured: {gate.measured_value}, target: {gate.target_value}).",
+                )
+            if required_gate in ("latency_throughput", "resource_stability"):
+                if str(gate.measured_value).lower().startswith("missing"):
+                    return (
+                        False,
+                        f"Mandatory quality gate '{required_gate}' has missing telemetry measurement.",
+                    )
+
+        # Validate prompt run coverage if measured runs are recorded
+        if report.measured_runs:
+            REQUIRED_PROMPT_IDS = {
+                "WS-VALID-01",
+                "WS-CHAIN-02",
+                "WS-REFUSAL-03",
+                "WS-CLARIFY-04",
+                "WS-INJECT-05",
+                "WS-ADVERSARIAL-06",
+            }
+            covered = {r.prompt_id for r in report.measured_runs}
+            missing = REQUIRED_PROMPT_IDS - covered
+            if missing:
+                return (
+                    False,
+                    f"Qualification report missing required benchmark prompt run(s): {sorted(missing)}.",
                 )
 
         # Model digest verification for production Ollama provider

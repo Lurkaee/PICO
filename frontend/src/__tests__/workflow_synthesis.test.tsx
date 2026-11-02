@@ -485,4 +485,177 @@ describe('Conversational Workflow Synthesis UI (Milestone P11.1)', () => {
     // Stale proposal should NOT appear
     expect(screen.queryByText(/Calculated Test Workflow/i)).not.toBeInTheDocument();
   });
+
+  it('does not apply submission success if user navigates to another conversation before completion', async () => {
+    let resolveSubmit: (val: any) => void = () => {};
+    const deferredSubmit = new Promise((resolve) => {
+      resolveSubmit = resolve;
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValue(sampleReadyProposal);
+    vi.mocked(api.submitWorkflow).mockReturnValueOnce(deferredSubmit as any);
+
+    const { rerender } = render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    // Plan workflow to get proposal card
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+    await screen.findByText(/Calculated Test Workflow/i);
+
+    // Click Submit Workflow
+    fireEvent.click(screen.getByRole('button', { name: /submit workflow/i }));
+    expect(screen.getByText(/Submitting.../i)).toBeInTheDocument();
+
+    // Navigate to conversation 2
+    const conv2: Conversation = {
+      id: 'conv_other_2',
+      title: 'Second Conversation',
+      created_at: '2026-11-02T10:00:00Z',
+      updated_at: '2026-11-02T10:00:00Z',
+    };
+    rerender(<ChatPanel {...defaultProps} activeConversation={conv2} />);
+
+    // Resolve submission
+    await act(async () => {
+      resolveSubmit({
+        id: 'run_submitted_999',
+        name: 'Calculated Test Workflow',
+        status: 'queued',
+      });
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Success banner from conv 1 must not appear in conv 2
+    expect(screen.queryByText(/run_submitted_999/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Submitting.../i)).not.toBeInTheDocument();
+  });
+
+  it('does not apply submission failure if user navigates to another conversation before rejection', async () => {
+    let rejectSubmit: (val: any) => void = () => {};
+    const deferredSubmit = new Promise((_, reject) => {
+      rejectSubmit = reject;
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValue(sampleReadyProposal);
+    vi.mocked(api.submitWorkflow).mockReturnValueOnce(deferredSubmit as any);
+
+    const { rerender } = render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    // Plan workflow to get proposal card
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+    await screen.findByText(/Calculated Test Workflow/i);
+
+    // Click Submit Workflow
+    fireEvent.click(screen.getByRole('button', { name: /submit workflow/i }));
+    expect(screen.getByText(/Submitting.../i)).toBeInTheDocument();
+
+    // Navigate to conversation 2
+    const conv2: Conversation = {
+      id: 'conv_other_2',
+      title: 'Second Conversation',
+      created_at: '2026-11-02T10:00:00Z',
+      updated_at: '2026-11-02T10:00:00Z',
+    };
+    rerender(<ChatPanel {...defaultProps} activeConversation={conv2} />);
+
+    // Reject submission
+    await act(async () => {
+      rejectSubmit(new Error('Network drop on submission'));
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Error banner from conv 1 must not appear in conv 2
+    expect(screen.queryByText(/Network drop on submission/i)).not.toBeInTheDocument();
+  });
+
+  it('clears previous synthesis error when a new submission begins', async () => {
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValue(sampleReadyProposal);
+    vi.mocked(api.submitWorkflow).mockRejectedValueOnce(new Error('Initial failure'));
+
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+    await screen.findByText(/Calculated Test Workflow/i);
+
+    // First submit fails
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /submit workflow/i }));
+    });
+    await screen.findByText(/Failed to submit workflow: Initial failure/i);
+
+    // Mock second submit to be pending
+    let resolveSecond: (val: any) => void = () => {};
+    const deferredSecond = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+    vi.mocked(api.submitWorkflow).mockReturnValueOnce(deferredSecond as any);
+
+    // Trigger second submission
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /submit workflow/i }));
+    });
+
+    // Error should be cleared immediately when new submission starts
+    expect(screen.queryByText(/Failed to submit workflow: Initial failure/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Submitting.../i)).toBeInTheDocument();
+
+    // Resolve second submission
+    await act(async () => {
+      resolveSecond({
+        id: 'run_recovered_100',
+        name: 'Calculated Test Workflow',
+        status: 'queued',
+      });
+    });
+    await screen.findByText(/run_recovered_100/i);
+  });
+
+  it('resets submitting state properly when navigating between conversations', async () => {
+    let resolveSubmit: (val: any) => void = () => {};
+    const deferredSubmit = new Promise((resolve) => {
+      resolveSubmit = resolve;
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([persistedUserMessage]);
+    vi.mocked(api.synthesizeWorkflow).mockResolvedValue(sampleReadyProposal);
+    vi.mocked(api.submitWorkflow).mockReturnValueOnce(deferredSubmit as any);
+
+    const { rerender } = render(<ChatPanel {...defaultProps} />);
+    await screen.findByText(persistedUserMessage.content);
+
+    fireEvent.click(screen.getByRole('button', { name: /plan request msg_user_persisted_1 as workflow/i }));
+    await screen.findByText(/Calculated Test Workflow/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /submit workflow/i }));
+    expect(screen.getByText(/Submitting.../i)).toBeInTheDocument();
+
+    // Navigate to conv 2 wrapped in act
+    const conv2: Conversation = {
+      id: 'conv_other_2',
+      title: 'Second Conversation',
+      created_at: '2026-11-02T10:00:00Z',
+      updated_at: '2026-11-02T10:00:00Z',
+    };
+    await act(async () => {
+      rerender(<ChatPanel {...defaultProps} activeConversation={conv2} />);
+    });
+    expect(screen.queryByText(/Submitting.../i)).not.toBeInTheDocument();
+
+    // Resolve in-flight submission after navigation
+    await act(async () => {
+      resolveSubmit({ id: 'run_other_1' });
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // Return to conv 1: prior proposal should be clean
+    await act(async () => {
+      rerender(<ChatPanel {...defaultProps} activeConversation={activeConv} />);
+    });
+    expect(screen.queryByText(/Submitting.../i)).not.toBeInTheDocument();
+  });
 });
