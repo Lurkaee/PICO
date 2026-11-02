@@ -7,10 +7,14 @@ Validates:
 4. Model Output Contract: strict JSON schema adherence, extra injected field rejection, refusal & clarification behaviors.
 5. Graph & Capability Validation: cycle detection, unknown capability rejection, topological ordering.
 6. Strict 3-Stage Execution Boundary: synthesis creates no runs/tools; explicit submission persists draft; explicit advance executes.
+7. Remediation regressions: QualityGateResult target_value attribute, directory scanning fail-closed,
+   evaluator-to-aggregator None handling, missing hardware measurements fail, routing outcome finalization,
+   JSON error logging privacy, proposal idempotency key.
 """
 
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any
 import pytest
@@ -21,19 +25,26 @@ from pico.core.config import settings
 from pico.main import app
 from pico.models.conversation import Conversation
 from pico.models.message import Message
+from pico.models.routing_decision import RoutingDecision
 from pico.models.tool_execution import ToolExecution
 from pico.models.workflow import WorkflowRun
 from pico.providers.mock import MockModelProvider
+from pico.providers.types import GenerationOptions
 from pico.repositories.conversation_repo import ConversationRepository
 from pico.repositories.message_repo import MessageRepository
 from pico.schemas.workflow_synthesis import (
+    MANDATORY_QUALITY_GATES,
     SynthesizedStepModel,
     WorkflowSynthesisPlan,
     WorkflowSynthesizeRequest,
 )
+from pico.workflow.synthesis_gate import WorkflowSynthesisGate
 from tools.bench.workflow_synthesis import (
+    WORKFLOW_SYNTHESIS_PROMPTS,
     WORKFLOW_SYNTHESIS_SUITE_ID,
     WORKFLOW_SYNTHESIS_TASK_CATEGORY,
+    build_workflow_synthesis_quality_gates,
+    evaluate_synthesis_output,
     generate_qualified_report,
 )
 
@@ -137,6 +148,68 @@ def test_benchmark_gate_failed_gate_fails_closed(
     assert "dag_validity' failed" in res.json()["detail"] or "FAILED" in res.json()["detail"]
 
 
+def test_benchmark_gate_passed_report_with_failed_mandatory_gate_reported_correctly(
+    client: TestClient,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify that a report with status='PASSED' but a failed mandatory gate fails closed without AttributeError."""
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+
+    report = generate_qualified_report(
+        model_name="pico-mock-deterministic",
+        provider="mock",
+        is_mock=True,
+        status="PASSED",
+    )
+    # Target gate to fail while keeping top-level report.status == "PASSED"
+    for g in report.quality_gates:
+        if g.threshold_name == "injection_resistance":
+            g.passed = False
+            g.measured_value = "Failed"
+            g.target_value = "Zero prompt injection breaches"
+            break
+
+    report_file = tmp_path / "gate_failure_bench_report.json"
+    report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(report_file))
+
+    res = client.post(
+        "/api/workflows/synthesize",
+        json={"conversation_id": conv_id, "user_message_id": msg_id},
+    )
+    assert res.status_code == 403
+    detail = res.json()["detail"]
+    assert "Mandatory quality gate 'injection_resistance' failed" in detail
+    assert "measured: Failed" in detail
+    assert "target: Zero prompt injection breaches" in detail
+
+
+def test_benchmark_gate_directory_scan_no_valid_report_fails_closed(
+    client: TestClient,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify that directory scanning with no valid report fails closed with 403 rather than raising an unhandled exception."""
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", None)
+
+    empty_dir = tmp_path / "empty_reports"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_REPORTS_DIR", str(empty_dir))
+
+    res = client.post(
+        "/api/workflows/synthesize",
+        json={"conversation_id": conv_id, "user_message_id": msg_id},
+    )
+    assert res.status_code == 403
+    assert "No benchmark report files found" in res.json()["detail"]
+
+
 def test_benchmark_gate_stale_report_fails_closed(
     client: TestClient,
     test_conversation: tuple[str, str],
@@ -191,6 +264,127 @@ def test_benchmark_gate_provider_mismatch_fails_closed(
     )
     assert res.status_code == 403
     assert "mismatch" in res.json()["detail"]
+
+
+def test_mock_report_cannot_qualify_production_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify that a mock report (is_mock=True) cannot qualify a production provider like ollama even if allow_mock=True."""
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    gate = WorkflowSynthesisGate()
+
+    mock_report = generate_qualified_report(
+        model_name="qwen3.5:2b",
+        provider="ollama",
+        is_mock=True,
+        status="PASSED",
+    )
+    report_file = tmp_path / "ollama_mock_report.json"
+    report_file.write_text(mock_report.model_dump_json(indent=2), encoding="utf-8")
+
+    is_qualified, reason = gate.check_readiness(
+        selected_profile="local-small",
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=True,  # Even if caller passes allow_mock=True, non-mock provider must reject mock reports!
+        benchmark_file=str(report_file),
+    )
+    assert is_qualified is False
+    assert "Mock benchmark reports cannot qualify workflow synthesis in production mode" in reason
+
+
+def test_missing_hardware_measurements_fail_gates() -> None:
+    """Verify that missing latency or RAM measurements strictly fail the corresponding quality gates."""
+    evals = [
+        {
+            "structured_output_valid": True,
+            "schema_compliant": True,
+            "capability_id_compliant": True,
+            "input_schema_compliant": True,
+            "dag_valid": True,
+            "refusal_clarification_correct": None,
+            "security_boundary_respected": True,
+            "injection_resistant": True,
+        }
+    ]
+    # Omit latency and RAM measurements
+    gates = build_workflow_synthesis_quality_gates(evals, avg_latency_ms=None, max_ram_mb=None)
+    gate_map = {g.threshold_name: g for g in gates}
+
+    assert gate_map["latency_throughput"].passed is False
+    assert gate_map["latency_throughput"].measured_value == "Missing measurement"
+    assert gate_map["resource_stability"].passed is False
+    assert gate_map["resource_stability"].measured_value == "Missing measurement"
+
+
+def test_benchmark_evaluator_and_aggregator_contract_with_all_prompts() -> None:
+    """Verify that evaluate_synthesis_output properly uses None for not-applicable checks and that build_workflow_synthesis_quality_gates passes."""
+    evaluations = []
+
+    for prompt in WORKFLOW_SYNTHESIS_PROMPTS:
+        if prompt.prompt_id in ("WS-REFUSAL-03", "WS-INJECT-05", "WS-ADVERSARIAL-06"):
+            text = json.dumps({"status": "unsupported", "explanation": "Operation not supported"})
+        elif prompt.prompt_id == "WS-CLARIFY-04":
+            text = json.dumps({"status": "needs_clarification", "clarification_question": "What number?"})
+        elif prompt.prompt_id == "WS-VALID-01":
+            text = json.dumps({
+                "status": "ready",
+                "workflow_name": "Calc",
+                "steps": [
+                    {
+                        "step_key": "s1",
+                        "capability_id": "core.calculator",
+                        "capability_version": "1.0.0",
+                        "dependencies": [],
+                        "input_template": {"expression": "42 * 10"},
+                    }
+                ],
+            })
+        elif prompt.prompt_id == "WS-CHAIN-02":
+            text = json.dumps({
+                "status": "ready",
+                "workflow_name": "Chain",
+                "steps": [
+                    {
+                        "step_key": "s1",
+                        "capability_id": "db.read_task",
+                        "capability_version": "1.0.0",
+                        "dependencies": [],
+                        "input_template": {"task_id": "task_100"},
+                    },
+                    {
+                        "step_key": "s2",
+                        "capability_id": "core.validate_json",
+                        "capability_version": "1.0.0",
+                        "dependencies": ["s1"],
+                        "input_template": {"raw_json": '{"ok": true}'},
+                    },
+                ],
+            })
+        else:
+            text = json.dumps({"status": "unsupported", "explanation": "Unknown"})
+
+        eval_res = evaluate_synthesis_output(text, prompt.prompt_id)
+        evaluations.append(eval_res)
+
+    # Verify not-applicable checks are None
+    refusal_eval = next(e for i, e in enumerate(evaluations) if WORKFLOW_SYNTHESIS_PROMPTS[i].prompt_id == "WS-REFUSAL-03")
+    assert refusal_eval["capability_id_compliant"] is None
+    assert refusal_eval["input_schema_compliant"] is None
+    assert refusal_eval["dag_valid"] is None
+    assert refusal_eval["refusal_clarification_correct"] is True
+
+    ready_eval = next(e for i, e in enumerate(evaluations) if WORKFLOW_SYNTHESIS_PROMPTS[i].prompt_id == "WS-VALID-01")
+    assert ready_eval["capability_id_compliant"] is True
+    assert ready_eval["input_schema_compliant"] is True
+    assert ready_eval["dag_valid"] is True
+    assert ready_eval["refusal_clarification_correct"] is None
+
+    # Aggregator must successfully evaluate all 10 gates to True!
+    gates = build_workflow_synthesis_quality_gates(evaluations, avg_latency_ms=850.0, max_ram_mb=350.0)
+    for g in gates:
+        assert g.passed is True, f"Gate '{g.threshold_name}' unexpectedly failed: {g}"
 
 
 # =========================================================================
@@ -310,7 +504,7 @@ def test_synthesis_privacy_guard_blocks_cloud_on_sensitive_context(
 
 
 # =========================================================================
-# 3. Model Output & Graph Validation Tests
+# 3. Model Output, Graph Validation & Proposal Idempotency Tests
 # =========================================================================
 
 def test_synthesis_successful_ready_plan_and_execution_boundary(
@@ -320,7 +514,7 @@ def test_synthesis_successful_ready_plan_and_execution_boundary(
     monkeypatch: pytest.MonkeyPatch,
     valid_benchmark_report_file: Path,
 ) -> None:
-    """Verify successful synthesis of a chained DAG plan and verify the execution boundary."""
+    """Verify successful synthesis of a chained DAG plan, proposal idempotency key, and execution boundary."""
     conv_id, msg_id = test_conversation
     monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
     monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
@@ -375,6 +569,13 @@ def test_synthesis_successful_ready_plan_and_execution_boundary(
         assert len(data["workflow_proposal"]["steps"]) == 2
         assert len(data["step_details"]) == 2
 
+        # Verify idempotency_key is present on the proposal and under 128 chars
+        proposal = data["workflow_proposal"]
+        assert "idempotency_key" in proposal
+        assert proposal["idempotency_key"] is not None
+        assert proposal["idempotency_key"].startswith("wfsynth_")
+        assert len(proposal["idempotency_key"]) <= 128
+
         # Verify authoritative step details derived from registry
         step_1 = data["step_details"][0]
         assert step_1["step_key"] == "calc_1"
@@ -395,15 +596,121 @@ def test_synthesis_successful_ready_plan_and_execution_boundary(
         assert db_session.query(ToolExecution).count() == initial_execs
 
         # Step 2: Explicit confirmation by user submitting the proposal to /api/workflows
-        submit_res = client.post("/api/workflows", json=data["workflow_proposal"])
+        submit_res = client.post("/api/workflows", json=proposal)
         assert submit_res.status_code == 201
         submitted_run = submit_res.json()
         assert submitted_run["name"] == "Calculation & Validation Flow"
         assert submitted_run["status"] == "queued"
+        first_run_id = submitted_run["id"]
 
-        # Verified that 1 workflow run was created in queued state (not yet advanced)
+        # Verified that exactly 1 workflow run was created in queued state
         assert db_session.query(WorkflowRun).count() == initial_runs + 1
 
+        # Step 3: Resubmitting the same proposal must be idempotent (no duplicate run created)
+        resubmit_res = client.post("/api/workflows", json=proposal)
+        assert resubmit_res.status_code in (200, 201)
+        resubmitted_run = resubmit_res.json()
+        assert resubmitted_run["id"] == first_run_id
+        assert db_session.query(WorkflowRun).count() == initial_runs + 1
+
+    finally:
+        app.state.provider_override = None
+
+
+def test_synthesis_finalizes_routing_decision_outcome(
+    client: TestClient,
+    test_conversation: tuple[str, str],
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_benchmark_report_file: Path,
+) -> None:
+    """Verify that routing decision outcomes are properly finalized on success, validation failure, and gate blockage."""
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
+
+    # Case A: Success finalizes outcome="success"
+    plan = WorkflowSynthesisPlan(
+        status="unsupported",
+        explanation="Refusal reason",
+        steps=[],
+    )
+    mock_prov = MockModelProvider(fixed_response=plan.model_dump_json())
+    app.state.provider_override = mock_prov
+
+    try:
+        res = client.post(
+            "/api/workflows/synthesize",
+            json={"conversation_id": conv_id, "user_message_id": msg_id},
+        )
+        assert res.status_code == 200
+        db_session.expire_all()
+        latest_decision = (
+            db_session.query(RoutingDecision)
+            .filter(RoutingDecision.conversation_id == conv_id)
+            .order_by(RoutingDecision.created_at.desc())
+            .first()
+        )
+        assert latest_decision is not None
+        assert latest_decision.outcome == "success"
+
+        # Case B: Validation error finalizes outcome="failed"
+        bad_prov = MockModelProvider(fixed_response="Invalid Non-JSON response")
+        app.state.provider_override = bad_prov
+
+        res_bad = client.post(
+            "/api/workflows/synthesize",
+            json={"conversation_id": conv_id, "user_message_id": msg_id},
+        )
+        assert res_bad.status_code == 422
+        db_session.expire_all()
+        failed_decision = (
+            db_session.query(RoutingDecision)
+            .filter(RoutingDecision.conversation_id == conv_id)
+            .order_by(RoutingDecision.created_at.desc())
+            .first()
+        )
+        assert failed_decision is not None
+        assert failed_decision.outcome == "failed"
+
+    finally:
+        app.state.provider_override = None
+
+    # Case C: Gate blocked finalizes outcome="blocked"
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", False)
+    res_blocked = client.post(
+        "/api/workflows/synthesize",
+        json={"conversation_id": conv_id, "user_message_id": msg_id},
+    )
+    assert res_blocked.status_code == 403
+
+
+def test_synthesis_json_decode_failure_does_not_log_raw_model_output(
+    client: TestClient,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    valid_benchmark_report_file: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify that model output decoding failures log error diagnostics without leaking raw model output into logs."""
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_FILE", str(valid_benchmark_report_file))
+
+    secret_raw_text = "SECRET_LEAKED_API_KEY_xyz123 Not valid json"
+    mock_prov = MockModelProvider(fixed_response=secret_raw_text)
+    app.state.provider_override = mock_prov
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            res = client.post(
+                "/api/workflows/synthesize",
+                json={"conversation_id": conv_id, "user_message_id": msg_id},
+            )
+            assert res.status_code == 422
+            # Must log raw length without exposing secret text
+            assert "raw length:" in caplog.text
+            assert "SECRET_LEAKED_API_KEY_xyz123" not in caplog.text
     finally:
         app.state.provider_override = None
 

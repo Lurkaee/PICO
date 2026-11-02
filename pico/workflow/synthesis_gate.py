@@ -11,17 +11,28 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from pico.core.config import settings
-from tools.bench.models import BenchmarkReport
-from tools.bench.workflow_synthesis import (
+from pico.schemas.bench import BenchmarkReport
+from pico.schemas.workflow_synthesis import (
     MANDATORY_QUALITY_GATES,
     WORKFLOW_SYNTHESIS_SUITE_ID,
     WORKFLOW_SYNTHESIS_TASK_CATEGORY,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_default_reports_dir() -> Path:
+    """Resolve benchmark reports directory independent of current working directory."""
+    configured_dir = getattr(settings, "WORKFLOW_SYNTHESIS_BENCHMARK_REPORTS_DIR", None)
+    if configured_dir:
+        return Path(configured_dir)
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    candidate = repo_root / "tools" / "bench" / "reports"
+    if candidate.is_dir():
+        return candidate
+    return Path("tools/bench/reports")
 
 
 class WorkflowSynthesisGate:
@@ -65,14 +76,21 @@ class WorkflowSynthesisGate:
                 )
 
         # Scan default benchmark reports directory
-        reports_dir = Path("tools/bench/reports")
+        reports_dir = get_default_reports_dir()
         if not reports_dir.is_dir():
             return (
                 False,
                 f"Benchmark reports directory not found ({reports_dir}); no qualification report available.",
             )
 
-        candidates = sorted(reports_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        try:
+            candidates = sorted(reports_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception as e:
+            return (
+                False,
+                f"Failed to scan benchmark reports directory ({reports_dir}): {e}",
+            )
+
         if not candidates:
             return (
                 False,
@@ -126,7 +144,7 @@ class WorkflowSynthesisGate:
                 f"Report suite ID '{report.suite_id}' does not match required '{WORKFLOW_SYNTHESIS_SUITE_ID}'.",
             )
 
-        if report.is_mock and not allow_mock:
+        if report.is_mock and (not allow_mock or provider.lower() != "mock"):
             return (
                 False,
                 "Mock benchmark reports cannot qualify workflow synthesis in production mode.",
@@ -172,7 +190,7 @@ class WorkflowSynthesisGate:
             if not gate.passed:
                 return (
                     False,
-                    f"Mandatory quality gate '{required_gate}' failed (measured: {gate.measured_value}, threshold: {gate.threshold_value}).",
+                    f"Mandatory quality gate '{required_gate}' failed (measured: {gate.measured_value}, target: {gate.target_value}).",
                 )
 
         return (
