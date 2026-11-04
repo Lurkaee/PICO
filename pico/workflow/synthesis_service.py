@@ -21,6 +21,7 @@ from pico.capabilities import CapabilityRegistry, registry as default_registry
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, EntityNotFoundError, ValidationError
 from pico.core.id_gen import generate_id
+from pico.core.provenance import resolve_active_runtime_commit
 from pico.providers.base import ModelProvider
 from pico.providers.types import GenerationOptions
 from pico.repositories.conversation_repo import ConversationRepository
@@ -205,6 +206,7 @@ class WorkflowSynthesisService:
 
         # 4. Benchmark Qualification Gate (dispatched off event loop via asyncio.to_thread)
         effective_allow_mock = allow_mock or (decision.provider == "mock") or (override_provider is not None)
+        active_commit = resolve_active_runtime_commit() if not effective_allow_mock else None
         is_qualified, gate_reason = await asyncio.to_thread(
             self.gate.check_readiness,
             selected_profile=decision.selected_profile,
@@ -212,6 +214,7 @@ class WorkflowSynthesisService:
             model_name=decision.model_name,
             allow_mock=effective_allow_mock,
             benchmark_file=benchmark_file,
+            active_git_commit=active_commit,
         )
         if not is_qualified:
             self.routing_decision_repo.update_outcome(

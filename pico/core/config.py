@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     WORKFLOW_SYNTHESIS_BENCHMARK_REPORTS_DIR: str | None = None
     WORKFLOW_SYNTHESIS_MAX_BENCHMARK_AGE_HOURS: int = 720  # 30 days freshness window
     WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS: int = 1024
+    PICO_BUILD_COMMIT: str | None = None
 
     @field_validator('WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS')
     @classmethod

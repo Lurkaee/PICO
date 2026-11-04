@@ -95,6 +95,11 @@ class WorkflowSynthesisGate:
                 "Workflow synthesis is disabled in system configuration (WORKFLOW_SYNTHESIS_ENABLED=False).",
             )
 
+        resolved_commit = active_git_commit
+        if resolved_commit is None and not (allow_mock and provider.lower() == "mock"):
+            from pico.core.provenance import resolve_active_runtime_commit
+            resolved_commit = resolve_active_runtime_commit()
+
         target_file = benchmark_file or settings.WORKFLOW_SYNTHESIS_BENCHMARK_FILE
         if target_file:
             path = Path(target_file)
@@ -112,7 +117,7 @@ class WorkflowSynthesisGate:
                     model_name,
                     allow_mock=allow_mock,
                     active_model_digest=active_model_digest,
-                    active_git_commit=active_git_commit,
+                    active_git_commit=resolved_commit,
                 )
             except Exception as e:
                 return (
@@ -162,7 +167,7 @@ class WorkflowSynthesisGate:
                     model_name,
                     allow_mock=allow_mock,
                     active_model_digest=active_model_digest,
-                    active_git_commit=active_git_commit,
+                    active_git_commit=resolved_commit,
                 )
 
         return (
@@ -252,13 +257,23 @@ class WorkflowSynthesisGate:
                     False,
                     f"Production qualification report git_commit '{report.git_commit}' is not a valid 40-character SHA.",
                 )
-
-        if active_git_commit and str(active_git_commit).strip():
-            if report.git_commit != str(active_git_commit).strip():
+            if not active_git_commit or not str(active_git_commit).strip():
+                return (
+                    False,
+                    "Active runtime commit could not be established; production qualification fails closed.",
+                )
+            if report.git_commit.lower() != str(active_git_commit).strip().lower():
                 return (
                     False,
                     f"Qualification report git_commit '{report.git_commit}' does not match active system commit '{active_git_commit}'.",
                 )
+        else:
+            if active_git_commit and str(active_git_commit).strip() and active_git_commit != "mock-git-commit":
+                if report.git_commit != "mock-git-commit" and report.git_commit.lower() != str(active_git_commit).strip().lower():
+                    return (
+                        False,
+                        f"Qualification report git_commit '{report.git_commit}' does not match active system commit '{active_git_commit}'.",
+                    )
 
         if (
             report.provider.lower() != provider.lower()

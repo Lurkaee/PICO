@@ -1125,6 +1125,7 @@ def test_qualification_report_identity_and_freshness_invariants(
         model_name="qwen3.5:2b",
         allow_mock=False,
         active_model_digest="sha256:actual_different456",
+        active_git_commit="a" * 40,
     )
     assert ok_digest is False
     assert "Report model digest 'sha256:expected123' does not match active runtime model digest" in reason_digest
@@ -2177,3 +2178,257 @@ async def test_runner_cli_rejects_max_tokens_for_workflow_synthesis(monkeypatch:
         assert "--max-tokens is not supported for workflow_synthesis" in captured.out
     finally:
         sys.argv = orig_argv
+
+
+# ---------------------------------------------------------------------------
+# Authoritative Runtime Provenance Regression Tests (P11.1)
+# ---------------------------------------------------------------------------
+
+def test_runtime_provenance_correct_commit_passes_comparison() -> None:
+    """1. A report with the correct runtime commit passes the commit comparison."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    active_sha = "a" * 40
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        model_digest="sha256:digest123",
+        git_commit=active_sha,
+    )
+    report.is_mock = False
+    ok, reason = gate._validate_report(
+        report,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:digest123",
+        active_git_commit=active_sha,
+    )
+    assert ok is True
+    assert "verified" in reason.lower()
+
+
+@pytest.mark.anyio
+async def test_synthesis_service_path_rejects_report_from_older_or_mismatched_commit(
+    db_session: Session,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """2. A report from an older commit is rejected by the real synthesis service readiness path."""
+    from pico.workflow.synthesis_service import WorkflowSynthesisService
+    from pico.schemas.workflow_synthesis import WorkflowSynthesizeRequest
+    from tools.bench.workflow_synthesis import generate_qualified_report
+    from pico.core.errors import AuthorizationError
+    from pico.repositories.routing_decision_repo import RoutingDecisionRepository
+    import pico.workflow.synthesis_service as svc_mod
+    from pico.workflow import synthesis_gate
+
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "ollama")
+
+    older_commit = "1" * 40
+    active_runtime_commit = "2" * 40
+
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=800.0,
+        max_ram_mb=400.0,
+        model_digest="sha256:active_model_digest_123",
+        git_commit=older_commit,
+    )
+    report.is_mock = False
+    report_file = tmp_path / "older_bench_report.json"
+    report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    monkeypatch.setattr(svc_mod, "resolve_active_runtime_commit", lambda: active_runtime_commit)
+    monkeypatch.setattr(
+        synthesis_gate,
+        "resolve_ollama_model_digest",
+        lambda model_name, base_url=None: "sha256:active_model_digest_123",
+    )
+
+    service = WorkflowSynthesisService(db=db_session)
+    request = WorkflowSynthesizeRequest(
+        conversation_id=conv_id,
+        user_message_id=msg_id,
+        requested_profile="local-small",
+    )
+
+    with pytest.raises(AuthorizationError) as exc_info:
+        await service.synthesize(request, benchmark_file=str(report_file))
+
+    err_msg = str(exc_info.value)
+    assert "does not match active system commit" in err_msg
+    assert older_commit in err_msg
+    assert active_runtime_commit in err_msg
+
+    routing_repo = RoutingDecisionRepository(db_session)
+    decisions = routing_repo.list_by_conversation(conv_id)
+    assert len(decisions) >= 1
+    latest_decision = decisions[-1]
+    assert latest_decision.outcome == "blocked"
+    assert "does not match active system commit" in latest_decision.error_message
+
+
+def test_missing_active_runtime_commit_fails_closed_for_production() -> None:
+    """3. Missing active runtime commit fails closed for production."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        model_digest="sha256:digest123",
+        git_commit="a" * 40,
+    )
+    report.is_mock = False
+
+    # 1. active_git_commit is None
+    ok_none, reason_none = gate._validate_report(
+        report,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:digest123",
+        active_git_commit=None,
+    )
+    assert ok_none is False
+    assert "Active runtime commit could not be established" in reason_none
+
+    # 2. active_git_commit is empty string
+    ok_empty, reason_empty = gate._validate_report(
+        report,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:digest123",
+        active_git_commit="",
+    )
+    assert ok_empty is False
+    assert "Active runtime commit could not be established" in reason_empty
+
+
+def test_valid_pico_git_commit_does_not_bypass_dirty_tree_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4. A valid PICO_GIT_COMMIT does not bypass dirty-tree checks when Git metadata is available."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    head_sha = "a" * 40
+    monkeypatch.setenv("PICO_GIT_COMMIT", head_sha)
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{head_sha}\n")
+        if cmd == ["git", "status", "--porcelain"]:
+            # Dirty tree with tracked file modification
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=" M pico/workflow/synthesis_service.py\n"
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+
+    # When require_clean is True, dirty tree must fail closed despite valid PICO_GIT_COMMIT
+    resolved = resolve_active_runtime_commit(require_clean=True)
+    assert resolved is None
+
+
+def test_environment_sha_differing_from_git_head_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5. An environment SHA that differs from Git HEAD is rejected."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    head_sha = "a" * 40
+    different_env_sha = "b" * 40
+    monkeypatch.setenv("PICO_GIT_COMMIT", different_env_sha)
+
+    def mock_subprocess_run(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{head_sha}\n")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+
+    resolved = resolve_active_runtime_commit(require_clean=False)
+    assert resolved is None
+
+
+def test_valid_build_identity_used_safely_when_git_metadata_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """6. A valid build identity can be used safely when Git metadata is absent, according to documented production contract."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    # Simulate absent Git metadata (e.g., packaged Docker container or wheel)
+    def mock_git_absent(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess, "run", mock_git_absent)
+
+    # 1. Authoritative build commit provided -> accepted
+    build_sha = "c" * 40
+    monkeypatch.setenv("PICO_BUILD_COMMIT", build_sha)
+    resolved = resolve_active_runtime_commit(require_clean=True)
+    assert resolved == build_sha
+
+    # 2. No build commit provided -> fails closed without fabrication
+    monkeypatch.delenv("PICO_BUILD_COMMIT", raising=False)
+    monkeypatch.delenv("PICO_GIT_COMMIT", raising=False)
+    monkeypatch.delenv("GIT_COMMIT", raising=False)
+    monkeypatch.setattr(settings, "PICO_BUILD_COMMIT", None)
+    resolved_none = resolve_active_runtime_commit(require_clean=True)
+    assert resolved_none is None
+
+
+def test_mock_provenance_cannot_qualify_real_ollama_provider() -> None:
+    """7. Mock provenance cannot qualify a real Ollama provider."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+
+    # 1. Mock report with mock commit
+    mock_report = generate_qualified_report(
+        provider="mock",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        git_commit="mock-git-commit",
+    )
+    ok_mock, reason_mock = gate._validate_report(
+        mock_report,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+    )
+    assert ok_mock is False
+    assert "Mock benchmark reports cannot qualify workflow synthesis in production mode" in reason_mock
+
+    # 2. Mock report with 40-hex SHA still rejected for real Ollama provider
+    mock_report_with_sha = mock_report.model_copy(update={"git_commit": "a" * 40})
+    ok_sha, reason_sha = gate._validate_report(
+        mock_report_with_sha,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_git_commit="a" * 40,
+    )
+    assert ok_sha is False
+    assert "Mock benchmark reports cannot qualify workflow synthesis in production mode" in reason_sha

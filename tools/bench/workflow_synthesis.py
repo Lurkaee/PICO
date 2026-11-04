@@ -21,6 +21,7 @@ import httpx
 
 from pico.capabilities import CapabilityRegistry, registry as default_registry
 from pico.core.config import settings
+from pico.core.provenance import resolve_active_runtime_commit
 from pico.schemas.bench import BenchmarkReport, QualityGateResult, RunMeasurement
 from pico.schemas.workflow import StepDefinition, WorkflowCreate
 from pico.schemas.workflow_synthesis import (
@@ -440,44 +441,11 @@ class DeterministicMockSynthesisProvider:
 def resolve_current_git_commit(require_clean: bool = False) -> str | None:
     """Resolve current git commit SHA for benchmark provenance.
 
-    When require_clean is True, verifies working tree is clean via git status --porcelain.
-    Returns a valid 40-character hexadecimal commit SHA or None.
+    When running inside a Git checkout, strictly verifies clean working tree (if require_clean is True)
+    and verifies that any environment-provided SHA strictly matches the actual checkout HEAD.
+    Returns a valid 40-character lowercase hexadecimal commit SHA or None.
     """
-    import re
-
-    commit = os.environ.get("PICO_GIT_COMMIT") or os.environ.get("GIT_COMMIT")
-    if commit and str(commit).strip():
-        val = str(commit).strip()
-        if re.fullmatch(r"[0-9a-fA-F]{40}", val):
-            return val
-        return None
-
-    try:
-        if require_clean:
-            status_res = subprocess.run(
-                ["git", "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                timeout=2.0,
-                check=False,
-            )
-            if status_res.returncode != 0 or status_res.stdout.strip():
-                return None
-
-        res = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            val = res.stdout.strip()
-            if re.fullmatch(r"[0-9a-fA-F]{40}", val):
-                return val
-    except Exception:
-        pass
-    return None
+    return resolve_active_runtime_commit(require_clean=require_clean)
 
 
 def query_ollama_model_memory(
