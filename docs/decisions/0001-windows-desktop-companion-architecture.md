@@ -68,8 +68,8 @@ We systematically evaluated four candidate Windows desktop technologies against 
 
 | Evaluation Criterion | Option 1: Tauri 2 + Rust | Option 2: C# / .NET + WebView2 | Option 3: PySide6 (Qt for Python) | Option 4: Electron |
 | :--- | :--- | :--- | :--- | :--- |
-| **Idle Memory Footprint** | **Estimated ~30–60 MB RAM** (Architectural projection: native Rust shell + pre-installed Windows 11 WebView2; qualification pending actual Windows 11 measurements in P11.2.4) | **Estimated ~70–110 MB RAM** (Architectural estimate: .NET CLR/GC runtime working set baseline + WebView2 process tree) | **Estimated ~150–250 MB RAM** (Architectural estimate: QtWebEngine embeds full Chromium framework; QML alternative requires total rewrite) | **Estimated ~180–300+ MB RAM** (Architectural estimate: Bundles dedicated Chromium browser + Node.js runtime processes) |
-| **Meets <100 MB Budget?** | **PROJECTED YES** (Estimated headroom; qualification pending empirical Windows 11 measurement in P11.2.4) | **MARGINAL / RISKY** (Estimated baseline approaches or exceeds 100 MB before application state) | **NO** (Estimated baseline exceeds 100 MB budget) | **NO** (Estimated baseline significantly violates 100 MB budget) |
+| **Idle Memory Footprint** | **Estimated ~40–60 MB RAM subtotal** (~15–25 MB native host + ~25–35 MB WebView2 renderer; complete process tree including browser, crashpad, and utility processes projected at ~60–90 MB; qualification pending actual Windows 11 measurements in P11.2.4) | **Estimated ~70–110 MB RAM** (Architectural estimate: .NET CLR/GC runtime working set baseline + WebView2 process tree) | **Estimated ~150–250 MB RAM** (Architectural estimate: QtWebEngine embeds full Chromium framework; QML alternative requires total rewrite) | **Estimated ~180–300+ MB RAM** (Architectural estimate: Bundles dedicated Chromium browser + Node.js runtime processes) |
+| **Meets <100 MB Budget?** | **PROJECTED YES (Pending Full-Tree Measurement)** (Estimated headroom based on host+renderer subtotal and ~60–90 MB projected whole-tree working set; qualification pending empirical Windows 11 measurement of complete process tree in P11.2.4) | **MARGINAL / RISKY** (Estimated baseline approaches or exceeds 100 MB before application state) | **NO** (Estimated baseline exceeds 100 MB budget) | **NO** (Estimated baseline significantly violates 100 MB budget) |
 | **UI Code Reuse** | **100%** (Embeds existing React 18 + Vite frontend directly) | **100%** (Embeds existing React build via WebView2) | **0–20%** (Requires QML rewrite or heavyweight Qt WebEngine) | **100%** (Embeds React frontend in Chromium renderer) |
 | **Windows 11 Integration** | **Native** (Tauri system-tray plugin, frameless transparency, Windows API bindings) | **Native** (First-class Windows Forms / WPF / WinUI integration) | **Native** (QSystemTrayIcon, frameless windows, Qt platform abstraction) | **Good** (Tray and frameless windows, but known transparent window drag issues) |
 | **Security & Sandboxing** | **High** (Fine-grained capability allowlist; zero native privilege leakage) | **Medium** (Full .NET process permissions; requires manual isolation) | **Medium** (Direct Python interpreter access; no web sandbox isolation) | **Medium-Low** (Node.js integration risks; large attack surface) |
@@ -81,7 +81,7 @@ We systematically evaluated four candidate Windows desktop technologies against 
 > - Electron: Chromium renderer process + browser main process + Node runtime overhead typically establish an idle baseline of 180–300 MB for simple desktop shells.
 > - PySide6 with QtWebEngine: Embeds a full Chromium content module, incurring 150–250 MB idle baseline; rewriting in pure QML would eliminate Chromium overhead but forfeit 100% of PICO's verified React components and tests.
 > - C# / .NET + WebView2: .NET CoreCLR GC heap baseline (~30–50 MB) plus WebView2 runtime processes (~40–60 MB) results in an estimated 70–110 MB working set.
-> - Tauri 2 + Rust: Reuses the system-level Windows 11 Evergreen WebView2 runtime without bundling Chromium or Node, projecting ~30–60 MB idle across all processes. Final qualification requires empirical measurement in P11.2.4.
+> - Tauri 2 + Rust: Reuses the system-level Windows 11 Evergreen WebView2 runtime without bundling Chromium or Node, projecting ~40–60 MB idle for the native host and renderer subtotal, and an estimated ~60–90 MB across the full process tree (including WebView2 browser process, crashpad handler, and utility processes). Final whole-tree qualification requires empirical measurement in P11.2.4.
 
 ---
 
@@ -90,7 +90,7 @@ We systematically evaluated four candidate Windows desktop technologies against 
 ### Option 1: Tauri 2 + Rust (Recommended & Selected)
 - **Strengths**:
   - Leverages Windows 11's pre-installed `Microsoft.Web.WebView2` runtime, eliminating the need to bundle a separate Chromium browser engine.
-  - The native shell is written in Rust, compiling to a compact binary (<15 MB) that has an estimated baseline memory footprint of ~15–25 MB for the native host process and ~25–35 MB for the WebView2 renderer, totaling an **estimated ~40–60 MB idle RAM**. Note: This is an architectural projection based on published WebView2 / Tauri 2 runtime profiles, NOT an empirical measurement of the PICO desktop companion. Actual qualification of the complete companion process tree on target hardware is mandatory in P11.2.4 before milestone completion.
+  - The native shell is written in Rust, compiling to a compact binary (<15 MB) that has an estimated baseline memory footprint of ~15–25 MB for the native host process and ~25–35 MB for the WebView2 renderer, totaling an **estimated ~40–60 MB idle RAM for these two processes as a subtotal**. The full Windows companion process tree also includes the WebView2 browser process (`msedgewebview2.exe`), crashpad handler, and utility processes, projecting a whole-tree working set of ~60–90 MB idle RAM. Note: This is an architectural projection based on published WebView2 / Tauri 2 runtime profiles, NOT an empirical measurement of the PICO desktop companion. Actual qualification of the complete companion process tree on target hardware is mandatory in P11.2.4 before milestone completion.
   - Out-of-the-box support for system tray icons, context menus, frameless transparent windows, and window drag ergonomics.
   - Native permissions system (Tauri Capabilities) enforces zero IPC privilege exposure to the web view.
 - **Trade-offs**:
@@ -227,10 +227,15 @@ Before transmitting any operator credentials (`pico_operator_session` cookie, se
      - Following backend process restarts or machine sleep/wake cycles.
      - After any timeout or ambiguous connection failure.
 4. **Implementation Contract for P11.2.2**:
-   - P11.2.2 must define and implement an authoritative local trust anchor without relying on circular network assumptions.
-   - Candidate mechanisms to be qualified in P11.2.2 include:
-     - A local runtime instance token or nonce generated by PICO Core on startup, written to protected per-user local runtime storage (e.g. SQLite database or protected runtime file `%APPDATA%\PICO\runtime\instance.json`) accessible exclusively by the local operator user process tree, validated by the Tauri native Rust layer prior to socket communication.
-     - A mutual local challenge-response handshake over loopback.
+   - **Threat Model Scope & Limitations**:
+     - *Primary Threat Boundary*: Protection against unprivileged local rogue listeners, background daemons, or unauthenticated processes binding to `127.0.0.1:8000` while PICO Core is inactive or restarting.
+     - *Same-User Process Boundary*: In the Windows security architecture, any process executing within the same interactive Windows logon session shares read access to per-user directories (`%APPDATA%`). Therefore, a static or unencrypted disk-persisted instance token alone cannot serve as sole proof of backend identity if hostile same-user processes are considered in scope.
+   - **Mandatory Trust Anchor Requirements**:
+     - P11.2.2 must qualify an OS-enforced or process-isolated verification mechanism that does not rely exclusively on shared filesystem state.
+     - Candidate mechanisms to be evaluated and qualified in P11.2.2 include:
+       - **OS-Enforced Process Identity Verification**: The Tauri native Rust layer queries the Windows TCP connection owner table via Win32 API (`GetExtendedTcpTable` / `MIB_TCPTABLE_OWNER_PID`) to resolve the process ID (PID) listening on `127.0.0.1:8000`. The companion verifies the PID against the genuine PICO Core process identity (executable image path, authenticated module signature, parent-child relationship, or registered process start time).
+       - **OS-Enforced Local IPC / Named Pipe Handshake**: Establishing initial handshake over a Windows Named Pipe configured with an explicit Windows Security Descriptor (ACL) restricting access, and validating client/server process identity via `GetNamedPipeServerProcessId` before opening or authenticating loopback TCP sockets.
+       - **Cryptographic Ephemeral Token with OS Secret Storage**: An ephemeral startup token protected via Windows Data Protection API (DPAPI) with process-specific entropy or passed directly via secure process inheritance during companion startup.
    - In P11.2.0, the invariant is formally non-negotiable: **no credentials may be emitted to an unverified listener**.
 
 ### 6.4 Companion Pairing Lifecycle & Credential State Machine
@@ -255,10 +260,19 @@ The companion participates in the Policy A operator pairing lifecycle through a 
      }
      ```
    - In the same response, the backend issues the `Set-Cookie: pico_operator_session=<session_id>; HttpOnly; Path=/api; Max-Age=3600; ...` header.
-4. **Credential Isolation & Scoping**:
-   - **Session Cookie**: Scoped strictly to `Path=/api`. Stored in the native WebView2 cookie jar (isolated to the companion's private user data profile directory, inaccessible to external browsers or untrusted scripts).
-   - **CSRF Token**: Stored strictly in client memory (`setCsrfToken(csrf_token)` in `client.ts`). Never persisted to `localStorage`, `sessionStorage`, or disk files.
-   - **Zero Secret Exposure**: The `APPROVAL_SECRET_TOKEN` is never sent to or stored in the companion. The companion holds only session-scoped credentials.
+4. **Credential Isolation, Ownership & Scoping**:
+   - **Conditional Ownership Model**: The authoritative storage and boundary of the session cookie and CSRF token are governed strictly by the loopback transport alternative selected in P11.2.2 (see Section 6.5):
+     - **Under Alternative 1 (Tauri Native Loopback Proxy - Recommended)**:
+       - *Cookie & Session Ownership*: Managed entirely within native Rust process memory (e.g. `reqwest::cookie::Jar`). The session cookie is never stored in the WebView2 cookie jar and is never exposed to the frontend JavaScript runtime.
+       - *CSRF Token Ownership*: Stored securely in native Rust memory alongside the session context.
+       - *Request Handoff & Capability Boundary*: The WebView2 frontend communicates with PICO Core through a dedicated, capability-restricted Tauri IPC bridge (e.g. `invoke('pico_bridge_request', { path, method, body })`) or custom local URI protocol (`tauri://` / `pico://api/`). The native Rust bridge automatically injects the session cookie and `X-CSRF-Token` header on outbound loopback HTTP requests to `127.0.0.1:8000`, strictly validating allowed endpoint paths. Frontend `client.ts` uses an abstract transport adapter routing through the Tauri bridge rather than direct browser `fetch()`.
+     - **Under Alternative 2 (Same-Site Virtual Host Mapping)**:
+       - *Cookie Ownership*: Stored in the native WebView2 cookie jar, scoped strictly to `Path=/api` on the mapped same-site virtual host (`http://pico.localhost`).
+       - *CSRF Token Ownership*: Stored exclusively in client memory (`setCsrfToken(csrf_token)` in `client.ts`), transmitted via standard `X-CSRF-Token` headers.
+       - *Request Handoff*: Standard browser `credentials: 'same-origin'` fetch.
+     - **Under Alternative 3 (Authenticated Loopback Header Protocol)**:
+       - *Credential Ownership*: Session ID and CSRF token are stored in client memory (`client.ts`) or native secure store, transmitted as custom headers (`X-Pico-Operator-Session`, `X-CSRF-Token`).
+   - **Zero Secret Exposure (All Alternatives)**: The backend `APPROVAL_SECRET_TOKEN` is never transmitted to, stored in, or accessible by the companion under any transport. The companion holds only transient, revocable operator-session credentials.
 5. **Session Expiry & Lifecycle Monitoring**:
    - Sessions expire authoritatively on the backend after 3600 seconds.
    - The companion periodically validates session state via `GET /api/operator/session`.
@@ -316,8 +330,8 @@ The companion's primary visual presence is an expressive two-eye face widget dis
 | :--- | :--- | :--- | :--- |
 | **`idle`** | Calm ambient scanning, periodic natural blinking | `/api/health` reports healthy, operator session active, zero active scheduler leases, zero running workflow steps | No movement when backend is unreachable or unpaired |
 | **`listening`** | Vibrant cyan pulse, audio waveform oscillation | Audio capture session active on local microphone (`AudioCaptureState.CAPTURING`) | **Prohibited** unless microphone hardware capture is actively streaming |
-| **`thinking`** | Concentric rotating purple/blue rings | Active Model Gateway inference lease in progress (scheduler lock acquired or SSE `meta` active without `done`) | **Prohibited** during idle network or cached data delivery |
-| **`speaking`** | Rhythmic acoustic mouth/eye dilation | Audio output playback actively rendering through system speakers (local TTS in P11.3; browser speech in P11.2) | **Prohibited** if audio output is muted, finished, or absent |
+| **`thinking`** | Concentric rotating purple/blue rings | Active Model Gateway inference lease acquired and held in ResourceScheduler (authoritatively indicated by `/api/scheduler/status` with `current_active_local > 0`). Clears immediately on lease release, turn completion (SSE `done`), cancellation, error, or socket disconnect | **Prohibited** without an acquired scheduler lease; never triggered solely by SSE connection establishment, HTTP request dispatch, or meta frame arrival. Prohibited during idle network or cached data delivery |
+| **`speaking`** | Rhythmic acoustic mouth/eye dilation | Audio output playback actively rendering through system speakers. In P11.2, driven strictly by verified client-side Web Speech synthesizer lifecycle events (`SpeechSynthesisUtterance` `onstart` to `onend`/`onerror`); in P11.3+, driven by backend TTS audio streaming playback events. Clears immediately upon playback completion, pause, cancellation, or audio failure | **Prohibited** if audio playback is muted, finished, cancelled, or absent. Client-side speech in P11.2 is explicitly classified as verified client playback evidence, NOT server-side inference evidence |
 | **`executing`** | Focused scanning cadence, directional progress indicator | Workflow step execution in flight (`StepState.RUNNING`) or tool capability actively executing in `ToolExecutionEngine` | **Prohibited** during planning or pending approval states |
 | **`awaiting_approval`** | Attention-directing pulsing amber glow | One or more execution tickets pending at Policy A approval gate (`ApprovalRequest.PENDING`) | Must display until operator approves or rejects the ticket |
 | **`offline`** | Calm dim slate/gray indicator, sleepy eyes | Loopback backend unreachable, network disconnected, or session expired | Must truthfully signal disconnection; no simulated interactivity |
@@ -327,12 +341,13 @@ The companion's primary visual presence is an expressive two-eye face widget dis
 
 - **Audit of Existing SSE Stream**: The existing chat stream (`pico/api/chat.py`) implements SSE with four specific turn-level event types: `meta`, `token`, `done`, and `error`. It is **not** a general-purpose presence or system-status stream.
 - **Contract Requirement for P11.2.3**: Milestone P11.2.3 must establish the authoritative state synchronization mechanism to drive these eight states.
-- Every state transition must be backed by verified server-side evidence:
+- State transitions must be backed by authoritative, verified evidence:
   - Polling `/api/health` and `/api/operator/session` for `offline` and `idle` states.
-  - Polling `/api/scheduler/status` for scheduler lease state (`current_active_local`) and tracking chat SSE events (`meta` through `done`) for `thinking`.
+  - Polling `/api/scheduler/status` for active scheduler lease state (`current_active_local > 0`) as the sole authoritative grounding for `thinking` (clearing on lease release, SSE `done`, cancellation, or disconnect).
+  - Tracking client-side speech playback lifecycle events in P11.2 (or backend TTS audio stream lifecycle in P11.3+) as the grounding for `speaking`.
   - Polling or streaming approval inbox status for `awaiting_approval`.
-  - Tracking workflow execution step state for `executing`.
-- **Absolute Rule**: Zero simulated or fabricated animations. The companion must never animate "thinking" or "listening" without authoritative server-side evidence.
+  - Tracking workflow execution step state (`StepState.RUNNING`) for `executing`.
+- **Absolute Rule**: Zero simulated or fabricated animations. The companion must never animate "thinking" or "listening" without authoritative grounding evidence.
 
 ---
 
@@ -383,10 +398,14 @@ Development will proceed in small, reviewable vertical slices:
   - Configure minimal Tauri IPC capability permissions (window management only).
   - Explicitly defer API authentication, state synchronization, and voice/screen capabilities.
 - **P11.2.2 — Secure Local Bridge & Policy A Loopback Client**:
-  - Implement backend identity verification before emitting any credentials.
+  - Implement OS-enforced backend identity verification (Win32 TCP table PID verification / ACL-scoped local handshake) before emitting any credentials.
   - Qualify and implement the selected loopback transport alternative (Alternative 1, 2, or 3) on Windows 11.
   - Update CORS allowed origins and `validate_origin_and_host()` for `http://tauri.localhost` on verified loopback connections.
-  - Implement the companion pairing flow, HttpOnly cookie storage, and CSRF token propagation.
+  - **Route-Level Policy A Authentication Enforcement**:
+    - Audit and enforce mandatory Policy A operator session dependency (`require_operator_session`) across all endpoints consumed by the companion: `/api/chat/stream`, `/api/scheduler/status`, `/api/perception/*`, workflow endpoints, and approval routes.
+    - Require session authentication for reading streams and states, and enforce session-bound CSRF token validation (`X-CSRF-Token`) on all mutating endpoints.
+    - Implement automated backend test suites verifying that unauthenticated reads, unauthenticated SSE connections, and unauthenticated mutations are strictly rejected with 401 Unauthorized or 403 Forbidden.
+  - Implement the companion pairing flow, credential management according to the selected transport architecture, and CSRF token propagation.
   - Verify remote connection rejection, unauthorized mutation blocking, and safe offline degradation.
 - **P11.2.3 — Authoritative Visual State Machine & Compact Panel**:
   - Implement the two-eye expressive presence component.
@@ -412,3 +431,9 @@ In accordance with PICO's review and verification standards, this record documen
 | **Companion Pairing & Credential Lifecycle** | Minor | **Architecturally Resolved in ADR** | Added Section 6.4 detailing full 8-step companion pairing lifecycle, challenge submission, HttpOnly cookie scoping, in-memory CSRF token handoff, session expiry, and browser compatibility. |
 | **Transport Pattern A Flaw (`SameSite=Lax`)** | Major | **Architecturally Resolved in ADR** | Added Section 6.5 formally retracting `SameSite=Lax` as a presumed working solution for cross-origin subresource fetch mutations. Reassessed Alternatives 1, 2, and 3 as open qualification tasks for P11.2.2. |
 | **Process-Tree Memory Measurement** | Invariant | **Implementation-Stage Verification** | Section 2, 3, 4 updated to clarify all figures are architectural estimates; empirical qualification of complete process tree (<100 MB RAM idle) formally assigned to P11.2.4. |
+| **Host/Renderer Subtotal vs Full Tree** | Minor | **Architecturally Resolved in ADR** | Updated Section 3 and 4 to explicitly label ~40–60 MB idle RAM as native host and WebView2 renderer subtotal, project full process tree at ~60–90 MB, and require empirical full-tree measurement in P11.2.4. |
+| **Same-User Rogue Threat Boundary** | Major | **Architecturally Resolved in ADR** | Updated Section 6.3 to document same-user `%APPDATA%` filesystem boundaries and mandate OS-enforced PID verification (`GetExtendedTcpTable`), ACL-scoped Named Pipes, or DPAPI secrets. |
+| **Credential Ownership vs Transport** | Major | **Architecturally Resolved in ADR** | Updated Section 6.4 step 4 to define conditional credential ownership, storage, and handoff boundaries for Alternative 1 (Rust memory + Tauri IPC), Alternative 2 (WebView2 jar), and Alternative 3 (headers). |
+| **Exclusive Scheduler Lease Grounding** | Minor | **Architecturally Resolved in ADR** | Updated Section 7 state table to establish acquired scheduler lease (`current_active_local > 0`) as sole grounding for `thinking`, clearing on lease release, `done`, error, or disconnect. |
+| **Distinction of Client Speech Evidence** | Minor | **Architecturally Resolved in ADR** | Updated Section 7 state table to explicitly classify P11.2 client-side speech synthesizer lifecycle as client playback evidence, distinguished from server-side TTS streaming evidence in P11.3+. |
+| **Route-Level Policy A Enforcement** | Major | **Contract Established in ADR** | Updated Section 10 P11.2.2 to mandate `require_operator_session` on `/api/chat/stream`, `/api/scheduler/status`, `/api/perception/*`, and require automated negative test suites for unauthenticated access. |
