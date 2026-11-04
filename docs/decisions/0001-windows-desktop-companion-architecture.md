@@ -47,9 +47,9 @@ The desktop companion architecture must satisfy six non-negotiable constraints:
 
 4. **Security, Least Privilege & Policy A Integration**:
    - The desktop shell must communicate with FastAPI exclusively via loopback (`127.0.0.1` / `localhost`).
-   - The bridge must support Policy A authenticated operator sessions (`pico_operator_session` cookie or authorized session header) and validate session-bound CSRF tokens (`X-CSRF-Token`) on all mutating requests.
+   - The companion must authenticate via Policy A verified operator sessions without exposing secrets or weakening existing web security.
+   - The bridge must verify backend identity before transmitting any credentials, preventing credential replay to rogue loopback listeners.
    - The companion frontend and native shell are untrusted presentation layers: zero direct capability execution, zero embedded API secrets, and zero access to physical actuation tokens (`APPROVAL_SECRET_TOKEN`).
-   - The bridge design must resolve cross-origin loopback transport differences between the packaged Tauri origin (`http://tauri.localhost` on Windows) and the backend (`http://127.0.0.1:8000`) without weakening Policy A.
 
 5. **Visual State Truthfulness**:
    - The companion's expressive presence (two-eye animated face) must mirror **authoritative backend state** (Idle, Listening, Thinking, Speaking, Executing, Awaiting Approval, Offline, Error).
@@ -96,7 +96,7 @@ We systematically evaluated four candidate Windows desktop technologies against 
 - **Trade-offs**:
   - Requires the Rust toolchain (`cargo`, `rustc`) for building the desktop shell binary.
   - Requires careful window transparency configuration under Windows 11 (DWM composition, `window_effects` like Mica/Acrylic or transparent background).
-  - Cross-origin authentication transport between the packaged Tauri origin (`http://tauri.localhost` on Windows) and FastAPI loopback (`http://127.0.0.1:8000`) must be explicitly resolved in P11.2.2.
+  - Cross-origin authentication transport between the packaged Tauri origin (`http://tauri.localhost` on Windows) and FastAPI loopback (`http://127.0.0.1:8000`) must be explicitly qualified and implemented in P11.2.2.
 
 ### Option 2: C# / .NET + WebView2
 - **Strengths**:
@@ -159,6 +159,7 @@ We systematically evaluated four candidate Windows desktop technologies against 
 │                                                                        │
 │   ┌────────────────────────────────────────────────────────────────┐   │
 │   │  Policy A & Operator Security Barrier                          │   │
+│   │  - Backend identity verification before credential issuance    │   │
 │   │  - Validates operator session on companion bridge requests     │   │
 │   │  - Validates `X-CSRF-Token` header on ALL mutating requests    │   │
 │   │  - Fails closed (401/403) for unauthenticated / remote calls   │   │
@@ -175,14 +176,14 @@ We systematically evaluated four candidate Windows desktop technologies against 
 
 ## 6. Secure Local Bridge Architecture & Implementation Contract
 
-A rigorous audit of the current PICO codebase reveals that integrating a separately packaged desktop shell requires specific architectural bridge contracts. This section defines the current implementation reality, the cross-origin challenge, and the explicit implementation contract for Milestone P11.2.2.
+A rigorous audit of the current PICO codebase reveals that integrating a separately packaged desktop shell requires specific architectural bridge contracts. This section defines the current implementation reality, the cross-origin challenge, backend identity verification requirements, companion operator-session pairing lifecycle, and unresolved authentication transport engineering alternatives for Milestone P11.2.2.
 
 ### 6.1 Audit of Existing Security Baseline
 
 1. **CORS Configuration (`pico/main.py`)**:
    - `CORSMiddleware` currently permits only Vite development server origins:
      `allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"]`.
-   - Packaged desktop origins (`http://tauri.localhost`) and Tauri dev origins (`http://localhost:1420`) are not yet permitted.
+   - Packaged desktop origins (`http://tauri.localhost` on Windows) and Tauri dev origins (`http://localhost:1420`, `http://127.0.0.1:1420`) are not yet permitted.
 2. **Operator Session Origin & Host Validation (`pico/services/operator_session.py`)**:
    - `validate_origin_and_host()` enforces that `Host` and `Origin` / `Referer` match `ALLOWED_HOSTS` (`localhost`, `127.0.0.1`, `testserver`).
    - Hostnames outside this tuple (such as `tauri.localhost`) are currently rejected as untrusted.
@@ -205,29 +206,105 @@ This creates three immediate transport barriers:
 2. **Host/Origin Validation Failure**: `OperatorSessionService` will treat `http://tauri.localhost` as an untrusted origin and fail closed.
 3. **Cookie Dropping**: `credentials: 'same-origin'` in `frontend/src/api/client.ts` prevents cookies from being attached. Furthermore, `SameSite="strict"` on the cookie prevents transmission across differing origins even if credentials are set to `include`.
 
-### 6.3 Required P11.2.2 Design & Implementation Contract
+### 6.3 Backend Identity Verification (Mandatory Precondition)
 
-The desktop companion must NOT bypass authentication or weaken security settings merely to make the desktop shell function. Milestone P11.2.2 must implement a robust, verified bridge contract:
+Before transmitting any operator credentials (`pico_operator_session` cookie, session headers, CSRF tokens, or pairing challenge codes) to `http://127.0.0.1:8000`, the companion must establish authoritative proof that the loopback listener is genuine PICO Core:
 
-1. **Loopback Origin Authorization**:
-   - Update `pico/main.py` CORS configuration to permit:
-     - `http://tauri.localhost` (Tauri 2 production origin on Windows)
-     - `http://localhost:1420` and `http://127.0.0.1:1420` (Tauri development origins)
-   - Update `OperatorSessionService.validate_origin_and_host()` to recognize `tauri.localhost` as an allowed origin **only when** `is_loopback_client(request)` confirms the direct TCP connection is genuine local loopback (`127.0.0.1`). Remote callers attempting to spoof `Origin: http://tauri.localhost` must fail closed.
-2. **Authentication Transport Selection in P11.2.2**:
-   P11.2.2 will formally evaluate and implement one of three secure transport patterns:
-   - **Pattern A (CORS + SameSite=Lax + Credentials Include)**: Adjust cookie to `SameSite="lax"` for loopback origins and update `frontend/src/api/client.ts` to `credentials: 'include'`.
-   - **Pattern B (Tauri Native Loopback Proxy)**: The Tauri Rust process acts as an authenticated local client, forwarding requests directly over loopback with headers, avoiding browser cookie isolation quirks.
-   - **Pattern C (Session Header Authorization)**: Allow paired operator session verification via an explicit header (`X-Pico-Operator-Session`) on loopback connections, coupled with mandatory CSRF token validation on mutating requests.
-3. **Endpoint Authorization Hardening**:
-   - P11.2.2 will systematically evaluate applying operator session verification to companion-accessible endpoints (chat streaming, conversation discovery, workflow synthesis) without breaking the existing browser command centre.
-4. **Untrusted Presentation & Zero Secret Storage**:
-   - Neither `APPROVAL_SECRET_TOKEN`, cloud API keys, nor system credentials may be baked into Tauri bundles, configuration files, or client storage.
-   - The companion frontend and Tauri native layer are treated as untrusted presentation surfaces: zero direct capability execution, zero embedded API secrets, and zero access to physical actuation tokens.
-5. **Tauri IPC Isolation & Minimal Surface**:
-   - The Rust shell exposes **zero custom execution commands** (`invoke(...)`) for system mutation or shell execution.
-   - Tauri native APIs are limited strictly to window management (drag, minimize, hide, show, reposition) and system tray event routing.
-   - The Tauri security capabilities configuration restricts permissions to window controls only.
+1. **Threat Model & Port Occupation**:
+   - On Windows, loopback port `8000` is shared across local processes. If PICO Core is stopped, crashed, restarting, or slow to bind, another local process or service could bind to `127.0.0.1:8000`.
+   - If the companion transmits `pico_operator_session` or pairing codes blindly upon seeing an open port, the rogue listener captures valid operator credentials and can replay them to PICO Core once it restarts.
+2. **Non-Sufficiency of `/health`**:
+   - A standard `200 OK` response from `/api/health` returning `{"status": "healthy"}` is trivially emulated by any rogue HTTP server and does **not** constitute proof of backend identity.
+3. **Strict Verification Invariants**:
+   - **Pre-Credential Verification**: The companion shell must positively verify the authoritative identity of the PICO Core backend before any session cookie, session header, CSRF token, or pairing code is transmitted.
+   - **Fail Closed**: If backend identity cannot be established, the companion immediately fails closed:
+     - Suppresses all credential transmission.
+     - Transitions visual state to `offline` / `unverified`.
+     - Suspends outgoing user queries and commands.
+   - **Mandatory Re-Verification**: Backend identity verification must be re-executed:
+     - On initial companion startup before first API communication.
+     - Immediately following any network disconnection, socket drop, or HTTP connection error.
+     - Following backend process restarts or machine sleep/wake cycles.
+     - After any timeout or ambiguous connection failure.
+4. **Implementation Contract for P11.2.2**:
+   - P11.2.2 must define and implement an authoritative local trust anchor without relying on circular network assumptions.
+   - Candidate mechanisms to be qualified in P11.2.2 include:
+     - A local runtime instance token or nonce generated by PICO Core on startup, written to protected per-user local runtime storage (e.g. SQLite database or protected runtime file `%APPDATA%\PICO\runtime\instance.json`) accessible exclusively by the local operator user process tree, validated by the Tauri native Rust layer prior to socket communication.
+     - A mutual local challenge-response handshake over loopback.
+   - In P11.2.0, the invariant is formally non-negotiable: **no credentials may be emitted to an unverified listener**.
+
+### 6.4 Companion Pairing Lifecycle & Credential State Machine
+
+The companion participates in the Policy A operator pairing lifecycle through a secure, auditable state machine:
+
+1. **Challenge Generation**:
+   - The operator initiates pairing via the PICO Core CLI (`python -m pico.cli.operator pair`) or via the paired browser command centre.
+   - PICO Core generates a cryptographically random 6-digit one-time code (`secrets.randbelow(900000) + 100000`), persisted as a SHA-256 salted hash in `OperatorPairingChallenge` with a 300-second TTL and max 5 attempts.
+2. **Companion Pairing Presentation & Input**:
+   - When the companion detects an unpaired state (or missing session), it renders a dedicated pairing modal prompting the operator to enter the 6-digit code.
+   - The companion does NOT auto-generate or fabricate pairing challenges; the human operator acts as the authoritative physical trust anchor.
+3. **Submission & Session Creation**:
+   - Once backend identity is verified, the companion issues `POST /api/operator/pair` over loopback containing `{"code": "<6-digit-code>"}`.
+   - PICO Core verifies the code against the database challenge, marks the challenge consumed (`consumed_at = now`), creates an active `OperatorSessionModel`, and returns:
+     ```json
+     {
+       "status": "paired",
+       "csrf_token": "<urlsafe-token>",
+       "expires_at": "<utc-iso-timestamp>",
+       "approver": "local_operator"
+     }
+     ```
+   - In the same response, the backend issues the `Set-Cookie: pico_operator_session=<session_id>; HttpOnly; Path=/api; Max-Age=3600; ...` header.
+4. **Credential Isolation & Scoping**:
+   - **Session Cookie**: Scoped strictly to `Path=/api`. Stored in the native WebView2 cookie jar (isolated to the companion's private user data profile directory, inaccessible to external browsers or untrusted scripts).
+   - **CSRF Token**: Stored strictly in client memory (`setCsrfToken(csrf_token)` in `client.ts`). Never persisted to `localStorage`, `sessionStorage`, or disk files.
+   - **Zero Secret Exposure**: The `APPROVAL_SECRET_TOKEN` is never sent to or stored in the companion. The companion holds only session-scoped credentials.
+5. **Session Expiry & Lifecycle Monitoring**:
+   - Sessions expire authoritatively on the backend after 3600 seconds.
+   - The companion periodically validates session state via `GET /api/operator/session`.
+   - If the backend returns `paired: false`, 401 Unauthorized, or 403 Forbidden, the companion immediately transitions to `offline` / `unpaired`, purges the in-memory CSRF token, and prompts the operator to re-pair.
+6. **Explicit Logout & Revocation**:
+   - Initiating logout (`POST /api/operator/logout`) invalidates the session record in SQLite (`is_active = False`), issues a cookie deletion header (`Max-Age=0`), and purges client memory.
+7. **Reconnection & Crash Recovery**:
+   - Upon connection loss, the companion halts all requests.
+   - Upon socket re-establishment, the companion re-verifies backend identity first.
+   - Once identity is verified, the companion issues `GET /api/operator/session` to confirm whether the existing session survived the interruption. If valid, normal operation resumes; if invalid, it prompts for pairing.
+8. **Browser Command Centre Compatibility**:
+   - The existing browser frontend (`http://localhost:5173`) remains 100% compatible and unchanged, using standard same-origin pairing.
+
+### 6.5 Re-Evaluation of Authentication Transport Alternatives
+
+In prior discussions, `SameSite=Lax + credentials: include` was proposed as a potential cross-origin bridge solution. A rigorous security review reveals this assumption is flawed:
+- **Flaw in `SameSite=Lax` for Subresource Mutations**: Under the IETF 6265bis and W3C Fetch specifications, `SameSite=Lax` cookies are explicitly withheld on cross-site subresource requests. While top-level browser navigations using safe HTTP methods (GET) include Lax cookies, cross-origin `fetch()` requests—especially mutating `POST`, `PUT`, `DELETE` operations (such as `/api/operator/pair`, `/api/chat/stream`, `/api/workflows/...`)—are classified as cross-site subresources and will **not** transmit `SameSite=Lax` cookies.
+- **Flaw in `SameSite=None`**: Setting `SameSite="none"` requires the `Secure` attribute, which mandates HTTPS. Setting up self-signed HTTPS on `127.0.0.1` introduces root CA installation requirements or certificate rejection hurdles in WebView2 on Windows.
+
+Therefore, the authentication transport cannot rely on a presumed `SameSite=Lax` cross-origin cookie flow. Milestone P11.2.2 must qualify one of the following architectural alternatives through empirical verification on Windows 11:
+
+1. **Alternative 1: Tauri Native Loopback Proxy (Recommended Architecture)**:
+   - The Tauri Rust host acts as a local loopback proxy client.
+   - The WebView makes requests to a custom Tauri protocol (`tauri://` or native IPC), or the Rust host acts as a local proxy.
+   - The native Rust client (e.g. using `reqwest`) executes direct loopback HTTP calls to FastAPI at `http://127.0.0.1:8000`.
+   - *Advantages*:
+     - Native Rust HTTP clients are not subject to browser-level CORS preflight, origin mismatch, or cookie SameSite restrictions.
+     - Backend identity verification (nonce/runtime challenge) is performed natively in Rust before any HTTP connection is opened.
+     - Session cookies and CSRF tokens are managed in secure Rust process memory, completely eliminating cross-origin cookie dropping.
+     - WebView2 JavaScript never directly touches raw network sockets.
+2. **Alternative 2: Same-Site Virtual Host Mapping**:
+   - Configuring WebView2's `SetVirtualHostNameToFolderMapping` alongside a local loopback reverse proxy or host mapping (e.g. mapping `pico.localhost` to both static assets and API routes).
+   - *Advantages*: Renders requests same-site, allowing `SameSite=Strict` cookies to operate normally.
+   - *Challenges*: Requires proxy routing in the native shell or port multiplexing.
+3. **Alternative 3: Authenticated Loopback Header Protocol (`X-Pico-Operator-Session`)**:
+   - The backend accepts the session identifier via an explicit request header (`X-Pico-Operator-Session`) on loopback connections, accompanied by mandatory CSRF token verification and backend identity verification.
+   - *Advantages*: Eliminates reliance on browser cookie transmission mechanisms entirely while preserving constant-time session lookup and CSRF defense.
+   - *Challenges*: Requires extending backend session extraction dependencies in `pico/api/operator.py`.
+
+**Decision Status**: In Milestone P11.2.0, the architectural requirements (backend identity verification, pairing lifecycle, zero secret leakage, loopback binding) are non-negotiable. The exact transport implementation (Alternative 1, 2, or 3) is formally documented as an **unresolved engineering qualification task** that must be empirically proven on Windows 11 in Milestone P11.2.2 prior to code implementation.
+
+### 6.6 Tauri IPC Isolation & Minimal Capability Surface
+
+- The Rust shell exposes **zero custom execution commands** (`invoke(...)`) for system mutation or shell execution.
+- Tauri native APIs are limited strictly to window management (drag, minimize, hide, show, reposition) and system tray event routing.
+- The Tauri security capabilities configuration restricts permissions to window controls only.
 
 ---
 
@@ -297,7 +374,7 @@ Development will proceed in small, reviewable vertical slices:
 - **P11.2.0 — Architecture Decision Record & Documentation Reconciliation** *(Current Slice)*:
   - Complete this ADR.
   - Reconcile `README.md` lifecycle step 4 and roadmap status table.
-  - Formally document the desktop framework evaluation, security bridge contract, and state synchronization requirements.
+  - Formally document the desktop framework evaluation, backend identity verification requirements, companion pairing lifecycle, and unresolved transport alternatives.
   - Zero desktop code implementation in this slice.
 - **P11.2.1 — Native Desktop Shell & System Tray Foundation**:
   - Initialize Tauri 2 project configuration wrapping the existing `frontend/` Vite build.
@@ -306,9 +383,10 @@ Development will proceed in small, reviewable vertical slices:
   - Configure minimal Tauri IPC capability permissions (window management only).
   - Explicitly defer API authentication, state synchronization, and voice/screen capabilities.
 - **P11.2.2 — Secure Local Bridge & Policy A Loopback Client**:
-  - Implement authenticated loopback client layer within the companion shell.
+  - Implement backend identity verification before emitting any credentials.
+  - Qualify and implement the selected loopback transport alternative (Alternative 1, 2, or 3) on Windows 11.
   - Update CORS allowed origins and `validate_origin_and_host()` for `http://tauri.localhost` on verified loopback connections.
-  - Resolve cross-origin cookie / header authentication transport and CSRF token propagation.
+  - Implement the companion pairing flow, HttpOnly cookie storage, and CSRF token propagation.
   - Verify remote connection rejection, unauthorized mutation blocking, and safe offline degradation.
 - **P11.2.3 — Authoritative Visual State Machine & Compact Panel**:
   - Implement the two-eye expressive presence component.
@@ -318,3 +396,19 @@ Development will proceed in small, reviewable vertical slices:
   - Generate Windows 11 MSI / NSIS installer bundle.
   - Empirically measure actual idle process-tree memory consumption (<100 MB RAM target across all companion processes).
   - Verify clean startup, tray minimization, reconnect resilience, and graceful shutdown on Windows 11.
+
+---
+
+## 11. CodeRabbit Review Disposition & Audit Record
+
+In accordance with PICO's review and verification standards, this record documents the disposition of all CodeRabbit findings on Milestone P11.2.0 (PR #51):
+
+| Finding / Topic | Initial Status | Final Disposition | Resolution Commit / Verification |
+| :--- | :--- | :--- | :--- |
+| **Trailing Whitespace (Line 21)** | Major | **Fixed** | Trailing whitespace removed at line 21 in commit `33e8aa3`. Verified with `git diff --check origin/main...HEAD` (exited 0). |
+| **Windows Tauri Origin in CORS** | Minor | **Fixed** | Updated Section 6 in commit `33e8aa3` to include `http://tauri.localhost` (Windows) and development origins (`http://localhost:1420`). CodeRabbit confirmed addressed. |
+| **Grounding for `thinking` State** | Minor | **Fixed** | Updated Section 7 in commit `cc0bfdd` to explicitly name `/api/scheduler/status` polling (`current_active_local`) alongside chat SSE events. CodeRabbit confirmed addressed. |
+| **Backend Identity Verification** | Major | **Architecturally Resolved in ADR** | Added Section 6.3 specifying mandatory pre-credential backend identity verification, fail-closed behavior, and re-verification on reconnect. Implementation task assigned to P11.2.2. |
+| **Companion Pairing & Credential Lifecycle** | Minor | **Architecturally Resolved in ADR** | Added Section 6.4 detailing full 8-step companion pairing lifecycle, challenge submission, HttpOnly cookie scoping, in-memory CSRF token handoff, session expiry, and browser compatibility. |
+| **Transport Pattern A Flaw (`SameSite=Lax`)** | Major | **Architecturally Resolved in ADR** | Added Section 6.5 formally retracting `SameSite=Lax` as a presumed working solution for cross-origin subresource fetch mutations. Reassessed Alternatives 1, 2, and 3 as open qualification tasks for P11.2.2. |
+| **Process-Tree Memory Measurement** | Invariant | **Implementation-Stage Verification** | Section 2, 3, 4 updated to clarify all figures are architectural estimates; empirical qualification of complete process tree (<100 MB RAM idle) formally assigned to P11.2.4. |
