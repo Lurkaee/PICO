@@ -9,6 +9,10 @@ from pico.schemas.workflow import WorkflowCreate
 # Canonical benchmark qualification constants for workflow synthesis
 WORKFLOW_SYNTHESIS_SUITE_ID = "pico_workflow_synthesis_v1"
 WORKFLOW_SYNTHESIS_SUITE_VERSION = "1.0.0"
+# Evaluator version constant for workflow synthesis qualification.
+# MUST be incremented whenever benchmark prompts, evaluation rules, telemetry metrics/semantics,
+# or quality gate thresholds change. Readiness gates enforce an exact match.
+WORKFLOW_SYNTHESIS_EVALUATOR_VERSION = "1.0.0"
 WORKFLOW_SYNTHESIS_TASK_CATEGORY = "workflow_synthesis"
 
 MANDATORY_QUALITY_GATES = [

@@ -71,7 +71,10 @@ class WorkflowSynthesisService:
 
     def _build_system_prompt(self) -> str:
         """Constructs compact, safe system instructions describing available capabilities."""
-        catalog_lines = [f"- {c.metadata.capability_id}" for c in self.capability_registry.list()]
+        catalog_lines = [
+            f"- {c.metadata.capability_id} (version: {c.metadata.version})"
+            for c in self.capability_registry.list()
+        ]
         catalog_str = "\n".join(catalog_lines)
         return (
             "You are PICO Personal Intelligence Coordinator's autonomous workflow synthesis engine.\n"
@@ -83,13 +86,13 @@ class WorkflowSynthesisService:
             '  "workflow_name": string | null,\n'
             '  "workflow_description": string | null,\n'
             '  "steps": [\n'
-            '    {"step_key": string, "capability_id": string, "capability_version": "1.0.0", "dependencies": [string], "input_template": {}, "explanation": string | null}\n'
+            '    {"step_key": string, "capability_id": string, "capability_version": string, "dependencies": [string], "input_template": {}, "explanation": string | null}\n'
             "  ],\n"
             '  "explanation": string | null,\n'
             '  "clarification_question": string | null\n'
             "}\n\n"
             "RULES & CONSTRAINTS:\n"
-            "1. If fulfilled by registered capabilities, set status='ready' and specify workflow_name and steps. Every step MUST include exact capability_id and capability_version (e.g. '1.0.0').\n"
+            "1. If fulfilled by registered capabilities, set status='ready' and specify workflow_name and steps. Every step MUST include exact capability_id and its registered capability_version from the catalog above.\n"
             "2. If ambiguous or missing parameters, set status='needs_clarification' and ask clarification_question.\n"
             "3. If unsupported or unsafe, set status='unsupported' and explain in explanation.\n"
             "4. Return strictly valid JSON adhering to the contract above.\n"

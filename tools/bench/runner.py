@@ -754,8 +754,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=128,
-        help="Bounded maximum generated tokens per iteration (default: 128)",
+        default=None,
+        help="Bounded maximum generated tokens per iteration (default: 128 for default benchmark; per-prompt for workflow synthesis)",
     )
     parser.add_argument(
         "--output-dir",
@@ -805,6 +805,13 @@ def parse_args() -> argparse.Namespace:
 async def main_async() -> int:
     args = parse_args()
     if args.task_category == "workflow_synthesis":
+        if args.max_tokens is not None:
+            print(
+                "[!] Error: --max-tokens is not supported for workflow_synthesis task category; "
+                "prompt-specific token limits are strictly enforced."
+            )
+            return 2
+
         from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
         from pico.workflow.synthesis_gate import get_default_reports_dir
 
@@ -817,6 +824,7 @@ async def main_async() -> int:
             model_name=args.model,
             base_url=args.base_url,
             repetitions=args.repetitions,
+            context_size=args.context_size,
             output_dir=output_dir,
             is_mock=args.mock,
         )
@@ -834,7 +842,7 @@ async def main_async() -> int:
         base_url=args.base_url,
         repetitions=args.repetitions,
         context_size=args.context_size,
-        max_tokens=args.max_tokens,
+        max_tokens=args.max_tokens if args.max_tokens is not None else 128,
         output_dir=output_dir,
         is_mock=args.mock,
         min_tokens_per_sec=args.min_tokens_per_sec,

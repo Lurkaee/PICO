@@ -1115,7 +1115,12 @@ def test_qualification_report_identity_and_freshness_invariants(
 
     # 4. Ollama model digest mismatch fails closed
     ok_digest, reason_digest = gate._validate_report(
-        base_report.model_copy(update={"provider": "ollama", "is_mock": False, "model_digest": "sha256:expected123"}),
+        base_report.model_copy(update={
+            "provider": "ollama",
+            "is_mock": False,
+            "model_digest": "sha256:expected123",
+            "git_commit": "a" * 40,
+        }),
         provider="ollama",
         model_name="qwen3.5:2b",
         allow_mock=False,
@@ -1872,3 +1877,303 @@ def test_gate_rejects_report_status_passed_with_failed_mandatory_gate() -> None:
     assert ok is False
     assert "capability_id_compliance" in reason
     assert "100% registered capabilities" in reason
+
+
+# ---------------------------------------------------------------------------
+# Additional Benchmark Qualification and Provenance Regression Tests
+# ---------------------------------------------------------------------------
+
+def test_resource_stability_hybrid_and_gpu_offloading() -> None:
+    """Verify resource_stability passes for hybrid (RAM+VRAM) and pure GPU (zero RAM, positive VRAM)."""
+    from tools.bench.workflow_synthesis import build_workflow_synthesis_quality_gates
+
+    mock_evals = [
+        {
+            "prompt_id": pid,
+            "structured_output_valid": True,
+            "schema_compliant": True,
+            "capability_id_compliant": True if "VALID" in pid or "CHAIN" in pid else None,
+            "input_schema_compliant": True if "VALID" in pid or "CHAIN" in pid else None,
+            "dag_valid": True if "VALID" in pid or "CHAIN" in pid else None,
+            "refusal_clarification_correct": True if "REFUSAL" in pid or "CLARIFY" in pid or "INJECT" in pid or "ADVERSARIAL" in pid else None,
+            "security_boundary_respected": True,
+            "injection_resistant": True,
+        }
+        for pid in [
+            "WS-VALID-01",
+            "WS-CHAIN-02",
+            "WS-REFUSAL-03",
+            "WS-CLARIFY-04",
+            "WS-INJECT-05",
+            "WS-ADVERSARIAL-06",
+        ]
+    ]
+
+    # 1. Hybrid: 1500 MB RAM and 500 MB VRAM -> Passes
+    gates_hybrid = build_workflow_synthesis_quality_gates(
+        mock_evals, avg_latency_ms=1000.0, max_ram_mb=1500.0, max_vram_mb=500.0
+    )
+    ram_hybrid = next(g for g in gates_hybrid if g.threshold_name == "resource_stability")
+    assert ram_hybrid.passed is True
+    assert "1500.0MB RAM, 500.0MB VRAM" in ram_hybrid.measured_value
+
+    # 2. Pure GPU: 0.0 MB RAM and 2000 MB VRAM -> Passes
+    gates_gpu = build_workflow_synthesis_quality_gates(
+        mock_evals, avg_latency_ms=1000.0, max_ram_mb=0.0, max_vram_mb=2000.0
+    )
+    ram_gpu = next(g for g in gates_gpu if g.threshold_name == "resource_stability")
+    assert ram_gpu.passed is True
+    assert "0.0MB RAM, 2000.0MB VRAM" in ram_gpu.measured_value
+
+    # 3. Exceeded VRAM budget: 0.0 MB RAM and 5000 MB VRAM (> 4096) -> Fails
+    gates_vram_fail = build_workflow_synthesis_quality_gates(
+        mock_evals, avg_latency_ms=1000.0, max_ram_mb=0.0, max_vram_mb=5000.0
+    )
+    ram_vram_fail = next(g for g in gates_vram_fail if g.threshold_name == "resource_stability")
+    assert ram_vram_fail.passed is False
+
+
+def test_query_ollama_model_memory_missing_size_vram_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify query_ollama_model_memory rejects response when size_vram is missing (None)."""
+    from tools.bench.workflow_synthesis import query_ollama_model_memory
+    import httpx
+
+    fake_response = httpx.Response(
+        200,
+        json={
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "model": "qwen3.5:2b",
+                    "size": 2000000000,
+                    "size_vram": None,
+                }
+            ]
+        },
+        request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"),
+    )
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kwargs: fake_response)
+    ram, vram, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+    assert ram is None and vram is None and src is None
+
+
+@pytest.mark.anyio
+async def test_single_missing_memory_sample_fails_resource_stability_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that if even one run in a benchmark suite lacks memory telemetry, resource_stability fails."""
+    from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
+    import tools.bench.workflow_synthesis as ws_mod
+
+    call_count = 0
+
+    def mock_query_memory(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        # Succeed for the first 5 prompts, fail on the 6th
+        if call_count < 6:
+            return (500.0, 100.0, "ollama_api_ps")
+        return (None, None, None)
+
+    monkeypatch.setattr(ws_mod, "query_ollama_model_memory", mock_query_memory)
+
+    runner = WorkflowSynthesisBenchmarkRunner(
+        model_name="qwen3.5:2b",
+        provider_name="ollama",
+        provider=ws_mod.DeterministicMockSynthesisProvider(),
+        is_mock=False,
+        output_dir=tmp_path,
+    )
+
+    report = await runner.execute()
+    # Gate must fail because of the 1 missing sample
+    ram_gate = next(g for g in report.quality_gates if g.threshold_name == "resource_stability")
+    assert ram_gate.passed is False
+    assert ram_gate.measured_value == "Missing measurement"
+    assert report.status == "FAILED"
+
+
+def test_dynamic_capability_version_registration_and_validation() -> None:
+    """Verify capabilities with non-1.0.0 versions are registered, reflected in prompt, and validated."""
+    from pico.capabilities import CapabilityRegistry
+    from pico.capabilities.base import BaseCapability, CapabilityMetadata
+    from pydantic import BaseModel
+    from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner, evaluate_synthesis_output
+    import json
+
+    class DummyInput(BaseModel):
+        query: str
+
+    class DummyOutput(BaseModel):
+        result: str
+
+    class CustomCap(BaseCapability):
+        metadata = CapabilityMetadata(
+            capability_id="custom.analyzer",
+            version="2.5.0",
+            description="Custom analyzer capability",
+        )
+        input_model = DummyInput
+        output_model = DummyOutput
+
+        async def execute(self, inputs):
+            return {"result": "ok"}
+
+    reg = CapabilityRegistry()
+    reg.register(CustomCap())
+
+    runner = WorkflowSynthesisBenchmarkRunner(
+        capability_registry=reg,
+        is_mock=True,
+    )
+    prompt = runner._build_system_prompt()
+    assert "- custom.analyzer (version: 2.5.0)" in prompt
+
+    # Model proposing 2.5.0 succeeds
+    matching_plan = json.dumps({
+        "status": "ready",
+        "workflow_name": "Custom",
+        "steps": [
+            {
+                "step_key": "s1",
+                "capability_id": "custom.analyzer",
+                "capability_version": "2.5.0",
+                "dependencies": [],
+                "input_template": {"query": "hello"},
+            }
+        ],
+    })
+    res_ok = evaluate_synthesis_output(matching_plan, "WS-VALID-01", capability_registry=reg)
+    assert res_ok["capability_id_compliant"] is True
+
+    # Model proposing 1.0.0 when 2.5.0 is registered fails
+    mismatch_plan = json.dumps({
+        "status": "ready",
+        "workflow_name": "Custom",
+        "steps": [
+            {
+                "step_key": "s1",
+                "capability_id": "custom.analyzer",
+                "capability_version": "1.0.0",
+                "dependencies": [],
+                "input_template": {"query": "hello"},
+            }
+        ],
+    })
+    res_mismatch = evaluate_synthesis_output(mismatch_plan, "WS-VALID-01", capability_registry=reg)
+    assert res_mismatch["capability_id_compliant"] is False
+
+
+@pytest.mark.anyio
+async def test_workflow_synthesis_offline_mock_execution_without_daemon(tmp_path: Path) -> None:
+    """Verify that runner with is_mock=True executes 100% offline using DeterministicMockSynthesisProvider."""
+    from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
+
+    runner = WorkflowSynthesisBenchmarkRunner(
+        model_name="qwen3.5:2b",
+        provider_name="ollama",
+        output_dir=tmp_path,
+        is_mock=True,
+    )
+    report = await runner.execute()
+    assert report.status == "PASSED"
+    assert report.is_mock is True
+    assert report.provider == "mock"
+    assert len(report.measured_runs) == 6
+    assert all(r.status == "SUCCESS" for r in report.measured_runs)
+
+
+def test_gate_validates_context_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify gate enforces report.context_window >= 4096 and match with OLLAMA_CONTEXT_WINDOW."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    base_report = generate_qualified_report(provider="mock", is_mock=True, avg_latency_ms=1000.0, max_ram_mb=500.0)
+
+    # 1. context_window < 4096 fails
+    report_low = base_report.model_copy(update={"context_window": 2048})
+    ok_low, reason_low = gate._validate_report(report_low, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok_low is False
+    assert "must be at least 4096 tokens" in reason_low
+
+    # 2. context_window mismatch with settings.OLLAMA_CONTEXT_WINDOW fails
+    monkeypatch.setattr(settings, "OLLAMA_CONTEXT_WINDOW", 4096)
+    report_mismatch = base_report.model_copy(update={"context_window": 8192})
+    ok_mismatch, reason_mismatch = gate._validate_report(report_mismatch, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok_mismatch is False
+    assert "does not match configured runtime OLLAMA_CONTEXT_WINDOW" in reason_mismatch
+
+
+def test_gate_validates_40_hex_git_commit_and_active_commit_mismatch() -> None:
+    """Verify production report requires valid 40-character hex SHA and rejects active git commit mismatch."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+
+    # 1. Non-hex git commit fails production validation
+    report_bad_sha = generate_qualified_report(
+        provider="ollama",
+        is_mock=True,
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        git_commit="not-a-40-char-sha",
+    )
+    # Set is_mock=False to trigger production git commit check
+    report_bad_sha.is_mock = False
+    report_bad_sha.model_digest = "sha256:dummy"
+
+    ok_sha, reason_sha = gate._validate_report(
+        report_bad_sha,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:dummy",
+    )
+    assert ok_sha is False
+    assert "is not a valid 40-character SHA" in reason_sha
+
+    # 2. Active git commit mismatch fails validation
+    valid_sha_1 = "1234567890abcdef1234567890abcdef12345678"
+    valid_sha_2 = "abcdef1234567890abcdef1234567890abcdef12"
+    report_mismatch = generate_qualified_report(
+        provider="mock",
+        is_mock=True,
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        git_commit=valid_sha_1,
+    )
+    ok_mismatch, reason_mismatch = gate._validate_report(
+        report_mismatch,
+        provider="mock",
+        model_name="qwen3.5:2b",
+        allow_mock=True,
+        active_git_commit=valid_sha_2,
+    )
+    assert ok_mismatch is False
+    assert f"does not match active system commit '{valid_sha_2}'" in reason_mismatch
+
+
+@pytest.mark.anyio
+async def test_runner_cli_rejects_max_tokens_for_workflow_synthesis(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    """Verify tools.bench.runner rejects --max-tokens for workflow_synthesis with exit code 2."""
+    from tools.bench.runner import main_async
+    import sys
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = [
+            "pico-bench",
+            "--task-category",
+            "workflow_synthesis",
+            "--max-tokens",
+            "512",
+        ]
+        exit_code = await main_async()
+        assert exit_code == 2
+        captured = capsys.readouterr()
+        assert "--max-tokens is not supported for workflow_synthesis" in captured.out
+    finally:
+        sys.argv = orig_argv

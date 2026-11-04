@@ -18,6 +18,7 @@ from pico.core.config import settings
 from pico.schemas.bench import BenchmarkReport
 from pico.schemas.workflow_synthesis import (
     MANDATORY_QUALITY_GATES,
+    WORKFLOW_SYNTHESIS_EVALUATOR_VERSION,
     WORKFLOW_SYNTHESIS_SUITE_ID,
     WORKFLOW_SYNTHESIS_SUITE_VERSION,
     WORKFLOW_SYNTHESIS_TASK_CATEGORY,
@@ -81,6 +82,7 @@ class WorkflowSynthesisGate:
         allow_mock: bool = False,
         benchmark_file: str | None = None,
         active_model_digest: str | None = None,
+        active_git_commit: str | None = None,
     ) -> tuple[bool, str]:
         """Check whether the model/provider is qualified for workflow synthesis.
 
@@ -110,6 +112,7 @@ class WorkflowSynthesisGate:
                     model_name,
                     allow_mock=allow_mock,
                     active_model_digest=active_model_digest,
+                    active_git_commit=active_git_commit,
                 )
             except Exception as e:
                 return (
@@ -159,6 +162,7 @@ class WorkflowSynthesisGate:
                     model_name,
                     allow_mock=allow_mock,
                     active_model_digest=active_model_digest,
+                    active_git_commit=active_git_commit,
                 )
 
         return (
@@ -173,6 +177,7 @@ class WorkflowSynthesisGate:
         model_name: str,
         allow_mock: bool = False,
         active_model_digest: str | None = None,
+        active_git_commit: str | None = None,
     ) -> tuple[bool, str]:
         """Validate all qualification invariants on a parsed BenchmarkReport."""
         # Validate required non-empty identity fields
@@ -222,16 +227,10 @@ class WorkflowSynthesisGate:
                 "Benchmark qualification report missing required 'evaluator_version'.",
             )
 
-        if report.evaluator_version != WORKFLOW_SYNTHESIS_SUITE_VERSION:
+        if report.evaluator_version != WORKFLOW_SYNTHESIS_EVALUATOR_VERSION:
             return (
                 False,
-                f"Report evaluator version '{report.evaluator_version}' does not match required '{WORKFLOW_SYNTHESIS_SUITE_VERSION}'.",
-            )
-
-        if not report.git_commit or not str(report.git_commit).strip():
-            return (
-                False,
-                "Benchmark qualification report missing required 'git_commit' provenance.",
+                f"Report evaluator version '{report.evaluator_version}' does not match required '{WORKFLOW_SYNTHESIS_EVALUATOR_VERSION}'.",
             )
 
         if report.is_mock and (not allow_mock or provider.lower() != "mock"):
@@ -240,6 +239,27 @@ class WorkflowSynthesisGate:
                 "Mock benchmark reports cannot qualify workflow synthesis in production mode.",
             )
 
+        if not report.git_commit or not str(report.git_commit).strip():
+            return (
+                False,
+                "Benchmark qualification report missing required 'git_commit' provenance.",
+            )
+
+        import re
+        if not (report.is_mock and allow_mock):
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", str(report.git_commit).strip()):
+                return (
+                    False,
+                    f"Production qualification report git_commit '{report.git_commit}' is not a valid 40-character SHA.",
+                )
+
+        if active_git_commit and str(active_git_commit).strip():
+            if report.git_commit != str(active_git_commit).strip():
+                return (
+                    False,
+                    f"Qualification report git_commit '{report.git_commit}' does not match active system commit '{active_git_commit}'.",
+                )
+
         if (
             report.provider.lower() != provider.lower()
             or report.model_name.lower() != model_name.lower()
@@ -247,6 +267,17 @@ class WorkflowSynthesisGate:
             return (
                 False,
                 f"Report model/provider mismatch: expected {provider}/{model_name}, got {report.provider}/{report.model_name}.",
+            )
+
+        if report.context_window is None or report.context_window < 4096:
+            return (
+                False,
+                f"Qualification report context window ({report.context_window}) must be at least 4096 tokens.",
+            )
+        if report.context_window != settings.OLLAMA_CONTEXT_WINDOW:
+            return (
+                False,
+                f"Qualification report context window ({report.context_window}) does not match configured runtime OLLAMA_CONTEXT_WINDOW ({settings.OLLAMA_CONTEXT_WINDOW}).",
             )
 
         # Freshness and future timestamp validation
