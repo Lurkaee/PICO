@@ -2251,7 +2251,7 @@ async def test_synthesis_service_path_rejects_report_from_older_or_mismatched_co
     report_file = tmp_path / "older_bench_report.json"
     report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
 
-    monkeypatch.setattr(svc_mod, "resolve_active_runtime_commit", lambda: active_runtime_commit)
+    monkeypatch.setattr(svc_mod, "resolve_active_runtime_commit", lambda *args, **kwargs: active_runtime_commit)
     monkeypatch.setattr(
         synthesis_gate,
         "resolve_ollama_model_digest",
@@ -2324,79 +2324,302 @@ def test_missing_active_runtime_commit_fails_closed_for_production() -> None:
     assert "Active runtime commit could not be established" in reason_empty
 
 
-def test_valid_pico_git_commit_does_not_bypass_dirty_tree_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    """4. A valid PICO_GIT_COMMIT does not bypass dirty-tree checks when Git metadata is available."""
+def test_clean_git_checkout_passes_commit_identity_comparison(monkeypatch: pytest.MonkeyPatch) -> None:
+    """1. A clean Git checkout with a matching report SHA passes the commit identity comparison."""
     import subprocess
     from pico.core.provenance import resolve_active_runtime_commit
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
 
-    head_sha = "a" * 40
-    monkeypatch.setenv("PICO_GIT_COMMIT", head_sha)
+    active_sha = "a" * 40
 
-    def mock_subprocess_run(cmd, *args, **kwargs):
+    def mock_clean_git(cmd, *args, **kwargs):
         if cmd == ["git", "rev-parse", "HEAD"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{head_sha}\n")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{active_sha}\n")
         if cmd == ["git", "status", "--porcelain"]:
-            # Dirty tree with tracked file modification
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_clean_git)
+
+    resolved = resolve_active_runtime_commit(require_clean=True)
+    assert resolved == active_sha
+
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        model_digest="sha256:digest123",
+        git_commit=active_sha,
+    )
+    report.is_mock = False
+
+    ok, reason = gate._validate_report(
+        report,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:digest123",
+        active_git_commit=resolved,
+    )
+    assert ok is True
+    assert "verified" in reason.lower()
+
+
+@pytest.mark.anyio
+async def test_dirty_tracked_checkout_rejected_through_production_synthesis_service(
+    db_session: Session,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """2. A dirty tracked checkout is rejected through the actual production synthesis service path, even when HEAD matches the report."""
+    import subprocess
+    from pico.workflow.synthesis_service import WorkflowSynthesisService
+    from pico.schemas.workflow_synthesis import WorkflowSynthesizeRequest
+    from tools.bench.workflow_synthesis import generate_qualified_report
+    from pico.core.errors import AuthorizationError
+    from pico.repositories.routing_decision_repo import RoutingDecisionRepository
+    from pico.workflow import synthesis_gate
+
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "ollama")
+
+    matching_sha = "a" * 40
+
+    def mock_dirty_tracked(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{matching_sha}\n")
+        if cmd == ["git", "status", "--porcelain"]:
             return subprocess.CompletedProcess(
                 args=cmd, returncode=0, stdout=" M pico/workflow/synthesis_service.py\n"
             )
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
 
-    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+    monkeypatch.setattr(subprocess, "run", mock_dirty_tracked)
+    monkeypatch.setattr(
+        synthesis_gate,
+        "resolve_ollama_model_digest",
+        lambda model_name, base_url=None: "sha256:active_model_digest_123",
+    )
 
-    # When require_clean is True, dirty tree must fail closed despite valid PICO_GIT_COMMIT
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=800.0,
+        max_ram_mb=400.0,
+        model_digest="sha256:active_model_digest_123",
+        git_commit=matching_sha,
+    )
+    report.is_mock = False
+    report_file = tmp_path / "matching_bench_report.json"
+    report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    service = WorkflowSynthesisService(db=db_session)
+    request = WorkflowSynthesizeRequest(
+        conversation_id=conv_id,
+        user_message_id=msg_id,
+        requested_profile="local-small",
+    )
+
+    with pytest.raises(AuthorizationError) as exc_info:
+        await service.synthesize(request, benchmark_file=str(report_file))
+
+    err_msg = str(exc_info.value)
+    assert "Active runtime commit could not be established" in err_msg
+
+    routing_repo = RoutingDecisionRepository(db_session)
+    decisions = routing_repo.list_by_conversation(conv_id)
+    assert len(decisions) >= 1
+    assert decisions[-1].outcome == "blocked"
+    assert "Active runtime commit could not be established" in decisions[-1].error_message
+
+
+def test_staged_source_change_rejected_by_provenance_and_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """3. A staged source change is also rejected."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    head_sha = "a" * 40
+
+    def mock_staged_git(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{head_sha}\n")
+        if cmd == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="M  pico/core/provenance.py\n"
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_staged_git)
+
     resolved = resolve_active_runtime_commit(require_clean=True)
     assert resolved is None
 
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+        model_digest="sha256:digest123",
+        git_commit=head_sha,
+    )
+    report.is_mock = False
 
-def test_environment_sha_differing_from_git_head_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """5. An environment SHA that differs from Git HEAD is rejected."""
+    ok, reason = gate._validate_report(
+        report,
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        allow_mock=False,
+        active_model_digest="sha256:digest123",
+        active_git_commit=resolved,
+    )
+    assert ok is False
+    assert "Active runtime commit could not be established" in reason
+
+
+def test_untracked_source_file_rejected_as_dirty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """4. An untracked source file cannot silently qualify as a clean checkout."""
     import subprocess
     from pico.core.provenance import resolve_active_runtime_commit
 
     head_sha = "a" * 40
-    different_env_sha = "b" * 40
-    monkeypatch.setenv("PICO_GIT_COMMIT", different_env_sha)
 
-    def mock_subprocess_run(cmd, *args, **kwargs):
+    def mock_untracked_git(cmd, *args, **kwargs):
         if cmd == ["git", "rev-parse", "HEAD"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{head_sha}\n")
+        if cmd == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="?? pico/new_untracked_module.py\n"
+            )
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
 
-    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+    monkeypatch.setattr(subprocess, "run", mock_untracked_git)
 
-    resolved = resolve_active_runtime_commit(require_clean=False)
+    resolved = resolve_active_runtime_commit(require_clean=True)
     assert resolved is None
 
 
-def test_valid_build_identity_used_safely_when_git_metadata_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """6. A valid build identity can be used safely when Git metadata is absent, according to documented production contract."""
+def test_gitless_environment_with_valid_pico_build_commit_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """5. A Git-less environment with valid PICO_BUILD_COMMIT is accepted."""
     import subprocess
     from pico.core.provenance import resolve_active_runtime_commit
 
-    # Simulate absent Git metadata (e.g., packaged Docker container or wheel)
     def mock_git_absent(cmd, *args, **kwargs):
         return subprocess.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
 
     monkeypatch.setattr(subprocess, "run", mock_git_absent)
 
-    # 1. Authoritative build commit provided -> accepted
     build_sha = "c" * 40
     monkeypatch.setenv("PICO_BUILD_COMMIT", build_sha)
     resolved = resolve_active_runtime_commit(require_clean=True)
     assert resolved == build_sha
 
-    # 2. No build commit provided -> fails closed without fabrication
+
+def test_gitless_environment_with_only_pico_git_commit_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """6. A Git-less environment with only PICO_GIT_COMMIT is rejected."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    def mock_git_absent(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess, "run", mock_git_absent)
+
     monkeypatch.delenv("PICO_BUILD_COMMIT", raising=False)
-    monkeypatch.delenv("PICO_GIT_COMMIT", raising=False)
-    monkeypatch.delenv("GIT_COMMIT", raising=False)
     monkeypatch.setattr(settings, "PICO_BUILD_COMMIT", None)
-    resolved_none = resolve_active_runtime_commit(require_clean=True)
-    assert resolved_none is None
+    monkeypatch.setenv("PICO_GIT_COMMIT", "d" * 40)
+
+    resolved = resolve_active_runtime_commit(require_clean=True)
+    assert resolved is None
+
+
+def test_gitless_environment_with_only_git_commit_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """7. A Git-less environment with only GIT_COMMIT is rejected."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    def mock_git_absent(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess, "run", mock_git_absent)
+
+    monkeypatch.delenv("PICO_BUILD_COMMIT", raising=False)
+    monkeypatch.setattr(settings, "PICO_BUILD_COMMIT", None)
+    monkeypatch.delenv("PICO_GIT_COMMIT", raising=False)
+    monkeypatch.setenv("GIT_COMMIT", "e" * 40)
+
+    resolved = resolve_active_runtime_commit(require_clean=True)
+    assert resolved is None
+
+
+def test_missing_or_malformed_authoritative_build_identity_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """8. Missing or malformed authoritative build identity fails closed."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    def mock_git_absent(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess, "run", mock_git_absent)
+
+    # 1. Malformed value
+    monkeypatch.setenv("PICO_BUILD_COMMIT", "not-a-valid-40-hex-commit-sha")
+    assert resolve_active_runtime_commit(require_clean=True) is None
+
+    # 2. Empty string
+    monkeypatch.setenv("PICO_BUILD_COMMIT", "   ")
+    assert resolve_active_runtime_commit(require_clean=True) is None
+
+    # 3. None / unset
+    monkeypatch.delenv("PICO_BUILD_COMMIT", raising=False)
+    monkeypatch.setattr(settings, "PICO_BUILD_COMMIT", None)
+    assert resolve_active_runtime_commit(require_clean=True) is None
+
+
+def test_conflicting_environment_identities_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """9. Conflicting environment identities cannot silently establish an ambiguous runtime identity."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    # Case A: In Git checkout, PICO_BUILD_COMMIT differs from GIT_COMMIT
+    sha_one = "1" * 40
+    sha_two = "2" * 40
+    monkeypatch.setenv("PICO_BUILD_COMMIT", sha_one)
+    monkeypatch.setenv("GIT_COMMIT", sha_two)
+
+    def mock_git_present(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{sha_one}\n")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_git_present)
+    assert resolve_active_runtime_commit(require_clean=False) is None
+
+    # Case B: In Git-less checkout, PICO_BUILD_COMMIT differs from PICO_GIT_COMMIT
+    def mock_git_absent(cmd, *args, **kwargs):
+        return subprocess.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(subprocess, "run", mock_git_absent)
+    monkeypatch.setenv("PICO_BUILD_COMMIT", sha_one)
+    monkeypatch.setenv("PICO_GIT_COMMIT", sha_two)
+    assert resolve_active_runtime_commit(require_clean=True) is None
 
 
 def test_mock_provenance_cannot_qualify_real_ollama_provider() -> None:
-    """7. Mock provenance cannot qualify a real Ollama provider."""
+    """10. Existing mock-only tests still work, but mock reports cannot qualify a real Ollama production runtime."""
     from pico.workflow.synthesis_gate import WorkflowSynthesisGate
     from tools.bench.workflow_synthesis import generate_qualified_report
 
@@ -2432,3 +2655,13 @@ def test_mock_provenance_cannot_qualify_real_ollama_provider() -> None:
     )
     assert ok_sha is False
     assert "Mock benchmark reports cannot qualify workflow synthesis in production mode" in reason_sha
+
+    # 3. Mock report is permitted when allow_mock=True and provider='mock'
+    ok_allowed, reason_allowed = gate._validate_report(
+        mock_report,
+        provider="mock",
+        model_name="qwen3.5:2b",
+        allow_mock=True,
+    )
+    assert ok_allowed is True
+    assert "verified" in reason_allowed.lower()

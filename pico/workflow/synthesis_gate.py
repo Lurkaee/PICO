@@ -98,7 +98,7 @@ class WorkflowSynthesisGate:
         resolved_commit = active_git_commit
         if resolved_commit is None and not (allow_mock and provider.lower() == "mock"):
             from pico.core.provenance import resolve_active_runtime_commit
-            resolved_commit = resolve_active_runtime_commit()
+            resolved_commit = resolve_active_runtime_commit(require_clean=True)
 
         target_file = benchmark_file or settings.WORKFLOW_SYNTHESIS_BENCHMARK_FILE
         if target_file:

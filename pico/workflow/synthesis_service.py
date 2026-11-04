@@ -206,7 +206,11 @@ class WorkflowSynthesisService:
 
         # 4. Benchmark Qualification Gate (dispatched off event loop via asyncio.to_thread)
         effective_allow_mock = allow_mock or (decision.provider == "mock") or (override_provider is not None)
-        active_commit = resolve_active_runtime_commit() if not effective_allow_mock else None
+        active_commit = (
+            await asyncio.to_thread(resolve_active_runtime_commit, require_clean=True)
+            if not effective_allow_mock
+            else None
+        )
         is_qualified, gate_reason = await asyncio.to_thread(
             self.gate.check_readiness,
             selected_profile=decision.selected_profile,

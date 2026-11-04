@@ -2,10 +2,12 @@
 
 Resolves the Git or build commit associated with the running application:
 - Verifies build-time environment commitments against Git HEAD when Git metadata exists.
-- Enforces clean working-tree invariants when running inside Git checkouts with require_clean=True.
-- Rejects malformed, unverified, or mismatched commit identities.
-- Supports packaged production environments lacking Git metadata via authoritative PICO_BUILD_COMMIT.
-- Fails closed (returns None) when runtime identity cannot be established.
+- Enforces clean working-tree invariants (no uncommitted tracked modifications, staged changes,
+  or untracked non-ignored source files) when running inside Git checkouts with require_clean=True.
+- Rejects malformed, unverified, conflicting, or mismatched commit identities.
+- Supports packaged production environments lacking Git metadata strictly via authoritative PICO_BUILD_COMMIT.
+- Rejects PICO_GIT_COMMIT or GIT_COMMIT alone as proof of build identity when Git metadata is absent.
+- Fails closed (returns None) without fabricating or inferring a SHA when runtime identity cannot be established.
 """
 
 from __future__ import annotations
@@ -30,38 +32,62 @@ def resolve_active_runtime_commit(
     """Resolve the authoritative 40-character commit SHA for PICO runtime or benchmark execution.
 
     Resolution precedence & verification rules:
-    1. Inspect build-time environment / configuration for an authoritative identity:
-       (PICO_BUILD_COMMIT, PICO_GIT_COMMIT, GIT_COMMIT, settings.PICO_BUILD_COMMIT).
-       If present, it must strictly match the 40-hexadecimal SHA format; malformed values fail closed.
-    2. Check if running inside a Git checkout (by testing git rev-parse HEAD).
+    1. Inspect environment / configuration for commit identities:
+       - PICO_BUILD_COMMIT (authoritative build-time identity, via env or settings.PICO_BUILD_COMMIT)
+       - PICO_GIT_COMMIT (developer / checkout override)
+       - GIT_COMMIT (generic CI git commit variable)
+       If any provided value is malformed (not 40-hex SHA), fail closed (returns None).
+       If multiple variables are provided with conflicting values, fail closed (returns None).
+    2. Check if running inside a Git checkout (by testing git rev-parse HEAD):
        - If Git metadata is available:
-         a) Resolve actual Git HEAD.
-         b) If an environment / build commit was supplied, verify it strictly matches Git HEAD.
+         a) Resolve actual Git HEAD via `git rev-parse HEAD`.
+         b) If any environment / build commit was supplied, verify it strictly matches Git HEAD.
             Any mismatch fails closed.
-         c) If require_clean is True, inspect git status --porcelain. If tracked files
-            contain uncommitted changes (staged or unstaged modifications), fail closed.
+         c) If require_clean is True, inspect `git status --porcelain`.
+            If any tracked changes (staged or unstaged) or non-ignored untracked files
+            are present, fail closed.
          d) Return the verified 40-hex commit SHA in lowercase.
        - If Git metadata is NOT available (e.g., packaged production containers/wheels):
-         a) If an authoritative 40-hex build commit was provided in configuration, accept it.
-         b) If no build commit was provided, fail closed (returns None).
+         a) Only accept a valid authoritative PICO_BUILD_COMMIT (from env or validated settings).
+         b) Do NOT accept PICO_GIT_COMMIT or GIT_COMMIT alone as proof of build identity.
+         c) If authoritative PICO_BUILD_COMMIT is absent or invalid, fail closed (returns None).
+            Never fabricate or infer a SHA.
 
     Returns:
         str | None: 40-character lowercase hex commit SHA, or None if identity cannot be established.
     """
-    # 1. Inspect build-time environment / configuration
-    raw_env_commit = (
-        os.environ.get("PICO_BUILD_COMMIT")
-        or getattr(settings, "PICO_BUILD_COMMIT", None)
-        or os.environ.get("PICO_GIT_COMMIT")
-        or os.environ.get("GIT_COMMIT")
-    )
-    build_commit: str | None = None
-    if raw_env_commit and str(raw_env_commit).strip():
-        val = str(raw_env_commit).strip()
-        if not HEX_40_REGEX.fullmatch(val):
-            logger.warning("Configured build commit '%s' is not a valid 40-hex SHA.", val)
+    # 1. Collect and validate all supplied commit variables
+    env_vars: dict[str, str] = {}
+    pico_build_val = os.environ.get("PICO_BUILD_COMMIT") or getattr(settings, "PICO_BUILD_COMMIT", None)
+    if pico_build_val and str(pico_build_val).strip():
+        env_vars["PICO_BUILD_COMMIT"] = str(pico_build_val).strip()
+
+    pico_git_val = os.environ.get("PICO_GIT_COMMIT")
+    if pico_git_val and str(pico_git_val).strip():
+        env_vars["PICO_GIT_COMMIT"] = str(pico_git_val).strip()
+
+    git_commit_val = os.environ.get("GIT_COMMIT")
+    if git_commit_val and str(git_commit_val).strip():
+        env_vars["GIT_COMMIT"] = str(git_commit_val).strip()
+
+    # Check format for each supplied variable
+    for name, raw_val in env_vars.items():
+        if not HEX_40_REGEX.fullmatch(raw_val):
+            logger.warning("Configured commit %s '%s' is not a valid 40-hex SHA.", name, raw_val)
             return None
-        build_commit = val.lower()
+
+    # Check for conflicts among supplied variables
+    normalized_vars = {k: v.lower() for k, v in env_vars.items()}
+    unique_commits = set(normalized_vars.values())
+    if len(unique_commits) > 1:
+        logger.warning(
+            "Conflicting commit identities provided across environment/settings: %s",
+            normalized_vars,
+        )
+        return None
+
+    configured_commit = next(iter(unique_commits)) if unique_commits else None
+    authoritative_build_commit = normalized_vars.get("PICO_BUILD_COMMIT")
 
     # 2. Probe Git metadata
     cwd = str(repo_root) if repo_root is not None else None
@@ -86,11 +112,11 @@ def resolve_active_runtime_commit(
         has_git = False
 
     if has_git and git_head:
-        # If build commit was supplied, verify it matches Git HEAD
-        if build_commit and build_commit != git_head:
+        # If any commit was configured in env/settings, verify it matches Git HEAD
+        if configured_commit and configured_commit != git_head:
             logger.warning(
-                "Configured build commit '%s' does not match actual Git HEAD '%s'.",
-                build_commit,
+                "Configured commit '%s' does not match actual Git HEAD '%s'.",
+                configured_commit,
                 git_head,
             )
             return None
@@ -109,12 +135,12 @@ def resolve_active_runtime_commit(
                 if status_res.returncode != 0:
                     logger.warning("git status check failed with returncode %d.", status_res.returncode)
                     return None
-                dirty_lines = [
-                    l for l in status_res.stdout.splitlines()
-                    if l.strip() and not l.startswith("??")
-                ]
+                dirty_lines = [l for l in status_res.stdout.splitlines() if l.strip()]
                 if dirty_lines:
-                    logger.warning("Git checkout has uncommitted tracked changes: %s", dirty_lines[:3])
+                    logger.warning(
+                        "Git checkout is not clean (uncommitted or untracked changes present): %s",
+                        dirty_lines[:3],
+                    )
                     return None
             except Exception as e:
                 logger.warning("Failed to execute git status: %s", e)
@@ -122,9 +148,16 @@ def resolve_active_runtime_commit(
 
         return git_head
 
-    # Git metadata not available: fallback to authoritative build identity if present
-    if build_commit:
-        return build_commit
+    # Git metadata not available:
+    # Strictly require authoritative PICO_BUILD_COMMIT; reject PICO_GIT_COMMIT or GIT_COMMIT alone.
+    if authoritative_build_commit:
+        return authoritative_build_commit
 
-    # Cannot establish runtime identity
+    if configured_commit:
+        logger.warning(
+            "Git metadata is absent; PICO_GIT_COMMIT and GIT_COMMIT cannot establish authoritative "
+            "build provenance without PICO_BUILD_COMMIT. Failing closed."
+        )
+        return None
+
     return None
