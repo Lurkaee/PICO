@@ -931,12 +931,14 @@ def test_synthesis_cyclic_dag_rejected(
             SynthesizedStepModel(
                 step_key="step_a",
                 capability_id="core.calculator",
+                capability_version="1.0.0",
                 dependencies=["step_b"],
                 input_template={"expression": "1 + 1"},
             ),
             SynthesizedStepModel(
                 step_key="step_b",
                 capability_id="core.calculator",
+                capability_version="1.0.0",
                 dependencies=["step_a"],
                 input_template={"expression": "2 + 2"},
             ),
@@ -1455,3 +1457,418 @@ def test_workflow_synthesis_missing_prompt_fails_quality_gates() -> None:
     assert any(not g.passed for g in gates)
     caps_gate = next(g for g in gates if g.threshold_name == "capability_id_compliance")
     assert caps_gate.passed is False
+
+
+# ---------------------------------------------------------------------------
+# Model-Specific Memory Telemetry Tests (Ollama /api/ps)
+# ---------------------------------------------------------------------------
+
+def test_query_ollama_model_memory_valid_matching(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test 1: Valid matching telemetry from /api/ps with size and size_vram."""
+    from tools.bench.workflow_synthesis import query_ollama_model_memory
+    import httpx
+
+    fake_response = httpx.Response(
+        200,
+        json={
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "model": "qwen3.5:2b",
+                    "size": 2097152000,  # 2000 MB
+                    "size_vram": 524288000,  # 500 MB
+                    "digest": "sha256:abcd1234efgh5678",
+                }
+            ]
+        },
+        request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"),
+    )
+
+    def mock_get(self, url, **kwargs):
+        return fake_response
+
+    monkeypatch.setattr(httpx.Client, "get", mock_get)
+
+    ram_mb, vram_mb, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+    assert ram_mb == round((2097152000 - 524288000) / (1024 * 1024), 2)
+    assert vram_mb == round(524288000 / (1024 * 1024), 2)
+    assert src == "ollama_api_ps"
+
+
+def test_query_ollama_model_memory_wrong_tag_or_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test 2: Mismatched tag or digest returns (None, None, None)."""
+    from tools.bench.workflow_synthesis import query_ollama_model_memory
+    import httpx
+
+    fake_response = httpx.Response(
+        200,
+        json={
+            "models": [
+                {
+                    "name": "llama3:8b",
+                    "model": "llama3:8b",
+                    "size": 4000000000,
+                    "size_vram": 4000000000,
+                    "digest": "sha256:other_digest",
+                }
+            ]
+        },
+        request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"),
+    )
+
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kwargs: fake_response)
+
+    # Wrong model tag
+    ram, vram, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+    assert ram is None and vram is None and src is None
+
+    # Matching tag but mismatched digest
+    fake_response_matching_tag = httpx.Response(
+        200,
+        json={
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "model": "qwen3.5:2b",
+                    "size": 2000000000,
+                    "size_vram": 0,
+                    "digest": "sha256:running_digest",
+                }
+            ]
+        },
+        request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"),
+    )
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kwargs: fake_response_matching_tag)
+
+    ram, vram, src = query_ollama_model_memory(
+        "qwen3.5:2b",
+        model_digest="sha256:expected_different_digest",
+        base_url="http://127.0.0.1:11434",
+    )
+    assert ram is None and vram is None and src is None
+
+
+def test_query_ollama_model_memory_empty_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test 3: Empty models array in /api/ps returns (None, None, None)."""
+    from tools.bench.workflow_synthesis import query_ollama_model_memory
+    import httpx
+
+    fake_response = httpx.Response(
+        200,
+        json={"models": []},
+        request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"),
+    )
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kwargs: fake_response)
+
+    ram, vram, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+    assert ram is None and vram is None and src is None
+
+
+def test_query_ollama_model_memory_invalid_size_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test 4: Missing, negative, non-numeric, or size_vram > size fields return (None, None, None)."""
+    from tools.bench.workflow_synthesis import query_ollama_model_memory
+    import httpx
+
+    for invalid_fields in [
+        {"size": None, "size_vram": 100},
+        {"size": -500, "size_vram": 0},
+        {"size": 0, "size_vram": 0},
+        {"size": "not-a-number", "size_vram": 100},
+        {"size": 1000, "size_vram": 2000},  # size_vram > size
+        {"size": 1000, "size_vram": -10},
+    ]:
+        fake_response = httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "qwen3.5:2b",
+                        "model": "qwen3.5:2b",
+                        **invalid_fields,
+                    }
+                ]
+            },
+            request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"),
+        )
+        monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kwargs: fake_response)
+        ram, vram, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+        assert ram is None and vram is None and src is None
+
+
+def test_query_ollama_model_memory_unavailable_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test 5: HTTP 500 error or connection failure returns (None, None, None)."""
+    from tools.bench.workflow_synthesis import query_ollama_model_memory
+    import httpx
+
+    # HTTP 500
+    fake_500 = httpx.Response(500, text="Internal Server Error", request=httpx.Request("GET", "http://127.0.0.1:11434/api/ps"))
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kwargs: fake_500)
+    ram, vram, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+    assert ram is None and vram is None and src is None
+
+    # Connection / timeout exception
+    def mock_fail(self, url, **kwargs):
+        raise httpx.ConnectTimeout("Connection timed out")
+
+    monkeypatch.setattr(httpx.Client, "get", mock_fail)
+    ram, vram, src = query_ollama_model_memory("qwen3.5:2b", base_url="http://127.0.0.1:11434")
+    assert ram is None and vram is None and src is None
+
+
+def test_resource_stability_no_zero_valued_fallback_passing_gate() -> None:
+    """Test 6: Gate fails closed if RAM measurement is 0.0 or None; zero-valued fallback rejected."""
+    from tools.bench.workflow_synthesis import build_workflow_synthesis_quality_gates
+
+    mock_evals = [
+        {
+            "prompt_id": pid,
+            "structured_output_valid": True,
+            "schema_compliant": True,
+            "capability_id_compliant": True if "VALID" in pid or "CHAIN" in pid else None,
+            "input_schema_compliant": True if "VALID" in pid or "CHAIN" in pid else None,
+            "dag_valid": True if "VALID" in pid or "CHAIN" in pid else None,
+            "refusal_clarification_correct": True if "REFUSAL" in pid or "CLARIFY" in pid or "INJECT" in pid or "ADVERSARIAL" in pid else None,
+            "security_boundary_respected": True,
+            "injection_resistant": True,
+        }
+        for pid in [
+            "WS-VALID-01",
+            "WS-CHAIN-02",
+            "WS-REFUSAL-03",
+            "WS-CLARIFY-04",
+            "WS-INJECT-05",
+            "WS-ADVERSARIAL-06",
+        ]
+    ]
+
+    # max_ram_mb is None (unavailable telemetry) -> fails
+    gates_none = build_workflow_synthesis_quality_gates(mock_evals, avg_latency_ms=1000.0, max_ram_mb=None)
+    ram_gate_none = next(g for g in gates_none if g.threshold_name == "resource_stability")
+    assert ram_gate_none.passed is False
+
+    # max_ram_mb is 0.0 (zero-valued dummy fallback) -> strictly fails
+    gates_zero = build_workflow_synthesis_quality_gates(mock_evals, avg_latency_ms=1000.0, max_ram_mb=0.0)
+    ram_gate_zero = next(g for g in gates_zero if g.threshold_name == "resource_stability")
+    assert ram_gate_zero.passed is False
+
+    # max_ram_mb is 1200.0 (> 0 and <= 8192) -> passes
+    gates_ok = build_workflow_synthesis_quality_gates(mock_evals, avg_latency_ms=1000.0, max_ram_mb=1200.0)
+    ram_gate_ok = next(g for g in gates_ok if g.threshold_name == "resource_stability")
+    assert ram_gate_ok.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Default Report-Directory Resolution & Alignment Tests
+# ---------------------------------------------------------------------------
+
+def test_default_reports_dir_resolution() -> None:
+    """Verify get_default_reports_dir returns canonical tools/bench/reports path."""
+    from pico.workflow.synthesis_gate import get_default_reports_dir
+    default_dir = get_default_reports_dir()
+    assert default_dir.name == "reports"
+    assert default_dir.parent.name == "bench"
+    assert default_dir.parent.parent.name == "tools"
+
+
+def test_runner_default_output_dir_alignment() -> None:
+    """Verify runner parser defaults to None for output_dir to preserve caller intent."""
+    from tools.bench.runner import parse_args
+    import sys
+
+    orig_argv = sys.argv
+    try:
+        sys.argv = ["pico-bench", "--task-category", "workflow_synthesis"]
+        args = parse_args()
+        assert args.output_dir is None
+    finally:
+        sys.argv = orig_argv
+
+
+# ---------------------------------------------------------------------------
+# Report Run-Coverage Validation Tests
+# ---------------------------------------------------------------------------
+
+def test_gate_rejects_empty_measured_runs() -> None:
+    """Verify WorkflowSynthesisGate rejects reports with empty measured_runs."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0)
+    report.measured_runs = []
+
+    ok, reason = gate._validate_report(report, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "measured_runs is empty" in reason
+
+
+def test_gate_rejects_missing_prompt_in_runs() -> None:
+    """Verify WorkflowSynthesisGate rejects reports missing any of the 6 required prompts."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0)
+    # Remove WS-ADVERSARIAL-06
+    report.measured_runs = [r for r in report.measured_runs if r.prompt_id != "WS-ADVERSARIAL-06"]
+
+    ok, reason = gate._validate_report(report, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "WS-ADVERSARIAL-06" in reason
+
+
+def test_gate_rejects_unexpected_prompt_in_runs() -> None:
+    """Verify WorkflowSynthesisGate rejects reports containing unexpected prompt IDs."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from pico.schemas.bench import RunMeasurement
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0)
+    report.measured_runs.append(
+        RunMeasurement(
+            run_index=7,
+            prompt_id="WS-UNKNOWN-99",
+            category="workflow_synthesis",
+            status="SUCCESS",
+        )
+    )
+
+    ok, reason = gate._validate_report(report, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "unexpected prompt ID" in reason
+
+
+def test_gate_rejects_incomplete_repetitions_in_runs() -> None:
+    """Verify WorkflowSynthesisGate rejects reports where repetitions don't match run count."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    # Report claims repetitions=2, but only 1 repetition (6 runs) is recorded
+    report = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0, repetitions=1)
+    report.repetitions = 2
+
+    ok, reason = gate._validate_report(report, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "run count 1 does not match expected repetitions 2" in reason
+
+
+def test_gate_rejects_non_success_run() -> None:
+    """Verify WorkflowSynthesisGate rejects reports containing any failed/non-success run."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    report = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0)
+    report.measured_runs[2].status = "FAILED"
+    report.measured_runs[2].error_message = "Connection aborted"
+
+    ok, reason = gate._validate_report(report, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "non-success run" in reason
+    assert "Connection aborted" in reason
+
+
+# ---------------------------------------------------------------------------
+# Mandatory Capability Version Schema Tests
+# ---------------------------------------------------------------------------
+
+def test_capability_version_strictly_mandatory_in_schema() -> None:
+    """Verify capability_version has no default and cannot be omitted from SynthesizedStepModel."""
+    from pico.schemas.workflow_synthesis import SynthesizedStepModel
+    from pydantic import ValidationError
+
+    # Valid with version
+    step = SynthesizedStepModel(
+        step_key="s1",
+        capability_id="core.calculator",
+        capability_version="1.0.0",
+        input_template={"expression": "1 + 1"},
+    )
+    assert step.capability_version == "1.0.0"
+
+    # Missing capability_version must raise ValidationError
+    with pytest.raises(ValidationError) as exc_missing:
+        SynthesizedStepModel.model_validate({
+            "step_key": "s1",
+            "capability_id": "core.calculator",
+            "input_template": {"expression": "1 + 1"},
+        })
+    assert "capability_version" in str(exc_missing.value)
+
+    # Empty string capability_version must raise ValidationError
+    with pytest.raises(ValidationError) as exc_empty:
+        SynthesizedStepModel.model_validate({
+            "step_key": "s1",
+            "capability_id": "core.calculator",
+            "capability_version": "",
+            "input_template": {"expression": "1 + 1"},
+        })
+    assert "capability_version" in str(exc_empty.value)
+
+    # None capability_version must raise ValidationError
+    with pytest.raises(ValidationError) as exc_none:
+        SynthesizedStepModel.model_validate({
+            "step_key": "s1",
+            "capability_id": "core.calculator",
+            "capability_version": None,
+            "input_template": {"expression": "1 + 1"},
+        })
+    assert "capability_version" in str(exc_none.value)
+
+
+# ---------------------------------------------------------------------------
+# Benchmark Provenance & Quality Gate Regression Tests
+# ---------------------------------------------------------------------------
+
+def test_gate_validates_git_commit_and_evaluator_version() -> None:
+    """Verify WorkflowSynthesisGate enforces git_commit and evaluator_version provenance."""
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+
+    # Missing git_commit
+    report_no_commit = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0, git_commit="")
+    ok, reason = gate._validate_report(report_no_commit, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "git_commit" in reason
+
+    # Missing evaluator_version
+    report_no_eval = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0, evaluator_version="")
+    ok, reason = gate._validate_report(report_no_eval, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "evaluator_version" in reason
+
+    # Mismatched evaluator_version
+    report_bad_eval = generate_qualified_report(provider="mock", avg_latency_ms=1000.0, max_ram_mb=500.0, evaluator_version="0.8.0")
+    ok, reason = gate._validate_report(report_bad_eval, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "0.8.0" in reason
+
+
+def test_gate_rejects_report_status_passed_with_failed_mandatory_gate() -> None:
+    """Verify gate rejects a report with status='PASSED' if a mandatory gate has passed=False.
+
+    Asserts the error reason references the exact failed gate threshold name and target_value.
+    """
+    from pico.workflow.synthesis_gate import WorkflowSynthesisGate
+    from tools.bench.workflow_synthesis import generate_qualified_report
+
+    gate = WorkflowSynthesisGate()
+    # Report has status="PASSED" but capability_id_compliance is forced to passed=False
+    report = generate_qualified_report(
+        provider="mock",
+        status="PASSED",
+        failed_gate="capability_id_compliance",
+        avg_latency_ms=1000.0,
+        max_ram_mb=500.0,
+    )
+    # Force status to PASSED to test the gate check
+    report.status = "PASSED"
+
+    ok, reason = gate._validate_report(report, provider="mock", model_name="qwen3.5:2b", allow_mock=True)
+    assert ok is False
+    assert "capability_id_compliance" in reason
+    assert "100% registered capabilities" in reason

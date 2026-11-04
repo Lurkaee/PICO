@@ -10,12 +10,17 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import statistics
+import subprocess
 import time
 from typing import Any
 
+import httpx
+
 from pico.capabilities import CapabilityRegistry, registry as default_registry
+from pico.core.config import settings
 from pico.schemas.bench import BenchmarkReport, QualityGateResult, RunMeasurement
 from pico.schemas.workflow import StepDefinition, WorkflowCreate
 from pico.schemas.workflow_synthesis import (
@@ -258,7 +263,7 @@ def build_workflow_synthesis_quality_gates(
     )
 
     latency_ok = (avg_latency_ms is not None) and (avg_latency_ms <= 30000.0)  # Under 30s
-    ram_ok = (max_ram_mb is not None) and (max_ram_mb <= 8192.0)  # Under 8 GB RAM target
+    ram_ok = (max_ram_mb is not None) and (max_ram_mb > 0.0) and (max_ram_mb <= 8192.0)  # Under 8 GB RAM target
 
     return [
         QualityGateResult(
@@ -334,6 +339,99 @@ def build_workflow_synthesis_quality_gates(
     ]
 
 
+def resolve_current_git_commit() -> str | None:
+    """Resolve current git commit SHA for benchmark provenance."""
+    commit = os.environ.get("PICO_GIT_COMMIT") or os.environ.get("GIT_COMMIT")
+    if commit and str(commit).strip():
+        return str(commit).strip()
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def query_ollama_model_memory(
+    model_name: str,
+    model_digest: str | None = None,
+    base_url: str | None = None,
+    timeout: float = 2.0,
+) -> tuple[float | None, float | None, str | None]:
+    """Query local Ollama daemon /api/ps to retrieve model-specific RAM and VRAM footprint in MB.
+
+    Performs exact canonical tag and optional digest matching.
+    Returns:
+        tuple[float | None, float | None, str | None]: (model_ram_mb, model_vram_mb, telemetry_source)
+        Returns (None, None, None) if telemetry is unavailable, model is not running, or fields are invalid.
+    """
+    url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
+    target = model_name.strip()
+    if not target:
+        return (None, None, None)
+    target_tag = target if ":" in target else f"{target}:latest"
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(f"{url}/api/ps")
+            if resp.status_code != 200:
+                return (None, None, None)
+            data = resp.json()
+            models = data.get("models", [])
+            for m in models:
+                m_name = str(m.get("name") or "").strip()
+                m_model = str(m.get("model") or "").strip()
+                m_digest = str(m.get("digest") or "").strip()
+
+                tag_matches = (
+                    m_name == target_tag
+                    or m_model == target_tag
+                    or m_name == target
+                    or m_model == target
+                )
+                digest_matches = (
+                    model_digest is not None
+                    and bool(model_digest.strip())
+                    and m_digest == model_digest.strip()
+                )
+
+                if model_digest and model_digest.strip():
+                    if not digest_matches:
+                        continue
+                    if target and not tag_matches:
+                        continue
+                else:
+                    if not tag_matches:
+                        continue
+
+                raw_size = m.get("size")
+                raw_vram = m.get("size_vram")
+                if raw_size is None:
+                    return (None, None, None)
+                try:
+                    size = float(raw_size)
+                    size_vram = float(raw_vram) if raw_vram is not None else 0.0
+                except (ValueError, TypeError):
+                    return (None, None, None)
+
+                if size <= 0 or size_vram < 0 or size_vram > size:
+                    return (None, None, None)
+
+                ram_mb = round(max(0.0, size - size_vram) / (1024 * 1024), 2)
+                vram_mb = round(size_vram / (1024 * 1024), 2)
+                return (ram_mb, vram_mb, "ollama_api_ps")
+    except Exception:
+        return (None, None, None)
+    return (None, None, None)
+
+
 class WorkflowSynthesisBenchmarkRunner:
     """Dedicated benchmark runner for workflow synthesis qualification.
 
@@ -357,10 +455,32 @@ class WorkflowSynthesisBenchmarkRunner:
         self.provider_name = provider_name
         self.base_url = base_url
         self.repetitions = max(1, repetitions)
-        self.output_dir = Path(output_dir) if output_dir else None
+        if output_dir is not None:
+            self.output_dir = Path(output_dir) if str(output_dir).strip() else None
+        else:
+            from pico.workflow.synthesis_gate import get_default_reports_dir
+            self.output_dir = get_default_reports_dir()
         self.capability_registry = capability_registry or default_registry
         self.provider = provider
         self.is_mock = is_mock
+        self.model_digest: str | None = None
+
+    def _sample_model_memory_mb(self) -> float | None:
+        """Sample the Ollama model footprint in MB against the hardware budget."""
+        if self.is_mock:
+            return 512.0
+        ram_mb, vram_mb, _ = query_ollama_model_memory(
+            model_name=self.model_name,
+            model_digest=self.model_digest,
+            base_url=self.base_url,
+        )
+        if ram_mb is None and vram_mb is None:
+            return None
+        if ram_mb is not None and ram_mb > 0:
+            return ram_mb
+        if vram_mb is not None and vram_mb > 0:
+            return vram_mb
+        return None
 
     def _build_system_prompt(self) -> str:
         catalog_lines = [f"- {c.metadata.capability_id}" for c in self.capability_registry.list()]
@@ -381,7 +501,7 @@ class WorkflowSynthesisBenchmarkRunner:
             '  "clarification_question": string | null\n'
             "}\n\n"
             "RULES & CONSTRAINTS:\n"
-            "1. If fulfilled by registered capabilities, set status='ready' and specify workflow_name and steps.\n"
+            "1. If fulfilled by registered capabilities, set status='ready' and specify workflow_name and steps. Every step MUST include exact capability_id and capability_version (e.g. '1.0.0').\n"
             "2. If ambiguous or missing parameters, set status='needs_clarification' and ask clarification_question.\n"
             "3. If unsupported or unsafe, set status='unsupported' and explain in explanation.\n"
             "4. Return strictly valid JSON adhering to the contract above.\n"
@@ -409,6 +529,7 @@ class WorkflowSynthesisBenchmarkRunner:
         if provider is None:
             if self.provider_name == "ollama":
                 model_digest = resolve_ollama_model_digest(self.model_name, self.base_url)
+                self.model_digest = model_digest
                 if not model_digest:
                     return BenchmarkReport(
                         benchmark_id=b_id,
@@ -497,10 +618,19 @@ class WorkflowSynthesisBenchmarkRunner:
                 sys_after = get_system_memory()
                 gpu_after = get_gpu_memory()
                 max_sys_used = max(sys_before.used_mb, sys_after.used_mb)
-                # Sample process working set memory footprint against the 8192 MB budget
-                process_ram = sys_after.process_working_set_mb or sys_before.process_working_set_mb
-                ram_sample = process_ram if (process_ram is not None and process_ram > 0) else max_sys_used
-                peak_ram_values.append(ram_sample)
+                # Sample the Ollama model footprint against the 8192 MB budget
+                model_ram = self._sample_model_memory_mb()
+                if model_ram is not None and model_ram > 0:
+                    peak_ram_values.append(model_ram)
+
+                if self.is_mock:
+                    m_ram, m_vram, m_src = 512.0, 0.0, "mock"
+                else:
+                    m_ram, m_vram, m_src = query_ollama_model_memory(
+                        model_name=self.model_name,
+                        model_digest=self.model_digest,
+                        base_url=self.base_url,
+                    )
 
                 generated_text = "".join(generated_chunks)
                 eval_res = evaluate_synthesis_output(
@@ -516,11 +646,15 @@ class WorkflowSynthesisBenchmarkRunner:
                     system_ram_total_mb=sys_before.total_mb if sys_before.available else None,
                     system_ram_percent=sys_after.percent_used if sys_after.available else None,
                     process_working_set_mb=sys_after.process_working_set_mb if sys_after.available else None,
-                    gpu_vram_used_mb=gpu_after.used_vram_mb if gpu_after.available else None,
+                    gpu_vram_used_mb=m_vram if m_vram is not None else (gpu_after.used_vram_mb if gpu_after.available else None),
                     gpu_vram_total_mb=gpu_before.total_vram_mb if gpu_before.available else None,
                     gpu_name=gpu_before.gpu_name if gpu_before.available else None,
-                    gpu_telemetry_source=gpu_before.source if gpu_before.available else "unavailable",
+                    gpu_telemetry_source=m_src if m_src else (gpu_before.source if gpu_before.available else "unavailable"),
                     gpu_error_reason=gpu_before.error_reason,
+                    model_ram_mb=m_ram,
+                    model_vram_mb=m_vram,
+                    model_total_mb=round(m_ram + m_vram, 2) if (m_ram is not None and m_vram is not None) else None,
+                    telemetry_source=m_src,
                 )
 
                 measured_runs.append(
@@ -568,6 +702,8 @@ class WorkflowSynthesisBenchmarkRunner:
         if model_digest:
             env["model_digest"] = model_digest
 
+        git_commit = resolve_current_git_commit() or ("mock-git-commit" if self.is_mock else None)
+
         report = BenchmarkReport(
             benchmark_id=b_id,
             timestamp_utc=now_str,
@@ -588,6 +724,8 @@ class WorkflowSynthesisBenchmarkRunner:
             task_category=WORKFLOW_SYNTHESIS_TASK_CATEGORY,
             suite_id=WORKFLOW_SYNTHESIS_SUITE_ID,
             suite_version=WORKFLOW_SYNTHESIS_SUITE_VERSION,
+            git_commit=git_commit,
+            evaluator_version="1.0.0",
         )
 
         if self.output_dir:
@@ -609,6 +747,9 @@ def generate_qualified_report(
     failed_gate: str | None = None,
     avg_latency_ms: float | None = None,
     max_ram_mb: float | None = None,
+    repetitions: int = 1,
+    git_commit: str = "mock-git-commit",
+    evaluator_version: str = "1.0.0",
 ) -> BenchmarkReport:
     """Test-only fixture helper to construct a BenchmarkReport for workflow synthesis.
 
@@ -701,23 +842,28 @@ def generate_qualified_report(
                 g.measured_value = "Failed"
                 status = "FAILED"
 
-    runs = [
-        RunMeasurement(
-            run_index=i + 1,
-            prompt_id=pid,
-            category="workflow_synthesis",
-            status="SUCCESS",
-            total_duration_ms=avg_latency_ms or 1200.0,
-        )
-        for i, pid in enumerate([
-            "WS-VALID-01",
-            "WS-CHAIN-02",
-            "WS-REFUSAL-03",
-            "WS-CLARIFY-04",
-            "WS-INJECT-05",
-            "WS-ADVERSARIAL-06",
-        ])
+    prompt_ids = [
+        "WS-VALID-01",
+        "WS-CHAIN-02",
+        "WS-REFUSAL-03",
+        "WS-CLARIFY-04",
+        "WS-INJECT-05",
+        "WS-ADVERSARIAL-06",
     ]
+    runs = []
+    run_idx = 0
+    for _ in range(max(1, repetitions)):
+        for pid in prompt_ids:
+            run_idx += 1
+            runs.append(
+                RunMeasurement(
+                    run_index=run_idx,
+                    prompt_id=pid,
+                    category="workflow_synthesis",
+                    status="SUCCESS",
+                    total_duration_ms=avg_latency_ms or 1200.0,
+                )
+            )
 
     return BenchmarkReport(
         benchmark_id=b_id,
@@ -730,12 +876,14 @@ def generate_qualified_report(
         is_mock=is_mock,
         context_window=4096,
         max_tokens=2048,
-        repetitions=len(WORKFLOW_SYNTHESIS_PROMPTS),
+        repetitions=max(1, repetitions),
         measured_runs=runs,
         task_category=WORKFLOW_SYNTHESIS_TASK_CATEGORY,
         suite_id=WORKFLOW_SYNTHESIS_SUITE_ID,
         suite_version=WORKFLOW_SYNTHESIS_SUITE_VERSION,
         quality_gates=gates,
+        git_commit=git_commit,
+        evaluator_version=evaluator_version,
     )
 
 
@@ -744,14 +892,17 @@ def main() -> int:
     parser.add_argument("--model", type=str, default="qwen3.5:2b", help="Model tag (e.g. qwen3.5:2b)")
     parser.add_argument("--base-url", type=str, default=None, help="Ollama API base URL")
     parser.add_argument("--repetitions", type=int, default=1, help="Repetitions per prompt")
-    parser.add_argument("--output-dir", type=str, default="tools/bench/reports", help="Output directory for reports")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory for reports (default: tools/bench/reports)")
     args = parser.parse_args()
+
+    from pico.workflow.synthesis_gate import get_default_reports_dir
+    output_dir = args.output_dir if args.output_dir is not None else str(get_default_reports_dir())
 
     runner = WorkflowSynthesisBenchmarkRunner(
         model_name=args.model,
         base_url=args.base_url,
         repetitions=args.repetitions,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
     )
     report = asyncio.run(runner.execute())
     print(f"Status: {report.status}")

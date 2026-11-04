@@ -760,8 +760,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="bench_reports",
-        help="Output directory for JSON and Markdown report artifacts (default: bench_reports)",
+        default=None,
+        help="Output directory for JSON and Markdown report artifacts",
     )
     parser.add_argument(
         "--mock",
@@ -806,11 +806,18 @@ async def main_async() -> int:
     args = parse_args()
     if args.task_category == "workflow_synthesis":
         from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
+        from pico.workflow.synthesis_gate import get_default_reports_dir
+
+        output_dir = (
+            args.output_dir
+            if args.output_dir is not None
+            else str(get_default_reports_dir())
+        )
         runner = WorkflowSynthesisBenchmarkRunner(
             model_name=args.model,
             base_url=args.base_url,
             repetitions=args.repetitions,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             is_mock=args.mock,
         )
         report = await runner.execute()
@@ -820,13 +827,15 @@ async def main_async() -> int:
             gate_status = "PASSED" if g.passed else "FAILED"
             print(f"    Gate [{g.threshold_name}]: {gate_status} ({g.measured_value})")
         return 0 if report.status == "PASSED" else 1
+
+    output_dir = args.output_dir if args.output_dir is not None else "bench_reports"
     runner = LocalBenchmarkRunner(
         model_name=args.model,
         base_url=args.base_url,
         repetitions=args.repetitions,
         context_size=args.context_size,
         max_tokens=args.max_tokens,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         is_mock=args.mock,
         min_tokens_per_sec=args.min_tokens_per_sec,
         max_ttft_ms=args.max_ttft_ms,
@@ -846,7 +855,7 @@ async def main_async() -> int:
     if report.status == "BLOCKED":
         print("[!] BENCHMARK BLOCKED:")
         print(f"    {report.status_reason}\n")
-        print(f"[*] Artifacts recorded in: {args.output_dir}/")
+        print(f"[*] Artifacts recorded in: {output_dir}/")
         return 2
 
     print(f"[+] Status: {report.status}")
@@ -860,7 +869,7 @@ async def main_async() -> int:
     print(f"    Peak RAM: {report.aggregates.system_ram_used_mb.median or 'N/A'} MB")
     print(f"    Peak VRAM: {report.aggregates.gpu_vram_used_mb.median or 'N/A'} MB")
     print(f"    Free Disk: {report.free_disk_before_gb} GB -> {report.free_disk_after_gb} GB")
-    print(f"\n[*] Artifacts saved to: {args.output_dir}/\n")
+    print(f"\n[*] Artifacts saved to: {output_dir}/\n")
 
     return 0 if report.status in ("PASSED", "BASELINE_RECORDED") else 1
 

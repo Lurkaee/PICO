@@ -216,6 +216,24 @@ class WorkflowSynthesisGate:
                 f"Report suite version '{report.suite_version}' does not match required '{WORKFLOW_SYNTHESIS_SUITE_VERSION}'.",
             )
 
+        if not report.evaluator_version or not str(report.evaluator_version).strip():
+            return (
+                False,
+                "Benchmark qualification report missing required 'evaluator_version'.",
+            )
+
+        if report.evaluator_version != WORKFLOW_SYNTHESIS_SUITE_VERSION:
+            return (
+                False,
+                f"Report evaluator version '{report.evaluator_version}' does not match required '{WORKFLOW_SYNTHESIS_SUITE_VERSION}'.",
+            )
+
+        if not report.git_commit or not str(report.git_commit).strip():
+            return (
+                False,
+                "Benchmark qualification report missing required 'git_commit' provenance.",
+            )
+
         if report.is_mock and (not allow_mock or provider.lower() != "mock"):
             return (
                 False,
@@ -286,22 +304,58 @@ class WorkflowSynthesisGate:
                         f"Mandatory quality gate '{required_gate}' has missing telemetry measurement.",
                     )
 
-        # Validate prompt run coverage if measured runs are recorded
-        if report.measured_runs:
-            REQUIRED_PROMPT_IDS = {
-                "WS-VALID-01",
-                "WS-CHAIN-02",
-                "WS-REFUSAL-03",
-                "WS-CLARIFY-04",
-                "WS-INJECT-05",
-                "WS-ADVERSARIAL-06",
-            }
-            covered = {r.prompt_id for r in report.measured_runs}
-            missing = REQUIRED_PROMPT_IDS - covered
-            if missing:
+        # Validate prompt run coverage
+        if not report.measured_runs:
+            return (
+                False,
+                "Qualification report must contain measured prompt runs (measured_runs is empty).",
+            )
+
+        if report.repetitions < 1:
+            return (
+                False,
+                f"Qualification report repetitions must be at least 1 (got {report.repetitions}).",
+            )
+
+        REQUIRED_PROMPT_IDS = {
+            "WS-VALID-01",
+            "WS-CHAIN-02",
+            "WS-REFUSAL-03",
+            "WS-CLARIFY-04",
+            "WS-INJECT-05",
+            "WS-ADVERSARIAL-06",
+        }
+        from collections import Counter
+        prompt_counts = Counter(r.prompt_id for r in report.measured_runs)
+        unexpected = set(prompt_counts.keys()) - REQUIRED_PROMPT_IDS
+        if unexpected:
+            return (
+                False,
+                f"Qualification report contains unexpected prompt ID(s): {sorted(unexpected)}.",
+            )
+        missing = REQUIRED_PROMPT_IDS - set(prompt_counts.keys())
+        if missing:
+            return (
+                False,
+                f"Qualification report missing required benchmark prompt run(s): {sorted(missing)}.",
+            )
+        for pid, count in sorted(prompt_counts.items()):
+            if count != report.repetitions:
                 return (
                     False,
-                    f"Qualification report missing required benchmark prompt run(s): {sorted(missing)}.",
+                    f"Prompt '{pid}' run count {count} does not match expected repetitions {report.repetitions}.",
+                )
+        if len(report.measured_runs) != report.repetitions * len(REQUIRED_PROMPT_IDS):
+            return (
+                False,
+                f"Total measured runs {len(report.measured_runs)} does not match expected {report.repetitions * len(REQUIRED_PROMPT_IDS)}.",
+            )
+
+        for r in report.measured_runs:
+            if r.status != "SUCCESS":
+                return (
+                    False,
+                    f"Qualification report contains non-success run '{r.prompt_id}' with status '{r.status}' (error: {r.error_message}).",
                 )
 
         # Model digest verification for production Ollama provider

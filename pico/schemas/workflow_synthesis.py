@@ -41,9 +41,10 @@ class SynthesizedStepModel(BaseModel):
         description="Registered capability identifier to execute",
     )
     capability_version: str = Field(
-        default="1.0.0",
+        ...,
+        min_length=1,
         max_length=32,
-        description="Expected capability version",
+        description="Expected capability version (mandatory)",
     )
     dependencies: list[str] = Field(
         default_factory=list,

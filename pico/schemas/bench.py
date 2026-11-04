@@ -20,6 +20,10 @@ class MemoryMetric(BaseModel):
     gpu_name: str | None = None
     gpu_telemetry_source: str = "unavailable"
     gpu_error_reason: str | None = None
+    model_ram_mb: float | None = None
+    model_vram_mb: float | None = None
+    model_total_mb: float | None = None
+    telemetry_source: str | None = None
 
 
 class RunMeasurement(BaseModel):

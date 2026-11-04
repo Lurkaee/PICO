@@ -89,7 +89,7 @@ class WorkflowSynthesisService:
             '  "clarification_question": string | null\n'
             "}\n\n"
             "RULES & CONSTRAINTS:\n"
-            "1. If fulfilled by registered capabilities, set status='ready' and specify workflow_name and steps.\n"
+            "1. If fulfilled by registered capabilities, set status='ready' and specify workflow_name and steps. Every step MUST include exact capability_id and capability_version (e.g. '1.0.0').\n"
             "2. If ambiguous or missing parameters, set status='needs_clarification' and ask clarification_question.\n"
             "3. If unsupported or unsafe, set status='unsupported' and explain in explanation.\n"
             "4. Return strictly valid JSON adhering to the contract above.\n"
