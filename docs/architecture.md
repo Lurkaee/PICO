@@ -432,8 +432,8 @@ The companion renders an expressive animated face (two animated eyes or equivale
 - **Authentication**: Reuses Policy A paired operator sessions: every companion bridge request, including read-only status, conversation, and perception queries, strictly requires an active paired operator session (`pico_operator_session` cookie). Mutating requests additionally require the valid session-bound CSRF token (`X-CSRF-Token`). The bridge never exposes private perception data or operator state to unauthenticated local callers. No raw tokens or `APPROVAL_SECRET_TOKEN` are embedded in companion assets or client storage.
 - **Untrusted Input Isolation**: Spoken audio transcriptions, visible window titles, and screen captures are classified as untrusted external inputs. Adversarial content (e.g. prompt injection in documents or web pages) can NEVER grant permissions, alter tool schemas, or bypass approvals.
 
-#### Architectural Decision Record (ADR) Requirement
-Before implementing the desktop shell, an Architectural Decision Record (ADR) will systematically evaluate candidate Windows desktop technologies (e.g., Tauri/Rust, PySide/Qt, Electron/C# WebView2). The evaluation criteria are:
+#### Architectural Decision Record (ADR)
+The desktop technology evaluation has been formally conducted and accepted in [ADR 0001: Windows Desktop Companion Architecture](decisions/0001-windows-desktop-companion-architecture.md). Tauri 2 + Rust was selected as the canonical desktop framework based on the following evaluation criteria:
 1. **Memory Budget**: Strict <100 MB RAM idle footprint to honor the 16 GB host budget alongside Ollama and OS workloads.
 2. **Windowing & Transparency**: Frameless, transparent floating window with reliable click-through and drag ergonomics on Windows 11.
 3. **Native Desktop Integration**: System tray menu, global hotkeys (e.g., Push-to-Talk `Win+Alt+P`), launch-at-login.
@@ -706,8 +706,8 @@ Target Environment:
   - Expressive desktop companion: floating, compact, frameless desktop presence with animated eyes state machine (`idle`, `listening`, `thinking`, `speaking`, `executing`, `awaiting_approval`, `offline`, `error`).
   - System tray & conversational flyout: system tray menu, global hotkeys, minimize/hide/pause controls, compact chat interface with direct link to approval cards.
   - Secure local bridge: communicates exclusively over supported IPv4 loopback (`127.0.0.1` / `localhost`), requiring an active Policy A paired operator session (`pico_operator_session` cookie) for all bridge requests (including read-only status, conversation, and perception access) and validating the session-bound CSRF token (`X-CSRF-Token`) for mutating requests. The bridge does not expose private perception data or operator state to unauthenticated local callers; zero plaintext tokens; zero alternate privileged execution paths.
-  - Architectural Decision Record (ADR): pre-implementation evaluation of desktop technologies (Tauri, PySide/Qt, Electron/C# WebView2) assessing memory budget (<100MB idle RAM), window transparency, system tray, security, and packaging complexity.
-  - *Status*: **PLANNED**.
+  - Architectural Decision Record (ADR): pre-implementation evaluation of desktop technologies (Tauri, PySide/Qt, Electron/C# WebView2) completed and documented in [ADR 0001](decisions/0001-windows-desktop-companion-architecture.md), selecting Tauri 2 + Rust based on <100MB idle RAM budget and 100% React/Vite UI code reuse.
+  - *Status*: **ACTIVE (ADR Accepted)**.
 - **P11.3 Local Voice Runtime & Optional Wake-Word**:
   - Genuine local STT/TTS: embedded local Whisper runtime (e.g., `faster-whisper` / `whisper.cpp`) and lightweight local TTS (e.g., `piper-tts` / Windows SAPI) replacing P6 mock adapters.
   - Push-to-Talk primary interaction: explicit companion button or global hotkey (`Win+Alt+P`) initiating bounded audio capture.
