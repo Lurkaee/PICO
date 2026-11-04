@@ -252,7 +252,7 @@ The companion's primary visual presence is an expressive two-eye face widget dis
 - **Contract Requirement for P11.2.3**: Milestone P11.2.3 must establish the authoritative state synchronization mechanism to drive these eight states.
 - Every state transition must be backed by verified server-side evidence:
   - Polling `/api/health` and `/api/operator/session` for `offline` and `idle` states.
-  - Tracking scheduler lease lifecycles and chat SSE events (`meta` through `done`) for `thinking`.
+  - Polling `/api/scheduler/status` for scheduler lease state (`current_active_local`) and tracking chat SSE events (`meta` through `done`) for `thinking`.
   - Polling or streaming approval inbox status for `awaiting_approval`.
   - Tracking workflow execution step state for `executing`.
 - **Absolute Rule**: Zero simulated or fabricated animations. The companion must never animate "thinking" or "listening" without authoritative server-side evidence.
