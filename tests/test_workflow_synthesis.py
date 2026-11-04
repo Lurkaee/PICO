@@ -2665,3 +2665,172 @@ def test_mock_provenance_cannot_qualify_real_ollama_provider() -> None:
     )
     assert ok_allowed is True
     assert "verified" in reason_allowed.lower()
+
+
+@pytest.mark.anyio
+async def test_staged_source_change_rejected_through_production_synthesis_service(
+    db_session: Session,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A staged source change is rejected through the actual production synthesis service path."""
+    import subprocess
+    from pico.workflow.synthesis_service import WorkflowSynthesisService
+    from pico.schemas.workflow_synthesis import WorkflowSynthesizeRequest
+    from tools.bench.workflow_synthesis import generate_qualified_report
+    from pico.core.errors import AuthorizationError
+    from pico.repositories.routing_decision_repo import RoutingDecisionRepository
+    from pico.workflow import synthesis_gate
+
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "ollama")
+
+    matching_sha = "a" * 40
+
+    def mock_staged(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{matching_sha}\n")
+        if cmd == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="M  pico/core/provenance.py\n"
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_staged)
+    monkeypatch.setattr(
+        synthesis_gate,
+        "resolve_ollama_model_digest",
+        lambda model_name, base_url=None: "sha256:active_model_digest_123",
+    )
+
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=800.0,
+        max_ram_mb=400.0,
+        model_digest="sha256:active_model_digest_123",
+        git_commit=matching_sha,
+    )
+    report.is_mock = False
+    report_file = tmp_path / "staged_bench_report.json"
+    report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    service = WorkflowSynthesisService(db=db_session)
+    request = WorkflowSynthesizeRequest(
+        conversation_id=conv_id,
+        user_message_id=msg_id,
+        requested_profile="local-small",
+    )
+
+    with pytest.raises(AuthorizationError) as exc_info:
+        await service.synthesize(request, benchmark_file=str(report_file))
+
+    assert "Active runtime commit could not be established" in str(exc_info.value)
+    routing_repo = RoutingDecisionRepository(db_session)
+    decisions = routing_repo.list_by_conversation(conv_id)
+    assert len(decisions) >= 1
+    assert decisions[-1].outcome == "blocked"
+    assert "Active runtime commit could not be established" in decisions[-1].error_message
+
+
+@pytest.mark.anyio
+async def test_untracked_source_file_rejected_through_production_synthesis_service(
+    db_session: Session,
+    test_conversation: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An untracked source file is rejected through the actual production synthesis service path."""
+    import subprocess
+    from pico.workflow.synthesis_service import WorkflowSynthesisService
+    from pico.schemas.workflow_synthesis import WorkflowSynthesizeRequest
+    from tools.bench.workflow_synthesis import generate_qualified_report
+    from pico.core.errors import AuthorizationError
+    from pico.repositories.routing_decision_repo import RoutingDecisionRepository
+    from pico.workflow import synthesis_gate
+
+    conv_id, msg_id = test_conversation
+    monkeypatch.setattr(settings, "WORKFLOW_SYNTHESIS_ENABLED", True)
+    monkeypatch.setattr(settings, "DEFAULT_PROVIDER", "ollama")
+
+    matching_sha = "a" * 40
+
+    def mock_untracked(cmd, *args, **kwargs):
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{matching_sha}\n")
+        if cmd == ["git", "status", "--porcelain"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="?? pico/new_untracked_module.py\n"
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", mock_untracked)
+    monkeypatch.setattr(
+        synthesis_gate,
+        "resolve_ollama_model_digest",
+        lambda model_name, base_url=None: "sha256:active_model_digest_123",
+    )
+
+    report = generate_qualified_report(
+        provider="ollama",
+        model_name="qwen3.5:2b",
+        is_mock=True,
+        status="PASSED",
+        avg_latency_ms=800.0,
+        max_ram_mb=400.0,
+        model_digest="sha256:active_model_digest_123",
+        git_commit=matching_sha,
+    )
+    report.is_mock = False
+    report_file = tmp_path / "untracked_bench_report.json"
+    report_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    service = WorkflowSynthesisService(db=db_session)
+    request = WorkflowSynthesizeRequest(
+        conversation_id=conv_id,
+        user_message_id=msg_id,
+        requested_profile="local-small",
+    )
+
+    with pytest.raises(AuthorizationError) as exc_info:
+        await service.synthesize(request, benchmark_file=str(report_file))
+
+    assert "Active runtime commit could not be established" in str(exc_info.value)
+    routing_repo = RoutingDecisionRepository(db_session)
+    decisions = routing_repo.list_by_conversation(conv_id)
+    assert len(decisions) >= 1
+    assert decisions[-1].outcome == "blocked"
+    assert "Active runtime commit could not be established" in decisions[-1].error_message
+
+
+def test_provenance_anchored_discovery_when_cwd_outside_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the process working directory is outside the repository, Git discovery is anchored to source location."""
+    import subprocess
+    from pico.core.provenance import resolve_active_runtime_commit
+
+    # Change current working directory to a non-git temporary directory
+    monkeypatch.chdir(tmp_path)
+
+    # 1. Unmocked Git probe: since source code is inside the PICO checkout, probe_cwd discovers the checkout
+    resolved = resolve_active_runtime_commit(require_clean=False)
+    # Must resolve a valid 40-hex commit SHA from the real repo rather than failing closed as Git-less
+    assert resolved is not None
+    assert len(resolved) == 40
+
+    # 2. An adversarial or mismatched PICO_BUILD_COMMIT cannot bypass Git verification just because CWD is outside
+    mismatched_sha = "0" * 40
+    monkeypatch.setenv("PICO_BUILD_COMMIT", mismatched_sha)
+    # Because it discovers Git metadata from anchored package directory, it checks against HEAD and rejects
+    assert resolve_active_runtime_commit(require_clean=False) is None
+
+    # 3. Conversely, if repo_root is explicitly passed as tmp_path (which has no .git), Git-less mode is respected
+    monkeypatch.setenv("PICO_BUILD_COMMIT", mismatched_sha)
+    gitless_resolved = resolve_active_runtime_commit(require_clean=False, repo_root=tmp_path)
+    assert gitless_resolved == mismatched_sha

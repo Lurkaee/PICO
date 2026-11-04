@@ -38,7 +38,8 @@ def resolve_active_runtime_commit(
        - GIT_COMMIT (generic CI git commit variable)
        If any provided value is malformed (not 40-hex SHA), fail closed (returns None).
        If multiple variables are provided with conflicting values, fail closed (returns None).
-    2. Check if running inside a Git checkout (by testing git rev-parse HEAD):
+    2. Check if running inside a Git checkout (by testing git rev-parse HEAD anchored
+       to repo_root or PICO's source location, preventing external process CWD leakage):
        - If Git metadata is available:
          a) Resolve actual Git HEAD via `git rev-parse HEAD`.
          b) If any environment / build commit was supplied, verify it strictly matches Git HEAD.
@@ -90,7 +91,19 @@ def resolve_active_runtime_commit(
     authoritative_build_commit = normalized_vars.get("PICO_BUILD_COMMIT")
 
     # 2. Probe Git metadata
-    cwd = str(repo_root) if repo_root is not None else None
+    if repo_root is not None:
+        probe_cwd = str(repo_root)
+    else:
+        # Anchor Git discovery to the package source location to prevent
+        # an external process working directory from falsely classifying
+        # a Git checkout as Git-less.
+        package_dir = Path(__file__).resolve().parent.parent
+        candidate_repo = package_dir.parent
+        if (candidate_repo / ".git").exists():
+            probe_cwd = str(candidate_repo)
+        else:
+            probe_cwd = str(package_dir)
+
     git_head: str | None = None
     has_git = False
 
@@ -101,7 +114,7 @@ def resolve_active_runtime_commit(
             text=True,
             timeout=2.0,
             check=False,
-            cwd=cwd,
+            cwd=probe_cwd,
         )
         if res.returncode == 0 and res.stdout.strip():
             head_val = res.stdout.strip()
@@ -130,7 +143,7 @@ def resolve_active_runtime_commit(
                     text=True,
                     timeout=2.0,
                     check=False,
-                    cwd=cwd,
+                    cwd=probe_cwd,
                 )
                 if status_res.returncode != 0:
                     logger.warning("git status check failed with returncode %d.", status_res.returncode)
