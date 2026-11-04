@@ -379,10 +379,10 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
     - System tray integration: Tray icon, context menu (Status, Open Full UI, Pause Perception, Settings, Quit), optional launch-at-login toggle.
     - Compact conversational panel: Quick flyout chat window for typing, viewing responses, and one-click access to approval tickets.
     - Secure local bridge: Communicates with FastAPI backend exclusively over loopback IPv4 (`127.0.0.1` / `localhost`; bracketed IPv6 `[::1]` validation deferred); requires a Policy A paired operator session (`pico_operator_session` cookie) for all bridge requests (including read-only status, conversation, and perception access) and validates the session-bound CSRF token (`X-CSRF-Token`) for mutating requests; zero plaintext secret storage in companion assets; zero alternate privileged execution paths.
-    - Architectural Decision Record (ADR): Systematic evaluation of Windows desktop technologies (e.g., Tauri/Rust, PySide/Qt, Electron/C# WebView2) assessing packaging complexity, memory footprint (<100MB RAM target), native tray/window transparency, security, and developer ergonomics prior to implementation.
+    - Architectural Decision Record (ADR): Systematic evaluation of Windows desktop technologies (Tauri/Rust, PySide/Qt, Electron/C# WebView2) documented in [ADR 0001: Windows Desktop Companion Architecture](decisions/0001-windows-desktop-companion-architecture.md), selecting Tauri 2 + Rust based on <100MB idle RAM budget and 100% React/Vite code reuse.
   - **Prerequisites**: P10.1, P10.2, P10.3.2.
   - **Acceptance Criteria**:
-    - ADR documented and approved before code implementation.
+    - [x] ADR documented and approved before code implementation: [ADR 0001](decisions/0001-windows-desktop-companion-architecture.md) accepted.
     - Shell launches on Windows 11 with transparent background and system tray integration.
     - Visual state transitions mirror authoritative backend state without latency lag or desync.
     - Companion authenticates via Policy A paired operator session; unauthorized mutations fail closed.

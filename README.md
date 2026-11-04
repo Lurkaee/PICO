@@ -65,7 +65,7 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 1. **Perception & Ingestion**: Spoken input, typed messages, or desktop context enter PICO through clean perception adapters. *(Implemented today: typed chat and P6 audio session lifecycle with mock STT/TTS adapters. Planned for P11.3: embedded local Whisper STT, local TTS, and optional wake-word; planned for P11.5: contextual screen understanding).* Audio buffers and screen frames remain strictly transient in RAM and are never persisted or forwarded to external clouds.
 2. **Context Compilation & Budgeting**: *(Implemented)* The Context Compiler selectively gathers relevant working, episodic, and semantic memories within a strict 4096-token ceiling. Data classification tags (`PUBLIC`, `INTERNAL`, `SENSITIVE`, `SECRET`) are computed with highest-classification inheritance.
 3. **Deterministic Model Routing**: *(Implemented)* The Model Gateway routes requests based on sensitivity and task category. Requests containing `INTERNAL`, `SENSITIVE`, `SECRET`, or unclassified data are pinned strictly to local inference. Multi-step autonomous planning for `local-small` is gated behind passing benchmark evaluations.
-4. **Workflow Synthesis & Graph Validation**: *(Engine implemented; conversational synthesis planned)* In Milestone P11.1, natural-language requests will be compiled into typed `WorkflowDefinition` Directed Acyclic Graphs (DAGs). The existing P9 workflow engine validates graphs for acyclicity (Kahn's algorithm), validates against declared capability schemas, and enforces bounded execution limits (max 50 steps, max depth 20).
+4. **Workflow Synthesis & Graph Validation**: *(Implemented & hardware-gated)* Conversational task decomposition compiles unstructured user requests into reviewable `WorkflowDefinition` DAG proposals via `POST /api/workflows/synthesize` without granting execution authority. The P9 workflow engine validates graphs for acyclicity (Kahn's algorithm), verifies registered capability versions, checks input schemas, and enforces bounded execution limits (max 50 steps, max depth 20). Live synthesis is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and gated behind workstation hardware qualification (`pico_workflow_synthesis_v1`).
 5. **Policy A Authorization & Approval Gate**: *(Implemented)* The LLM may propose plans, but can never authorize or approve them. Safe, read-only actions execute automatically; consequential actions pause in `awaiting_approval`, requiring human operator confirmation bound to a SHA-256 canonical input digest.
 6. **Sandboxed Capability Execution**: *(Implemented)* Approved actions dispatch to isolated capability adapters (`os.*`, `filesystem.*`, `browser.*`, `homeassistant.*`, `memory.*`). Reversible operations generate compensation snapshots before mutating state.
 7. **Independent Postcondition Verification**: *(Implemented verifier; spoken TTS feedback planned)* Multi-stage verifiers confirm actual outcome evidence (DOM elements, filesystem states, smart-home device attributes) before any success claim is emitted to the operator or spoken via local TTS.
@@ -100,9 +100,9 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 | **P9** | Workflow Orchestration | Typed DAG engine (`WorkflowService`), Kahn acyclicity check, Stages A–D verifier, compensations. | **VERIFIED** | Workflow engine tests |
 | **P10.1** | Desktop Web Command Centre | Polished local-first React + Vite UI, streaming chat, timeline, memory, approval inbox. | **VERIFIED** | 125 Vitest tests |
 | **P10.2** | Offline Shell & Safe Recovery | Service worker offline shell, in-memory draft outbox, ambiguous outcome tagging, session revalidation. | **VERIFIED** | Resilience tests |
-| **P10.3** | Operator Authorization Closure | Policy A pairing challenge CLI, mandatory physical actuation token gate, standalone dispatch. | **VERIFIED** | 723 backend / 125 UI tests |
-| **P11.1** | Conversational Workflow Synthesis | Natural language intent extraction to validated DAGs, benchmark gating for `local-small`. | **PLANNED** | Roadmap defined |
-| **P11.2** | Windows Desktop Companion Shell | Floating widget, animated eyes state machine, system tray, secure loopback bridge. | **PLANNED** | Roadmap defined |
+| **P10.3** | Operator Authorization Closure | Policy A pairing challenge CLI, mandatory physical actuation token gate, standalone dispatch. | **VERIFIED** | 795 backend / 139 UI tests |
+| **P11.1** | Conversational Workflow Synthesis | Natural language intent extraction to validated DAGs, benchmark gating for `local-small`. | **MERGED (Hardware Qualification Pending)** | 72 synthesis / 108 workflow tests |
+| **P11.2** | Windows Desktop Companion Shell | Floating widget, animated eyes state machine, system tray, secure loopback bridge. | **ACTIVE (ADR Accepted)** | [ADR 0001](docs/decisions/0001-windows-desktop-companion-architecture.md) |
 | **P11.3** | Local Voice Runtime & Wake-Word | Embedded Whisper STT, local Piper/SAPI TTS, push-to-talk, optional on-device wake-word. | **PLANNED** | Roadmap defined |
 | **P11.4** | Voice-to-Action Integration | Spoken intent to verified workflow execution, consequential action gating, TTS feedback. | **PLANNED** | Roadmap defined |
 | **P11.5** | Contextual Screen Understanding | On-demand screen capture, untrusted visual input boundary, ephemeral RAM-only frames. | **PLANNED** | Roadmap defined |
@@ -459,10 +459,10 @@ PICO integrates with Home Assistant as a local smart-home hub for situational aw
 
 Run the full automated test suite (offline, zero external network calls):
 ```powershell
-# Run backend pytest suite (723 tests across all subsystems)
+# Run backend pytest suite (795 tests across all subsystems)
 .\.venv\Scripts\pytest.exe
 
-# Run frontend test suite (125 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle)
+# Run frontend test suite (139 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle, workflow synthesis review)
 pnpm --dir frontend run test
 pnpm --dir frontend run typecheck
 pnpm --dir frontend run build
