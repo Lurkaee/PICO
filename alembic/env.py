@@ -11,7 +11,7 @@ config = context.config
 
 # Interpret the config file for Python logging
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Dynamically set DB URL from application settings if not already provided
 if config.get_main_option("sqlalchemy.url") in (None, "", "driver://user:pass@localhost/dbname"):

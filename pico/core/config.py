@@ -108,6 +108,23 @@ class Settings(BaseSettings):
     BROWSER_HEADLESS: bool = True
     BROWSER_BLOCK_THIRD_PARTY_SUBRESOURCES: bool = True
 
+    # Conversational Workflow Synthesis Settings (Milestone P11.1)
+    WORKFLOW_SYNTHESIS_ENABLED: bool = False
+    WORKFLOW_SYNTHESIS_BENCHMARK_FILE: str | None = None
+    WORKFLOW_SYNTHESIS_BENCHMARK_REPORTS_DIR: str | None = None
+    WORKFLOW_SYNTHESIS_MAX_BENCHMARK_AGE_HOURS: int = 720  # 30 days freshness window
+    WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS: int = 1024
+    PICO_BUILD_COMMIT: str | None = None
+
+    @field_validator('WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS')
+    @classmethod
+    def validate_workflow_synthesis_completion_budget(cls, v: int) -> int:
+        if v < 128 or v > 2048:
+            raise ValueError(
+                f'WORKFLOW_SYNTHESIS_COMPLETION_BUDGET_TOKENS must be between 128 and 2048 tokens; got {v}.'
+            )
+        return v
+
     @field_validator("BROWSER_ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_allowed_origins(cls, v: Any) -> list[str]:

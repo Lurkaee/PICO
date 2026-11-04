@@ -161,8 +161,16 @@ def validate_workflow_graph(
             try:
                 capability.input_model.model_validate(step.input_template)
             except Exception as exc:
+                if hasattr(exc, "errors") and callable(exc.errors):
+                    safe_errs = [
+                        f"{'.'.join(str(p) for p in err.get('loc', ()))} ({err.get('type', 'invalid')})"
+                        for err in exc.errors()
+                    ]
+                    safe_summary = ", ".join(safe_errs) if safe_errs else "validation_error"
+                else:
+                    safe_summary = type(exc).__name__
                 raise ValidationError(
-                    f"Step '{step.step_key}' static input fails schema validation for '{cap_id}': {str(exc)}"
+                    f"Step '{step.step_key}' static input fails schema validation for '{cap_id}': {safe_summary}"
                 )
 
     # Return steps sorted in topological dependency order

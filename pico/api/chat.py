@@ -142,6 +142,8 @@ async def chat_stream(
                 "data_classification": decision.data_classification,
                 "selected_profile": decision.selected_profile,
                 "decision_rule": decision.decision_rule,
+                "user_message_id": user_msg_id,
+                "conversation_id": payload.conversation_id,
             }
             yield format_sse("meta", meta_data)
 

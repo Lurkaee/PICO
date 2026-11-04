@@ -240,3 +240,57 @@ export interface SystemHealth {
   version: string;
   timestamp: string;
 }
+
+export interface SynthesizedStepDetail {
+  step_key: string;
+  capability_id: string;
+  capability_version: string;
+  capability_name: string;
+  capability_description: string;
+  dependencies: string[];
+  input_template: Record<string, unknown>;
+  risk_tier: string;
+  required_permission?: string | null;
+  consequential: boolean;
+  requires_approval: boolean;
+  explanation?: string | null;
+}
+
+export interface WorkflowCreateStep {
+  step_key: string;
+  capability_id: string;
+  capability_version?: string;
+  dependencies?: string[];
+  input_template?: Record<string, unknown>;
+}
+
+export interface WorkflowCreatePayload {
+  name: string;
+  description?: string | null;
+  task_id?: string | null;
+  session_id?: string | null;
+  correlation_id?: string | null;
+  idempotency_key?: string | null;
+  data_classification?: DataClassification;
+  steps: WorkflowCreateStep[];
+}
+
+export interface WorkflowSynthesizeRequest {
+  conversation_id: string;
+  user_message_id: string;
+  requested_profile?: string | null;
+}
+
+export interface WorkflowSynthesizeResponse {
+  status: 'ready' | 'needs_clarification' | 'unsupported';
+  conversation_id: string;
+  user_message_id: string;
+  workflow_proposal?: WorkflowCreatePayload | null;
+  step_details: SynthesizedStepDetail[];
+  explanation?: string | null;
+  clarification_question?: string | null;
+  effective_classification: DataClassification;
+  selected_profile: string;
+  provider: string;
+  model_name: string;
+}

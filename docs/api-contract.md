@@ -1068,6 +1068,70 @@ OS automation capabilities are integrated into the core Tool Execution Engine (`
 
 Durable, dependency-aware workflow coordinator for multi-step task delegation executing over PICO's existing `ToolExecutionEngine` and `CapabilityRegistry`.
 
+#### `POST /api/workflows/synthesize` (Milestone P11.1)
+- **Description**: Decomposes an existing conversation user turn into a structured, validated DAG workflow proposal preview. Adheres strictly to the 3-stage execution boundary: synthesis creates NO `WorkflowRun` records, NO `ToolExecution` records, and dispatches zero capabilities.
+- **Benchmark Qualification Gate**: Synthesis is disabled by default (`WORKFLOW_SYNTHESIS_ENABLED=False`) and strictly fails closed (HTTP 403 Forbidden) unless backed by a fresh, passing benchmark report (`status="PASSED"`, `suite_id="pico_workflow_synthesis_v1"`, matching model and provider, and all 10 mandatory quality gates passed).
+- **Privacy & Routing**: Resolves via `ContextCompiler` and `RoutingService`. Highest data classification dominates (`SECRET` > `SENSITIVE` > `INTERNAL` > `PUBLIC`). Only `PUBLIC` context is eligible for cloud routing; non-PUBLIC contexts requesting cloud fail closed.
+- **Request Body**:
+  ```json
+  {
+    "conversation_id": "conv_12345",
+    "user_message_id": "msg_67890",
+    "requested_profile": "local-small"
+  }
+  ```
+- **Response (200 OK)**:
+  ```json
+  {
+    "status": "ready",
+    "conversation_id": "conv_12345",
+    "user_message_id": "msg_67890",
+    "workflow_proposal": {
+      "name": "Calculation & Validation Workflow",
+      "description": "Calculates 42*10 and validates output",
+      "data_classification": "PUBLIC",
+      "steps": [
+        {
+          "step_key": "calc_1",
+          "capability_id": "core.calculator",
+          "capability_version": "1.0.0",
+          "dependencies": [],
+          "input_template": { "expression": "42 * 10" }
+        }
+      ]
+    },
+    "step_details": [
+      {
+        "step_key": "calc_1",
+        "capability_id": "core.calculator",
+        "capability_version": "1.0.0",
+        "capability_name": "Safe Bounded Calculator",
+        "capability_description": "Evaluates safe arithmetic expressions",
+        "dependencies": [],
+        "input_template": { "expression": "42 * 10" },
+        "risk_tier": "READ_ONLY",
+        "required_permission": null,
+        "consequential": false,
+        "requires_approval": false,
+        "explanation": "Compute product"
+      }
+    ],
+    "explanation": "Decomposed into calculator step.",
+    "clarification_question": null,
+    "effective_classification": "PUBLIC",
+    "selected_profile": "local-small",
+    "provider": "ollama",
+    "model_name": "qwen3.5:2b"
+  }
+  ```
+- **Clarification & Refusal Responses**:
+  - `status: "needs_clarification"`: When request is ambiguous or lacks parameters; includes `clarification_question` with `workflow_proposal: null`.
+  - `status: "unsupported"`: When request cannot be fulfilled by registered capabilities or violates boundaries; includes `explanation` with `workflow_proposal: null`.
+- **Error Responses**:
+  - `403 Forbidden`: Workflow synthesis disabled or benchmark qualification report missing/failed/stale/mismatched.
+  - `404 Not Found`: Conversation or message not found.
+  - `422 Unprocessable Content`: Cross-conversation message, non-user message, cloud routing attempt on non-PUBLIC data, cyclic DAG, or schema violation.
+
 #### `POST /api/workflows`
 - **Description**: Registers and persists a validated, bounded dependency workflow graph. Validates DAG invariants (no cycles, no self-dependencies, resolved prerequisites, valid capability schemas, graph bounds). Supports idempotent submissions.
 - **Request Body**:

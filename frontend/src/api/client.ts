@@ -19,7 +19,10 @@ import {
   ToolExecution,
   ToolExecutionListEnvelope,
   WorkflowCompensation,
+  WorkflowCreatePayload,
   WorkflowRun,
+  WorkflowSynthesizeRequest,
+  WorkflowSynthesizeResponse,
   WorkingMemoryItem,
 } from '../types';
 
@@ -249,6 +252,20 @@ export const api = {
   },
 
   // --- Workflows ---
+  async synthesizeWorkflow(payload: WorkflowSynthesizeRequest): Promise<WorkflowSynthesizeResponse> {
+    return request<WorkflowSynthesizeResponse>('/api/workflows/synthesize', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async submitWorkflow(payload: WorkflowCreatePayload): Promise<WorkflowRun> {
+    return request<WorkflowRun>('/api/workflows', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
   async listWorkflows(limit = 20, offset = 0): Promise<WorkflowRun[]> {
     const res = await request<{ items: WorkflowRun[]; total: number }>(`/api/workflows?limit=${limit}&offset=${offset}`);
     return res.items || [];

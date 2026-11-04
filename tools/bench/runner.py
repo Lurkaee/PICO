@@ -84,12 +84,15 @@ async def check_ollama_preflight(
             models = data.get("models", [])
             installed_names = [m.get("name", "") for m in models]
 
-            # Check exact match or base tag match (e.g. qwen3.5:2b vs qwen3.5:2b:latest)
+            # Exact canonical tag matching without prefix-based false positives
+            target = target_model.strip()
+            target_tag = target if ":" in target else f"{target}:latest"
             matched_digest = None
             found = False
             for m in models:
-                name = m.get("name", "")
-                if name == target_model or name.startswith(f"{target_model}:") or target_model.startswith(f"{name}:"):
+                name = m.get("name", "").strip()
+                model_field = m.get("model", "").strip()
+                if name == target_tag or model_field == target_tag:
                     found = True
                     matched_digest = m.get("digest")
                     break
@@ -751,14 +754,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=128,
-        help="Bounded maximum generated tokens per iteration (default: 128)",
+        default=None,
+        help="Bounded maximum generated tokens per iteration (default: 128 for default benchmark; per-prompt for workflow synthesis)",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="bench_reports",
-        help="Output directory for JSON and Markdown report artifacts (default: bench_reports)",
+        default=None,
+        help="Output directory for JSON and Markdown report artifacts",
     )
     parser.add_argument(
         "--mock",
@@ -784,6 +787,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional quality gate: minimum acceptable quality pass rate (0.0 - 1.0)",
     )
     parser.add_argument(
+        "--task-category",
+        type=str,
+        default="default",
+        choices=["default", "workflow_synthesis"],
+        help="Benchmark suite task category (default or workflow_synthesis)",
+    )
+    parser.add_argument(
         "--max-vram-mb",
         type=float,
         default=None,
@@ -794,13 +804,46 @@ def parse_args() -> argparse.Namespace:
 
 async def main_async() -> int:
     args = parse_args()
+    if args.task_category == "workflow_synthesis":
+        if args.max_tokens is not None:
+            print(
+                "[!] Error: --max-tokens is not supported for workflow_synthesis task category; "
+                "prompt-specific token limits are strictly enforced."
+            )
+            return 2
+
+        from tools.bench.workflow_synthesis import WorkflowSynthesisBenchmarkRunner
+        from pico.workflow.synthesis_gate import get_default_reports_dir
+
+        output_dir = (
+            args.output_dir
+            if args.output_dir is not None
+            else str(get_default_reports_dir())
+        )
+        runner = WorkflowSynthesisBenchmarkRunner(
+            model_name=args.model,
+            base_url=args.base_url,
+            repetitions=args.repetitions,
+            context_size=args.context_size,
+            output_dir=output_dir,
+            is_mock=args.mock,
+        )
+        report = await runner.execute()
+        print(f"[+] Status: {report.status}")
+        print(f"    Reason: {report.status_reason}")
+        for g in report.quality_gates:
+            gate_status = "PASSED" if g.passed else "FAILED"
+            print(f"    Gate [{g.threshold_name}]: {gate_status} ({g.measured_value})")
+        return 0 if report.status == "PASSED" else 1
+
+    output_dir = args.output_dir if args.output_dir is not None else "bench_reports"
     runner = LocalBenchmarkRunner(
         model_name=args.model,
         base_url=args.base_url,
         repetitions=args.repetitions,
         context_size=args.context_size,
-        max_tokens=args.max_tokens,
-        output_dir=args.output_dir,
+        max_tokens=args.max_tokens if args.max_tokens is not None else 128,
+        output_dir=output_dir,
         is_mock=args.mock,
         min_tokens_per_sec=args.min_tokens_per_sec,
         max_ttft_ms=args.max_ttft_ms,
@@ -820,7 +863,7 @@ async def main_async() -> int:
     if report.status == "BLOCKED":
         print("[!] BENCHMARK BLOCKED:")
         print(f"    {report.status_reason}\n")
-        print(f"[*] Artifacts recorded in: {args.output_dir}/")
+        print(f"[*] Artifacts recorded in: {output_dir}/")
         return 2
 
     print(f"[+] Status: {report.status}")
@@ -834,7 +877,7 @@ async def main_async() -> int:
     print(f"    Peak RAM: {report.aggregates.system_ram_used_mb.median or 'N/A'} MB")
     print(f"    Peak VRAM: {report.aggregates.gpu_vram_used_mb.median or 'N/A'} MB")
     print(f"    Free Disk: {report.free_disk_before_gb} GB -> {report.free_disk_after_gb} GB")
-    print(f"\n[*] Artifacts saved to: {args.output_dir}/\n")
+    print(f"\n[*] Artifacts saved to: {output_dir}/\n")
 
     return 0 if report.status in ("PASSED", "BASELINE_RECORDED") else 1
 
