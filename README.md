@@ -4,6 +4,8 @@
 
 # PICO — Personal Intelligence Coordinator & Operator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 PICO is a local-first, privacy-first personal intelligence system engineered for verifiable persistence, private context compilation, transparent multi-model routing, and safe tool execution.
 
 PICO is an orchestrated multi-component system—not a monolithic model or generic chatbot wrapper. It is engineered to coordinate knowledge, context, memory, tasks, and capability execution with policy-bounded autonomy and human authorization on your personal workstation.
@@ -119,6 +121,10 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 - [docs/implementation-plan.md](docs/implementation-plan.md) — Phased delivery plan, verification evidence, and P11 milestone tasks.
 - [docs/evaluation/README.md](docs/evaluation/README.md) — Evaluation framework, representative test cases, and quality benchmarks.
 - [docs/model-gateway-design.md](docs/model-gateway-design.md) — Per-step model router, profiles, and data classification policies.
+- [SECURITY.md](SECURITY.md) — Private vulnerability reporting guidance and safe research boundaries.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Development setup, verification commands, and PICO-specific contribution requirements.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Expectations for respectful, privacy-conscious project participation.
+- [CITATION.cff](CITATION.cff) — Machine-readable citation metadata for academic and project reuse.
 
 ---
 
@@ -501,3 +507,19 @@ pnpm --dir frontend run build
 powershell -ExecutionPolicy Bypass -File .\scripts\pico-verify.ps1
 ```
 All tests execute using deterministic mock transports, synthetic OS/filesystem/browser adapters, and isolated temporary SQLite databases.
+
+---
+
+## License
+
+PICO's original source code is released under the [MIT License](LICENSE).
+
+The MIT License permits use, modification, distribution, and commercial use,
+provided the required copyright and license notices are retained. The software
+is provided without warranty; see the LICENSE file for the complete terms.
+
+**Third-party components:** Dependencies, models, datasets, fonts, icons, and
+other externally sourced assets may be governed by separate licenses or terms.
+The MIT License for PICO does not replace those terms. Review each component's
+license before redistributing or using it.
+
