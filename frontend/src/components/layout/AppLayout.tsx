@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { Conversation, DataClassification, OperatorSessionState } from '../../types';
+import { isTauri } from '@tauri-apps/api/core';
 import { ConnectivityBanner } from './ConnectivityBanner';
 
 interface AppLayoutProps {
@@ -42,11 +43,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   classification,
   children,
 }) => {
-  const [isTauri, setIsTauri] = React.useState(false);
+  const [isTauriEnv, setIsTauriEnv] = React.useState(false);
 
   React.useEffect(() => {
-    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-      setIsTauri(true);
+    if (isTauri()) {
+      setIsTauriEnv(true);
     }
   }, []);
 
@@ -140,7 +141,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             )}
           </button>
 
-          {isTauri && (
+          {isTauriEnv && (
             <div className="window-controls" role="group" aria-label="Window controls">
               <button
                 type="button"

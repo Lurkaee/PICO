@@ -4,36 +4,72 @@ use tauri::{
     Manager, WindowEvent,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayAction {
+    Status,
+    OpenUi,
+    PausePerception,
+    Settings,
+    Quit,
+}
+
+impl TrayAction {
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "status" => Some(Self::Status),
+            "open_ui" => Some(Self::OpenUi),
+            "pause_perception" => Some(Self::PausePerception),
+            "settings" => Some(Self::Settings),
+            "quit" => Some(Self::Quit),
+            _ => None,
+        }
+    }
+
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::OpenUi => "open_ui",
+            Self::PausePerception => "pause_perception",
+            Self::Settings => "settings",
+            Self::Quit => "quit",
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::OpenUi | Self::Quit)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             // Build system tray menu items per ADR 0001
             let status_item = MenuItemBuilder::with_id(
-                "status",
-                "Status: Companion Active (Backend Bridge Deferred to P11.2.2)",
+                TrayAction::Status.id(),
+                "Status: Offline (Bridge Deferred)",
             )
-            .enabled(false)
+            .enabled(TrayAction::Status.is_enabled())
             .build(app)?;
 
-            let open_item = MenuItemBuilder::with_id("open_ui", "Open Full UI")
-                .enabled(true)
+            let open_item = MenuItemBuilder::with_id(TrayAction::OpenUi.id(), "Open PICO")
+                .enabled(TrayAction::OpenUi.is_enabled())
                 .build(app)?;
 
             let pause_item = MenuItemBuilder::with_id(
-                "pause_perception",
-                "Pause Perception (Available in P11.4)",
+                TrayAction::PausePerception.id(),
+                "Pause Perception (Disabled)",
             )
-            .enabled(false)
+            .enabled(TrayAction::PausePerception.is_enabled())
             .build(app)?;
 
             let settings_item =
-                MenuItemBuilder::with_id("settings", "Settings (Available in P11.2.3)")
-                    .enabled(false)
+                MenuItemBuilder::with_id(TrayAction::Settings.id(), "Settings (Disabled)")
+                    .enabled(TrayAction::Settings.is_enabled())
                     .build(app)?;
 
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit")
-                .enabled(true)
+            let quit_item = MenuItemBuilder::with_id(TrayAction::Quit.id(), "Quit PICO")
+                .enabled(TrayAction::Quit.is_enabled())
                 .build(app)?;
 
             let menu = MenuBuilder::new(app)
@@ -50,19 +86,21 @@ pub fn run() {
                 .tooltip("PICO Desktop Companion")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open_ui" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
+                .on_menu_event(
+                    |app, event| match TrayAction::from_id(event.id().as_ref()) {
+                        Some(TrayAction::OpenUi) => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
                         }
-                    }
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
+                        Some(TrayAction::Quit) => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    },
+                )
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -106,12 +144,51 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_tray_menu_action_identifiers() {
-        assert_eq!("open_ui", "open_ui");
-        assert_eq!("quit", "quit");
-        assert_eq!("status", "status");
-        assert_eq!("pause_perception", "pause_perception");
-        assert_eq!("settings", "settings");
+    fn test_tray_action_from_id_valid() {
+        assert_eq!(TrayAction::from_id("status"), Some(TrayAction::Status));
+        assert_eq!(TrayAction::from_id("open_ui"), Some(TrayAction::OpenUi));
+        assert_eq!(
+            TrayAction::from_id("pause_perception"),
+            Some(TrayAction::PausePerception)
+        );
+        assert_eq!(TrayAction::from_id("settings"), Some(TrayAction::Settings));
+        assert_eq!(TrayAction::from_id("quit"), Some(TrayAction::Quit));
+    }
+
+    #[test]
+    fn test_tray_action_from_id_invalid() {
+        assert_eq!(TrayAction::from_id(""), None);
+        assert_eq!(TrayAction::from_id("unknown"), None);
+        assert_eq!(TrayAction::from_id("admin_exec"), None);
+        assert_eq!(TrayAction::from_id("close_window"), None);
+    }
+
+    #[test]
+    fn test_tray_action_round_trip() {
+        let all_actions = [
+            TrayAction::Status,
+            TrayAction::OpenUi,
+            TrayAction::PausePerception,
+            TrayAction::Settings,
+            TrayAction::Quit,
+        ];
+        for action in all_actions {
+            assert_eq!(TrayAction::from_id(action.id()), Some(action));
+        }
+    }
+
+    #[test]
+    fn test_tray_action_enabled_state() {
+        // Only interactive actions are enabled in P11.2.1
+        assert!(TrayAction::OpenUi.is_enabled());
+        assert!(TrayAction::Quit.is_enabled());
+
+        // Deferred capabilities remain disabled
+        assert!(!TrayAction::Status.is_enabled());
+        assert!(!TrayAction::PausePerception.is_enabled());
+        assert!(!TrayAction::Settings.is_enabled());
     }
 }

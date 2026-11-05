@@ -522,4 +522,3 @@ is provided without warranty; see the LICENSE file for the complete terms.
 other externally sourced assets may be governed by separate licenses or terms.
 The MIT License for PICO does not replace those terms. Review each component's
 license before redistributing or using it.
-
