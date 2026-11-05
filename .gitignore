@@ -70,3 +70,6 @@ frontend/node_modules/
 frontend/.vite/
 frontend/dist/
 *.tsbuildinfo
+
+# Tauri & Desktop Shell
+frontend/src-tauri/target/

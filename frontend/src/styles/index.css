@@ -168,6 +168,39 @@ h1, h2, h3, h4, h5, h6 {
   gap: 12px;
 }
 
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border-subtle);
+  padding-left: 8px;
+}
+
+.window-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.window-control-btn:hover {
+  background-color: var(--bg-surface-elevated);
+  color: var(--text-primary);
+}
+
+.window-control-btn.close:hover {
+  background-color: #ef4444;
+  color: #ffffff;
+}
+
 /* Main Split View */
 .main-content {
   display: flex;
