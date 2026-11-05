@@ -367,7 +367,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - **Objective**: Establish a compact, unobtrusive Windows desktop presentation and interaction surface for PICO.
   - **Sub-Milestones**:
     - [x] **P11.2.0 Desktop Companion Architecture Evaluation & ADR**: Completed in [ADR 0001: Windows Desktop Companion Architecture](decisions/0001-windows-desktop-companion-architecture.md) selecting Tauri 2 + Rust.
-    - [ ] **P11.2.1 Native Desktop Shell & System Tray Foundation**: **ACTIVE (In Review)** — Tauri 2 + Rust desktop shell scaffolded, frameless window with drag region and controls, system tray with 5 menu items, close-to-tray lifecycle, CI Windows runner build, 141 UI tests.
+    - [ ] **P11.2.1 Native Desktop Shell & System Tray Foundation**: **ACTIVE (In Review)** — Tauri 2 + Rust desktop shell scaffolded, frameless window with drag region and controls, system tray with 5 menu items, close-to-tray lifecycle, CI Windows runner build, 144 UI tests.
     - [ ] **P11.2.2 Companion Loopback Bridge, Process Verification & Operator Session Security**: Deferred to subsequent slice.
     - [ ] **P11.2.3 Expressive Companion Presence & Visual State Machine**: Deferred.
     - [ ] **P11.2.4 Windows Packaging, Auto-Start & Process Tree RAM Qualification**: Deferred.

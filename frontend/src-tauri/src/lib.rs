@@ -70,6 +70,24 @@ pub fn decide_tray_click_action(is_minimized: bool, is_visible: bool) -> TrayCli
     }
 }
 
+/// Resolves the tray click action from window query results with defensive fallback.
+///
+/// On Windows, `IsWindowVisible` returns `true` even when a window is minimized.
+/// Furthermore, if querying `is_minimized()` returns an error, assuming `false`
+/// combined with a successful `is_visible == true` could inadvertently trigger `Hide`
+/// on a minimized window.
+/// Therefore, this function defensively defaults an unknown or errored minimized state
+/// to `true`, ensuring the window is restored and brought to focus rather than
+/// accidentally hidden to the system tray.
+pub fn resolve_tray_click_action<E1, E2>(
+    minimized_res: Result<bool, E1>,
+    visible_res: Result<bool, E2>,
+) -> TrayClickAction {
+    let is_minimized = minimized_res.unwrap_or(true);
+    let is_visible = visible_res.unwrap_or(false);
+    decide_tray_click_action(is_minimized, is_visible)
+}
+
 /// Pure representation of side effects triggered by menu item selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuDispatchEffect {
@@ -185,9 +203,11 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
-                            let is_minimized = window.is_minimized().unwrap_or(false);
-                            let is_visible = window.is_visible().unwrap_or(false);
-                            match decide_tray_click_action(is_minimized, is_visible) {
+                            let action = resolve_tray_click_action(
+                                window.is_minimized(),
+                                window.is_visible(),
+                            );
+                            match action {
                                 TrayClickAction::RestoreAndFocus => {
                                     let _ = window.unminimize();
                                     let _ = window.show();
@@ -305,6 +325,46 @@ mod tests {
         // Hidden window must be shown, unminimized defensively, and brought to focus.
         assert_eq!(
             decide_tray_click_action(false, false),
+            TrayClickAction::ShowAndFocus
+        );
+    }
+
+    #[test]
+    fn test_resolve_tray_click_action_error_fallback_restores_and_focuses() {
+        // If querying minimized state returns an error, defensively assume true
+        // so the window is restored and brought to focus rather than accidentally hidden.
+        let err_minimized: Result<bool, &'static str> = Err("OS query failed");
+        let ok_visible: Result<bool, &'static str> = Ok(true);
+        assert_eq!(
+            resolve_tray_click_action(err_minimized, ok_visible),
+            TrayClickAction::RestoreAndFocus
+        );
+
+        let err_visible: Result<bool, &'static str> = Err("OS query failed");
+        assert_eq!(
+            resolve_tray_click_action(err_minimized, err_visible),
+            TrayClickAction::RestoreAndFocus
+        );
+    }
+
+    #[test]
+    fn test_resolve_tray_click_action_ok_states() {
+        assert_eq!(
+            resolve_tray_click_action(Ok(true), Ok(true)),
+            TrayClickAction::RestoreAndFocus
+        );
+        assert_eq!(
+            resolve_tray_click_action(Ok(false), Ok(true)),
+            TrayClickAction::Hide
+        );
+        assert_eq!(
+            resolve_tray_click_action(Ok(false), Ok(false)),
+            TrayClickAction::ShowAndFocus
+        );
+        // If not minimized and visibility query fails, default to showing
+        let err_visible: Result<bool, &'static str> = Err("OS query failed");
+        assert_eq!(
+            resolve_tray_click_action(Ok(false), err_visible),
             TrayClickAction::ShowAndFocus
         );
     }

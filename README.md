@@ -104,7 +104,7 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 | **P10.2** | Offline Shell & Safe Recovery | Service worker offline shell, in-memory draft outbox, ambiguous outcome tagging, session revalidation. | **VERIFIED** | Resilience tests |
 | **P10.3** | Operator Authorization Closure | Policy A pairing challenge CLI, mandatory physical actuation token gate, standalone dispatch. | **VERIFIED** | 795 backend / 139 UI tests |
 | **P11.1** | Conversational Workflow Synthesis | Natural language intent extraction to validated DAGs, benchmark gating for `local-small`. | **MERGED (Hardware Qualification Pending)** | 72 synthesis / 108 workflow tests |
-| **P11.2** | Windows Desktop Companion Shell | Native desktop shell (Tauri 2 + Rust), frameless window, system tray foundation, secure loopback bridge. | **ACTIVE (P11.2.1 Shell In Review)** | [ADR 0001](docs/decisions/0001-windows-desktop-companion-architecture.md) / 141 UI tests |
+| **P11.2** | Windows Desktop Companion Shell | Native desktop shell (Tauri 2 + Rust), frameless window, system tray foundation, secure loopback bridge. | **ACTIVE (P11.2.1 Shell In Review)** | [ADR 0001](docs/decisions/0001-windows-desktop-companion-architecture.md) / 144 UI tests |
 | **P11.3** | Local Voice Runtime & Wake-Word | Embedded Whisper STT, local Piper/SAPI TTS, push-to-talk, optional on-device wake-word. | **PLANNED** | Roadmap defined |
 | **P11.4** | Voice-to-Action Integration | Spoken intent to verified workflow execution, consequential action gating, TTS feedback. | **PLANNED** | Roadmap defined |
 | **P11.5** | Contextual Screen Understanding | On-demand screen capture, untrusted visual input boundary, ephemeral RAM-only frames. | **PLANNED** | Roadmap defined |
@@ -202,7 +202,7 @@ uvicorn pico.main:app --host 127.0.0.1 --port 8000
 ### Frontend Verification Suite
 Verification commands are runnable directly from the repository root:
 ```powershell
-pnpm --dir frontend run test        # Vitest — all 141 unit, integration, and desktop shell tests
+pnpm --dir frontend run test        # Vitest — all 144 unit, integration, and desktop shell tests
 pnpm --dir frontend run typecheck   # TypeScript strict type checking
 pnpm --dir frontend run build       # Production bundle build
 ```
