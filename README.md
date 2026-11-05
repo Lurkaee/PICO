@@ -121,6 +121,10 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 - [docs/implementation-plan.md](docs/implementation-plan.md) — Phased delivery plan, verification evidence, and P11 milestone tasks.
 - [docs/evaluation/README.md](docs/evaluation/README.md) — Evaluation framework, representative test cases, and quality benchmarks.
 - [docs/model-gateway-design.md](docs/model-gateway-design.md) — Per-step model router, profiles, and data classification policies.
+- [SECURITY.md](SECURITY.md) — Private vulnerability reporting guidance and safe research boundaries.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Development setup, verification commands, and PICO-specific contribution requirements.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Expectations for respectful, privacy-conscious project participation.
+- [CITATION.cff](CITATION.cff) — Machine-readable citation metadata for academic and project reuse.
 
 ---
 
