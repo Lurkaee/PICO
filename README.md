@@ -231,7 +231,7 @@ pnpm --dir frontend run tauri:dev
 ### Desktop Shell Build (Headless / No-Bundle)
 ```powershell
 # Build the native Windows desktop binary without generating installer bundles
-pnpm --dir frontend run tauri:build -- --no-bundle
+pnpm --dir frontend exec tauri build --no-bundle
 ```
 *(Note: MSI and NSIS installer packaging, auto-start registry integration, and process-tree memory qualification are explicitly scheduled for Milestone P11.2.4).*
 

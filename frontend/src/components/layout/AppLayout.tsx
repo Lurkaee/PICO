@@ -72,7 +72,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   return (
     <div className="app-container">
       {/* Top Header */}
-      <header className="app-header" data-tauri-drag-region>
+      <header className="app-header" data-tauri-drag-region="deep">
         <div className="brand-section">
           <div
             style={{

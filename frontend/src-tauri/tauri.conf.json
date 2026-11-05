@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm run dev -- --port 1420",
+    "beforeDevCommand": "pnpm run dev:tauri",
     "beforeBuildCommand": "pnpm run build"
   },
   "app": {

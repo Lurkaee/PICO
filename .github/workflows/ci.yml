@@ -103,6 +103,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -148,4 +150,4 @@ jobs:
         run: pnpm run build
 
       - name: Build desktop shell binary (headless release build)
-        run: cargo build --manifest-path frontend/src-tauri/Cargo.toml --release
+        run: cargo build --manifest-path frontend/src-tauri/Cargo.toml --release --features tauri/custom-protocol
