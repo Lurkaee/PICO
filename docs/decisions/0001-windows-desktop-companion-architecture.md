@@ -189,10 +189,10 @@ A rigorous audit of the current PICO codebase reveals that integrating a separat
    - Hostnames outside this tuple (such as `tauri.localhost`) are currently rejected as untrusted.
 3. **Session Cookie Security (`pico/api/operator.py`)**:
    - The session cookie `pico_operator_session` is set with `httponly=True`, `samesite="strict"`, `path="/api"`.
-   - `SameSite="strict"` instructs browsers and WebViews to withhold the cookie on any cross-site or cross-origin HTTP request.
+   - The `SameSite` attribute is a site-based (not origin-based) browser policy. `SameSite="strict"` instructs browsers and WebViews to withhold the cookie on any cross-site request (evaluated under schemeful-site rules), preventing ambient cookie attachment during cross-site subresource requests or navigations.
 4. **Frontend API Client (`frontend/src/api/client.ts`)**:
    - The centralized `request<T>()` helper specifies `credentials: 'same-origin'`.
-   - Cross-origin requests from a webview running on `http://tauri.localhost` to `http://127.0.0.1:8000` will not transmit cookies under `same-origin`.
+   - Fetch `credentials` mode is origin-based (scheme, host, and port). Specifying `credentials: 'same-origin'` excludes credentials from any cross-origin request. Because the packaged companion webview origin (`http://tauri.localhost`) and the loopback backend (`http://127.0.0.1:8000`) differ in both host and port, `credentials: 'same-origin'` immediately withholds all cookies.
 5. **Endpoint Authorization Scope**:
    - Today, `require_operator_session` and `require_consequential_authorization` protect Policy A approval endpoints (`/api/operator/*`, `/api/workflows/{id}/advance`, `/api/workflows/{id}/compensate`).
    - Endpoints such as `/api/chat/stream`, `/api/conversations`, and `/api/workflows/synthesize` are loopback-accessible but do not currently enforce the operator-session dependency.
@@ -202,9 +202,12 @@ A rigorous audit of the current PICO codebase reveals that integrating a separat
 On Windows 11, Tauri 2 production frontend assets are loaded via the WebView2 custom URI scheme as `http://tauri.localhost` (or `http://localhost:1420` in development). The FastAPI backend listens on `http://127.0.0.1:8000`.
 
 This creates three immediate transport barriers:
-1. **CORS Policy Failure**: FastAPI will reject preflight `OPTIONS` and cross-origin requests from `http://tauri.localhost`.
-2. **Host/Origin Validation Failure**: `OperatorSessionService` will treat `http://tauri.localhost` as an untrusted origin and fail closed.
-3. **Cookie Dropping**: `credentials: 'same-origin'` in `frontend/src/api/client.ts` prevents cookies from being attached. Furthermore, `SameSite="strict"` on the cookie prevents transmission across differing origins even if credentials are set to `include`.
+1. **CORS Policy Failure**: Because `http://tauri.localhost` and `http://127.0.0.1:8000` have differing origins, FastAPI will reject preflight `OPTIONS` and cross-origin requests unless explicitly permitted by `CORSMiddleware`.
+2. **Host/Origin Validation Failure**: `OperatorSessionService` validates `Origin` against `ALLOWED_HOSTS` and will treat `http://tauri.localhost` as an untrusted origin, failing closed.
+3. **Cookie Dropping (Origin vs Site Constraints)**:
+   - *Origin-Level Constraint*: Fetch `credentials: 'same-origin'` in `frontend/src/api/client.ts` is origin-based and withholds cookies on any cross-origin request.
+   - *Site-Level Constraint*: Setting Fetch credentials to `include` permits cross-origin credential transmission at the Fetch layer, but does **not** override cookie-level `SameSite` restrictions.
+   - *Schemeful-Site Evaluation*: Under browser schemeful-site rules, the domain-based origin `http://tauri.localhost` (registrable domain `localhost`) and the IPv4 literal `http://127.0.0.1:8000` (IP address literal treated as its own host/site) are distinct sites. Consequently, this arrangement is not merely cross-origin—it is also cross-site under standard browser schemeful-site rules, causing the browser cookie jar to withhold `SameSite=Strict` cookies on subresource fetch requests even if `credentials: 'include'` were configured.
 
 ### 6.3 Backend Identity Verification (Mandatory Precondition)
 
@@ -289,10 +292,10 @@ The companion participates in the Policy A operator pairing lifecycle through a 
 ### 6.5 Re-Evaluation of Authentication Transport Alternatives
 
 In prior discussions, `SameSite=Lax + credentials: include` was proposed as a potential cross-origin bridge solution. A rigorous security review reveals this assumption is flawed:
-- **Flaw in `SameSite=Lax` for Subresource Mutations**: Under the IETF 6265bis and W3C Fetch specifications, `SameSite=Lax` cookies are explicitly withheld on cross-site subresource requests. While top-level browser navigations using safe HTTP methods (GET) include Lax cookies, cross-origin `fetch()` requests—especially mutating `POST`, `PUT`, `DELETE` operations (such as `/api/operator/pair`, `/api/chat/stream`, `/api/workflows/...`)—are classified as cross-site subresources and will **not** transmit `SameSite=Lax` cookies.
+- **Flaw in `SameSite=Lax` for Subresource Mutations**: Under the IETF 6265bis and W3C Fetch specifications, `SameSite=Lax` cookies are explicitly withheld on cross-site subresource requests. While top-level browser navigations using safe HTTP methods (GET) include Lax cookies, cross-site `fetch()` requests—especially mutating `POST`, `PUT`, `DELETE` operations (such as `/api/operator/pair`, `/api/chat/stream`, `/api/workflows/...`) between `http://tauri.localhost` and `http://127.0.0.1:8000` (which are cross-site under schemeful-site rules)—are classified as cross-site subresources and will **not** transmit `SameSite=Lax` cookies.
 - **Flaw in `SameSite=None`**: Setting `SameSite="none"` requires the `Secure` attribute, which mandates HTTPS. Setting up self-signed HTTPS on `127.0.0.1` introduces root CA installation requirements or certificate rejection hurdles in WebView2 on Windows.
 
-Therefore, the authentication transport cannot rely on a presumed `SameSite=Lax` cross-origin cookie flow. Milestone P11.2.2 must qualify one of the following architectural alternatives through empirical verification on Windows 11:
+Therefore, the authentication transport cannot rely on a presumed `SameSite=Lax` cross-site cookie flow. Milestone P11.2.2 must qualify one of the following architectural alternatives through empirical verification on Windows 11:
 
 1. **Alternative 1: Tauri Native Loopback Proxy (Recommended Architecture)**:
    - The Tauri Rust host acts as a local loopback proxy client.

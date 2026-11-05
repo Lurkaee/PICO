@@ -9,8 +9,11 @@ import {
   Shield,
   ShieldCheck,
   ShieldX,
+  Minus,
+  X,
 } from 'lucide-react';
 import { Conversation, DataClassification, OperatorSessionState } from '../../types';
+import { isTauri } from '@tauri-apps/api/core';
 import { ConnectivityBanner } from './ConnectivityBanner';
 
 interface AppLayoutProps {
@@ -40,10 +43,36 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   classification,
   children,
 }) => {
+  const [isTauriEnv, setIsTauriEnv] = React.useState(false);
+
+  React.useEffect(() => {
+    if (isTauri()) {
+      setIsTauriEnv(true);
+    }
+  }, []);
+
+  const handleMinimize = async () => {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().minimize();
+    } catch (err) {
+      console.error('Failed to minimize window:', err);
+    }
+  };
+
+  const handleClose = async () => {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().close();
+    } catch (err) {
+      console.error('Failed to close window:', err);
+    }
+  };
+
   return (
     <div className="app-container">
       {/* Top Header */}
-      <header className="app-header">
+      <header className="app-header" data-tauri-drag-region="deep">
         <div className="brand-section">
           <div
             style={{
@@ -86,7 +115,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           </div>
         </div>
 
-        {/* Right Section: Operator Session Status */}
+        {/* Right Section: Operator Session Status & Desktop Controls */}
         <div className="header-right">
           <button
             type="button"
@@ -111,6 +140,29 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
               </>
             )}
           </button>
+
+          {isTauriEnv && (
+            <div className="window-controls" role="group" aria-label="Window controls">
+              <button
+                type="button"
+                className="window-control-btn"
+                onClick={handleMinimize}
+                aria-label="Minimize"
+                title="Minimize"
+              >
+                <Minus style={{ width: 14, height: 14 }} />
+              </button>
+              <button
+                type="button"
+                className="window-control-btn close"
+                onClick={handleClose}
+                aria-label="Close to tray"
+                title="Close to tray"
+              >
+                <X style={{ width: 14, height: 14 }} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
       <ConnectivityBanner />

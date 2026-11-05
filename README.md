@@ -104,7 +104,7 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 | **P10.2** | Offline Shell & Safe Recovery | Service worker offline shell, in-memory draft outbox, ambiguous outcome tagging, session revalidation. | **VERIFIED** | Resilience tests |
 | **P10.3** | Operator Authorization Closure | Policy A pairing challenge CLI, mandatory physical actuation token gate, standalone dispatch. | **VERIFIED** | 795 backend / 139 UI tests |
 | **P11.1** | Conversational Workflow Synthesis | Natural language intent extraction to validated DAGs, benchmark gating for `local-small`. | **MERGED (Hardware Qualification Pending)** | 72 synthesis / 108 workflow tests |
-| **P11.2** | Windows Desktop Companion Shell | Floating widget, animated eyes state machine, system tray, secure loopback bridge. | **ACTIVE (ADR Accepted)** | [ADR 0001](docs/decisions/0001-windows-desktop-companion-architecture.md) |
+| **P11.2** | Windows Desktop Companion Shell | Native desktop shell (Tauri 2 + Rust), frameless window, system tray foundation, secure loopback bridge. | **ACTIVE (P11.2.1 Shell In Review)** | [ADR 0001](docs/decisions/0001-windows-desktop-companion-architecture.md) / 144 UI tests |
 | **P11.3** | Local Voice Runtime & Wake-Word | Embedded Whisper STT, local Piper/SAPI TTS, push-to-talk, optional on-device wake-word. | **PLANNED** | Roadmap defined |
 | **P11.4** | Voice-to-Action Integration | Spoken intent to verified workflow execution, consequential action gating, TTS feedback. | **PLANNED** | Roadmap defined |
 | **P11.5** | Contextual Screen Understanding | On-demand screen capture, untrusted visual input boundary, ephemeral RAM-only frames. | **PLANNED** | Roadmap defined |
@@ -133,6 +133,8 @@ PICO is designed around a disciplined, auditable request-to-execution pipeline f
 ### 1. Prerequisites
 - **Python**: 3.12+ (tested across Python 3.12, 3.13, and 3.14 on Windows 11).
 - **Node.js**: 22+ (LTS recommended) and **pnpm** 10+ (`npm install -g pnpm` or `winget install pnpm`).
+- **Rust**: Stable Rust toolchain (`rustup`) with MSVC C++ Build Tools and Windows 11 SDK (required for compiling the native desktop shell).
+- **Microsoft Edge WebView2**: Pre-installed on Windows 11 (required desktop runtime).
 - **PowerShell**: Windows PowerShell 5.1+ or PowerShell 7+.
 - **Ollama** (optional for live local inference): https://ollama.ai with `qwen3.5:2b`.
 
@@ -200,10 +202,43 @@ uvicorn pico.main:app --host 127.0.0.1 --port 8000
 ### Frontend Verification Suite
 Verification commands are runnable directly from the repository root:
 ```powershell
-pnpm --dir frontend run test        # Vitest — all 125 unit, integration, and resilience tests
+pnpm --dir frontend run test        # Vitest — all 144 unit, integration, and desktop shell tests
 pnpm --dir frontend run typecheck   # TypeScript strict type checking
 pnpm --dir frontend run build       # Production bundle build
 ```
+
+---
+
+## Windows Desktop Companion Shell (Milestone P11.2)
+
+PICO provides a native Windows desktop companion application built with **Tauri 2** and **Rust** in `frontend/src-tauri/`. It hosts the local-first React command centre inside an OS-level frameless, rounded desktop window with native Windows system tray integration.
+
+### Desktop Shell Capabilities (P11.2.1 Foundation)
+- **Frameless Window Management**: Frameless window with deep window dragging (`data-tauri-drag-region="deep"`) via the application header, double-click maximize/restore, custom minimize and close controls, and background click-through prevention.
+- **Native Windows System Tray**: Always-accessible tray icon with a 5-item menu (`Status: Offline (Bridge Deferred)`, `Open PICO`, `Pause Perception (Disabled)`, `Settings (Disabled)`, `Quit PICO`).
+- **Tray-Click & Window Lifecycle**:
+  - **Visible and not minimized**: Left-clicking the tray icon hides the window to the tray.
+  - **Minimized**: Left-clicking the tray icon restores, shows, and focuses the window (with defensive fallback for query errors).
+  - **Hidden**: Left-clicking the tray icon shows, unminimizes defensively, and focuses the window.
+  - **Close-to-Tray**: Clicking the window's close control (`X`) intercepts the close request (`api.prevent_close()`) and hides the window to the tray rather than terminating the process.
+  - **Process Termination**: Explicit selection of `Quit PICO` from the tray menu remains the sole termination path.
+- **Strict Isolation & Invariant 12**: The desktop shell is strictly an interaction surface. It never introduces an independent LLM reasoning loop, duplicate memory store, or private execution backchannel.
+
+### Desktop Shell Development Mode
+```powershell
+# 1. Start the FastAPI backend
+uvicorn pico.main:app --host 127.0.0.1 --port 8000 --reload
+
+# 2. Start Tauri in development mode (launches Vite dev server on port 1420 and native window)
+pnpm --dir frontend run tauri:dev
+```
+
+### Desktop Shell Build (Headless / No-Bundle)
+```powershell
+# Build the native Windows desktop binary without generating installer bundles
+pnpm --dir frontend exec tauri build --no-bundle
+```
+*(Note: MSI and NSIS installer packaging, auto-start registry integration, and process-tree memory qualification are explicitly scheduled for Milestone P11.2.4).*
 
 ---
 
@@ -468,7 +503,7 @@ Run the full automated test suite (offline, zero external network calls):
 # Run backend pytest suite (795 tests across all subsystems)
 .\.venv\Scripts\pytest.exe
 
-# Run frontend test suite (139 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle, workflow synthesis review)
+# Run frontend test suite (144 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle, workflow synthesis review, desktop shell)
 pnpm --dir frontend run test
 pnpm --dir frontend run typecheck
 pnpm --dir frontend run build
@@ -492,4 +527,3 @@ is provided without warranty; see the LICENSE file for the complete terms.
 other externally sourced assets may be governed by separate licenses or terms.
 The MIT License for PICO does not replace those terms. Review each component's
 license before redistributing or using it.
-
