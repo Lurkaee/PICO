@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use PICO in research, teaching, or another project, please cite the software using this metadata."
+title: "PICO — Personal Intelligence Coordinator & Operator"
+type: software
+authors:
+  - name: "Lurkaee"
+version: "0.1.0"
+license: MIT
+repository-code: "https://github.com/Lurkaee/PICO"
+abstract: >-
+  PICO is a local-first, privacy-first personal intelligence system built as
+  an orchestrated set of components. It coordinates private context, memory,
+  model-provider routing, reviewable workflow proposals, and policy-gated tool
+  execution, with explicit authorization and independent verification for
+  consequential actions.
