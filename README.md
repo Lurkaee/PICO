@@ -4,6 +4,8 @@
 
 # PICO — Personal Intelligence Coordinator & Operator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 PICO is a local-first, privacy-first personal intelligence system engineered for verifiable persistence, private context compilation, transparent multi-model routing, and safe tool execution.
 
 PICO is an orchestrated multi-component system—not a monolithic model or generic chatbot wrapper. It is engineered to coordinate knowledge, context, memory, tasks, and capability execution with policy-bounded autonomy and human authorization on your personal workstation.
@@ -471,3 +473,19 @@ pnpm --dir frontend run build
 powershell -ExecutionPolicy Bypass -File .\scripts\pico-verify.ps1
 ```
 All tests execute using deterministic mock transports, synthetic OS/filesystem/browser adapters, and isolated temporary SQLite databases.
+
+---
+
+## License
+
+PICO's original source code is released under the [MIT License](LICENSE).
+
+The MIT License permits use, modification, distribution, and commercial use,
+provided the required copyright and license notices are retained. The software
+is provided without warranty; see the LICENSE file for the complete terms.
+
+**Third-party components:** Dependencies, models, datasets, fonts, icons, and
+other externally sourced assets may be governed by separate licenses or terms.
+The MIT License for PICO does not replace those terms. Review each component's
+license before redistributing or using it.
+
