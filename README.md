@@ -214,9 +214,14 @@ pnpm --dir frontend run build       # Production bundle build
 PICO provides a native Windows desktop companion application built with **Tauri 2** and **Rust** in `frontend/src-tauri/`. It hosts the local-first React command centre inside an OS-level frameless, rounded desktop window with native Windows system tray integration.
 
 ### Desktop Shell Capabilities (P11.2.1 Foundation)
-- **Frameless Window Management**: Frameless window with standard window dragging via the application header, custom minimize and close controls, and background click-through prevention.
-- **Native Windows System Tray**: Always-accessible tray icon with a 5-item menu (`Status: Offline`, `Open PICO`, `Pause Perception`, `Settings`, `Quit PICO`).
-- **Close-to-Tray Lifecycle**: Clicking the window close button intercepts the event (`api.prevent_close()`) and hides the window to the tray rather than terminating the process. Clicking the tray icon or selecting "Open PICO" restores and focuses the window.
+- **Frameless Window Management**: Frameless window with deep window dragging (`data-tauri-drag-region="deep"`) via the application header, double-click maximize/restore, custom minimize and close controls, and background click-through prevention.
+- **Native Windows System Tray**: Always-accessible tray icon with a 5-item menu (`Status: Offline (Bridge Deferred)`, `Open PICO`, `Pause Perception (Disabled)`, `Settings (Disabled)`, `Quit PICO`).
+- **Tray-Click & Window Lifecycle**:
+  - **Visible and not minimized**: Left-clicking the tray icon hides the window to the tray.
+  - **Minimized**: Left-clicking the tray icon restores, shows, and focuses the window (with defensive fallback for query errors).
+  - **Hidden**: Left-clicking the tray icon shows, unminimizes defensively, and focuses the window.
+  - **Close-to-Tray**: Clicking the window's close control (`X`) intercepts the close request (`api.prevent_close()`) and hides the window to the tray rather than terminating the process.
+  - **Process Termination**: Explicit selection of `Quit PICO` from the tray menu remains the sole termination path.
 - **Strict Isolation & Invariant 12**: The desktop shell is strictly an interaction surface. It never introduces an independent LLM reasoning loop, duplicate memory store, or private execution backchannel.
 
 ### Desktop Shell Development Mode
@@ -498,7 +503,7 @@ Run the full automated test suite (offline, zero external network calls):
 # Run backend pytest suite (795 tests across all subsystems)
 .\.venv\Scripts\pytest.exe
 
-# Run frontend test suite (139 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle, workflow synthesis review)
+# Run frontend test suite (144 tests: SSE parser, chat, voice, memory, workflows, approvals, connectivity, resilience, offline shell, standalone execution lifecycle, workflow synthesis review, desktop shell)
 pnpm --dir frontend run test
 pnpm --dir frontend run typecheck
 pnpm --dir frontend run build
