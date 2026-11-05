@@ -350,21 +350,21 @@ mod tests {
     #[test]
     fn test_resolve_tray_click_action_ok_states() {
         assert_eq!(
-            resolve_tray_click_action(Ok(true), Ok(true)),
+            resolve_tray_click_action(Ok::<bool, ()>(true), Ok::<bool, ()>(true)),
             TrayClickAction::RestoreAndFocus
         );
         assert_eq!(
-            resolve_tray_click_action(Ok(false), Ok(true)),
+            resolve_tray_click_action(Ok::<bool, ()>(false), Ok::<bool, ()>(true)),
             TrayClickAction::Hide
         );
         assert_eq!(
-            resolve_tray_click_action(Ok(false), Ok(false)),
+            resolve_tray_click_action(Ok::<bool, ()>(false), Ok::<bool, ()>(false)),
             TrayClickAction::ShowAndFocus
         );
         // If not minimized and visibility query fails, default to showing
         let err_visible: Result<bool, &'static str> = Err("OS query failed");
         assert_eq!(
-            resolve_tray_click_action(Ok(false), err_visible),
+            resolve_tray_click_action(Ok::<bool, &'static str>(false), err_visible),
             TrayClickAction::ShowAndFocus
         );
     }
