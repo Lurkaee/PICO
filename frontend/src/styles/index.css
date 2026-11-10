@@ -717,11 +717,306 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 500;
 }
 
+/* ==========================================================================
+   P11.2.3 Expressive Companion Presence & Visual State Machine Styling
+   ========================================================================== */
+
+.pico-companion-presence {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: all var(--transition-normal);
+}
+
+/* Header Mode (Integrated into Top Navigation) */
+.pico-companion-presence.header-mode {
+  flex-direction: row;
+  padding: 4px 12px;
+  background-color: rgba(17, 20, 32, 0.6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Compact Mode (Focused Floating Desktop Companion Widget) */
+.pico-companion-presence.compact-mode {
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 32px 24px;
+  margin: auto;
+  max-width: 420px;
+  width: 100%;
+  background: radial-gradient(circle at center, rgba(24, 29, 46, 0.95) 0%, rgba(17, 20, 32, 0.98) 100%);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.7), 0 0 20px rgba(99, 102, 241, 0.15);
+}
+
+.companion-eyes-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.companion-eyes-svg {
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.4));
+  transition: transform var(--transition-normal);
+}
+
+/* Eye State Specific Animations */
+.pico-companion-eyes[data-state="idle"] .eye-iris {
+  animation: eyeBreathe 4s ease-in-out infinite;
+}
+
+.pico-companion-eyes[data-state="listening"] .eye-outer-ring {
+  animation: pulseRing 1.8s ease-in-out infinite;
+}
+
+.pico-companion-eyes[data-state="thinking"] .eye-outer-ring {
+  animation: orbitShimmer 2s linear infinite;
+}
+
+.pico-companion-eyes[data-state="speaking"] .eye-outer-ring {
+  animation: soundwaveMod 1.5s ease-in-out infinite;
+}
+
+.pico-companion-eyes[data-state="awaiting_approval"] .eye-outer-ring {
+  animation: approvalPulse 2s ease-in-out infinite;
+}
+
+@keyframes eyeBreathe {
+  0%, 100% {
+    opacity: 0.9;
+    transform: scale(1);
+    transform-origin: center;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+    transform-origin: center;
+  }
+}
+
+@keyframes pulseRing {
+  0% {
+    stroke-width: 2;
+    stroke-opacity: 0.7;
+  }
+  50% {
+    stroke-width: 4;
+    stroke-opacity: 1;
+  }
+  100% {
+    stroke-width: 2;
+    stroke-opacity: 0.7;
+  }
+}
+
+@keyframes orbitShimmer {
+  0% {
+    stroke-dasharray: 4, 12;
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dasharray: 4, 12;
+    stroke-dashoffset: 32;
+  }
+}
+
+@keyframes soundwaveMod {
+  0%, 100% {
+    stroke-width: 2;
+  }
+  50% {
+    stroke-width: 3.5;
+  }
+}
+
+@keyframes approvalPulse {
+  0%, 100% {
+    stroke-opacity: 0.6;
+    filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.4));
+  }
+  50% {
+    stroke-opacity: 1;
+    filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.8));
+  }
+}
+
+/* Companion Status Meta */
+.companion-status-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.companion-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.companion-state-badge .status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+}
+
+.companion-state-badge[data-state="idle"] {
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+}
+.companion-state-badge[data-state="idle"] .status-dot {
+  background-color: #818cf8;
+  box-shadow: 0 0 6px #818cf8;
+}
+
+.companion-state-badge[data-state="offline"] {
+  border-color: rgba(100, 116, 139, 0.3);
+  color: #94a3b8;
+}
+.companion-state-badge[data-state="offline"] .status-dot {
+  background-color: #64748b;
+}
+
+.companion-state-badge[data-state="error"] {
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.1);
+}
+.companion-state-badge[data-state="error"] .status-dot {
+  background-color: #ef4444;
+  box-shadow: 0 0 6px #ef4444;
+}
+
+.companion-state-badge[data-state="awaiting_approval"] {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fde68a;
+  background-color: rgba(245, 158, 11, 0.1);
+}
+.companion-state-badge[data-state="awaiting_approval"] .status-dot {
+  background-color: #f59e0b;
+  box-shadow: 0 0 8px #f59e0b;
+}
+
+.companion-reason-text {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.companion-source-tag {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* Companion Actions */
+.companion-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.companion-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  transition: all var(--transition-fast);
+}
+
+.companion-pill-btn:hover {
+  background-color: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+}
+
+.companion-pill-btn.paired {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.companion-pill-btn.unpaired {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.companion-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.companion-icon-btn:hover:not(:disabled) {
+  background-color: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.companion-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Compact Widget Fullscreen Overlay Wrapper */
+.compact-companion-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--bg-canvas);
+  position: relative;
+}
+
 /* Reduced Motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  .companion-eyes-svg,
+  .pico-companion-eyes .eye-iris,
+  .pico-companion-eyes .eye-outer-ring {
+    animation: none !important;
   }
 }

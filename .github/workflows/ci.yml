@@ -142,8 +142,20 @@ jobs:
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Python for native backend supervision
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Create Python virtual environment
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\Activate.ps1
+          pip install -r requirements.txt
+
       - name: Run Cargo tests
-        run: cargo test --manifest-path frontend/src-tauri/Cargo.toml
+        run: cargo test --manifest-path frontend/src-tauri/Cargo.toml -- --test-threads 1
 
       - name: Build frontend production bundle
         working-directory: frontend

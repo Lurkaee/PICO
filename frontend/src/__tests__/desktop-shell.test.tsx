@@ -235,8 +235,8 @@ describe('Desktop Shell & Window Controls (Milestone P11.2.1)', () => {
       const tauriConfigPath = path.resolve(__dirname, '../../src-tauri/tauri.conf.json');
       const tauriConfig: TauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, 'utf-8'));
 
-      // Normal browser dev script must remain on default port
-      expect(pkg.scripts?.dev).toBe('vite');
+      // Normal browser dev script must remain on default port with browser-development profile
+      expect(pkg.scripts?.dev).toMatch(/^vite(\s+--mode browser-development)?$/);
 
       // dev:tauri script must strictly bind port 1420 on localhost and fail fast with --strictPort
       const devTauriScript = pkg.scripts?.['dev:tauri'];
