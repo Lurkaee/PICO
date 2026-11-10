@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { api } from './api/client';
 import { Conversation, DataClassification, OperatorSessionState } from './types';
 import { ConnectivityProvider } from './context/ConnectivityContext';
@@ -9,6 +9,7 @@ import { ApprovalInbox } from './components/approvals/ApprovalInbox';
 import { MemoryInspector } from './components/memory/MemoryInspector';
 import { SystemStatus } from './components/status/SystemStatus';
 import { PairingModal } from './components/operator/PairingModal';
+import { CompanionStateMachine, StateRecord } from './companion/stateMachine';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<'chat' | 'workflows' | 'approvals' | 'memory' | 'status'>('chat');
@@ -19,15 +20,43 @@ export const App: React.FC = () => {
   const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
   const [isPairingModalOpen, setIsPairingModalOpen] = useState(false);
 
+  // P11.2.3 Expressive Companion Presence & State Machine
+  const [companionStateMachine] = useState(() => new CompanionStateMachine('offline', 'Initial Core connection pending'));
+  const [companionStateRecord, setCompanionStateRecord] = useState<StateRecord>(() => companionStateMachine.getState());
+  const [isCompactMode, setIsCompactMode] = useState(false);
+  const [isRefreshingHealth, setIsRefreshingHealth] = useState(false);
+
+  // Subscribe to companion state changes
+  useEffect(() => {
+    return companionStateMachine.subscribe(setCompanionStateRecord);
+  }, [companionStateMachine]);
+
+  const pollHealth = useCallback(async () => {
+    const seq = companionStateMachine.nextSequence();
+    try {
+      setIsRefreshingHealth(true);
+      const health = await api.getHealth();
+      companionStateMachine.handleHealthResponse(true, health.status, undefined, seq);
+    } catch (err: any) {
+      companionStateMachine.handleHealthResponse(false, undefined, err?.message || 'Backend offline', seq);
+    } finally {
+      setIsRefreshingHealth(false);
+    }
+  }, [companionStateMachine]);
+
   // Initialize data on mount
   useEffect(() => {
-    // 1. Check operator session status
+    // 1. Initial health check
+    pollHealth();
+    const healthInterval = setInterval(pollHealth, 8000);
+
+    // 2. Check operator session status
     api
       .getOperatorSession()
       .then(setSessionState)
       .catch(() => setSessionState({ paired: false }));
 
-    // 2. Fetch conversations
+    // 3. Fetch conversations
     api
       .listConversations()
       .then((items) => {
@@ -38,7 +67,7 @@ export const App: React.FC = () => {
       })
       .catch(() => {});
 
-    // 3. Check pending approvals count
+    // 4. Check pending approvals count
     const checkApprovals = () => {
       api
         .listExecutions('awaiting_approval', 50)
@@ -50,8 +79,11 @@ export const App: React.FC = () => {
     };
     checkApprovals();
     const interval = setInterval(checkApprovals, 10000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      clearInterval(interval);
+      clearInterval(healthInterval);
+    };
+  }, [pollHealth]);
 
   const handleNewConversation = () => {
     setActiveConversation(null);
@@ -64,7 +96,8 @@ export const App: React.FC = () => {
   };
 
   const handleReconnected = React.useCallback(() => {
-    // Revalidate operator session status immediately upon confirmed backend recovery
+    // Re-verify health and operator session immediately upon confirmed backend recovery
+    pollHealth();
     api
       .getOperatorSession()
       .then(setSessionState)
@@ -78,7 +111,7 @@ export const App: React.FC = () => {
         setPendingApprovalsCount(count);
       })
       .catch(() => {});
-  }, []);
+  }, [pollHealth]);
 
   return (
     <ConnectivityProvider onReconnected={handleReconnected}>
@@ -93,6 +126,11 @@ export const App: React.FC = () => {
         sessionState={sessionState}
         onOpenPairingModal={() => setIsPairingModalOpen(true)}
         classification={classification}
+        companionStateRecord={companionStateRecord}
+        isCompactMode={isCompactMode}
+        onToggleCompactMode={() => setIsCompactMode((prev) => !prev)}
+        onRefreshHealth={pollHealth}
+        isRefreshingHealth={isRefreshingHealth}
       >
         {currentTab === 'chat' && (
           <ChatPanel

@@ -15,6 +15,8 @@ import {
 import { Conversation, DataClassification, OperatorSessionState } from '../../types';
 import { isTauri } from '@tauri-apps/api/core';
 import { ConnectivityBanner } from './ConnectivityBanner';
+import { CompanionPresence } from '../companion/CompanionPresence';
+import { StateRecord } from '../../companion/stateMachine';
 
 interface AppLayoutProps {
   currentTab: 'chat' | 'workflows' | 'approvals' | 'memory' | 'status';
@@ -27,6 +29,11 @@ interface AppLayoutProps {
   sessionState: OperatorSessionState;
   onOpenPairingModal: () => void;
   classification: DataClassification;
+  companionStateRecord?: StateRecord;
+  isCompactMode?: boolean;
+  onToggleCompactMode?: () => void;
+  onRefreshHealth?: () => void;
+  isRefreshingHealth?: boolean;
   children: React.ReactNode;
 }
 
@@ -41,6 +48,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   sessionState,
   onOpenPairingModal,
   classification,
+  companionStateRecord,
+  isCompactMode = false,
+  onToggleCompactMode,
+  onRefreshHealth,
+  isRefreshingHealth = false,
   children,
 }) => {
   const [isTauriEnv, setIsTauriEnv] = React.useState(false);
@@ -95,8 +107,19 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           <span className="brand-badge">Command Center</span>
         </div>
 
-        {/* Center / Privacy Indicator */}
-        <div className="header-center">
+        {/* Center: Companion Presence & Privacy Scope */}
+        <div className="header-center" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {companionStateRecord && !isCompactMode && (
+            <CompanionPresence
+              stateRecord={companionStateRecord}
+              sessionState={sessionState}
+              isCompactMode={false}
+              onToggleCompactMode={onToggleCompactMode || (() => {})}
+              onOpenPairingModal={onOpenPairingModal}
+              onRefreshHealth={onRefreshHealth || (() => {})}
+              isRefreshing={isRefreshingHealth}
+            />
+          )}
           <div
             style={{
               display: 'flex',
@@ -167,9 +190,22 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       </header>
       <ConnectivityBanner />
 
-      {/* Main Split Layout */}
-      <div className="main-content">
-        {/* Left Sidebar */}
+      {/* Main Split Layout or Compact Companion View */}
+      {isCompactMode && companionStateRecord ? (
+        <div className="compact-companion-wrapper">
+          <CompanionPresence
+            stateRecord={companionStateRecord}
+            sessionState={sessionState}
+            isCompactMode={true}
+            onToggleCompactMode={onToggleCompactMode || (() => {})}
+            onOpenPairingModal={onOpenPairingModal}
+            onRefreshHealth={onRefreshHealth || (() => {})}
+            isRefreshing={isRefreshingHealth}
+          />
+        </div>
+      ) : (
+        <div className="main-content">
+          {/* Left Sidebar */}
         <aside className="app-sidebar">
           {/* Navigation Tabs */}
           <nav className="nav-tabs" aria-label="Main Navigation">
@@ -277,6 +313,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         {/* Center Area */}
         <main className="center-surface">{children}</main>
       </div>
+      )}
     </div>
   );
 };
