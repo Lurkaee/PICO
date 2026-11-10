@@ -515,3 +515,64 @@ def test_pair_consumption_immediately_raises_non_busy_operational_error():
 
             assert exc_info.value is non_busy_exc
             mock_sleep.assert_not_called()
+
+
+def test_bridge_handshake_endpoint_unconfigured_fails_closed():
+    """Verify bridge handshake fails closed with 403 when no launch secret is configured."""
+    from pico.core.bridge import set_bridge_secret
+
+    set_bridge_secret(None)
+    client = TestClient(app)
+    res = client.post("/api/bridge/handshake", json={"nonce": "0123456789abcdef0123456789abcdef"})
+    assert res.status_code == 403
+    assert "not configured" in res.json()["detail"]
+
+
+def test_bridge_handshake_endpoint_canonical_test_vector_agreement():
+    """Verify exact byte-for-byte HMAC-SHA256 agreement with canonical test vector."""
+    from pico.core.bridge import set_bridge_secret
+
+    secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    nonce = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    expected_hmac = "d3705af3a0efd3641eb765a5fecf9dc26d7a4603689cedb096413b5862b0b944"
+    try:
+        set_bridge_secret(secret)
+        client = TestClient(app)
+        res = client.post("/api/bridge/handshake", json={"nonce": nonce})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "verified"
+        assert data["protocol"] == "pico-bridge-v1"
+        assert data["hmac"] == expected_hmac
+    finally:
+        set_bridge_secret(None)
+
+def test_bridge_handshake_endpoint_rejects_invalid_nonce_lengths():
+    """Verify nonces shorter than 16 or longer than 128 chars fail schema validation."""
+    from pico.core.bridge import set_bridge_secret
+
+    try:
+        set_bridge_secret("some_secret")
+        client = TestClient(app)
+        # Too short (< 16 chars)
+        res_short = client.post("/api/bridge/handshake", json={"nonce": "too_short"})
+        assert res_short.status_code == 422
+
+        # Too long (> 128 chars)
+        res_long = client.post("/api/bridge/handshake", json={"nonce": "x" * 129})
+        assert res_long.status_code == 422
+    finally:
+        set_bridge_secret(None)
+
+def test_bridge_handshake_endpoint_rejects_non_loopback_client():
+    """Verify handshake rejects non-loopback clients with 403 Forbidden."""
+    from pico.core.bridge import set_bridge_secret
+
+    try:
+        set_bridge_secret("some_secret")
+        client = TestClient(app, client=("192.168.1.50", 45678))
+        res = client.post("/api/bridge/handshake", json={"nonce": "0123456789abcdef0123456789abcdef"})
+        assert res.status_code == 403
+        assert "restricted exclusively to local loopback" in res.json()["detail"]
+    finally:
+        set_bridge_secret(None)

@@ -5,6 +5,7 @@
  * Never stores approval secrets in the client.
  */
 
+import { isTauri, invoke } from '@tauri-apps/api/core';
 import {
   Conversation,
   Message,
@@ -37,6 +38,30 @@ import {
 export * from './errors';
 
 let currentCsrfToken: string | null = null;
+
+export type PicoProfile = 'browser-development' | 'managed-desktop' | 'packaged-production';
+
+export function getPicoProfile(): PicoProfile {
+  const profile = (import.meta.env.VITE_PICO_PROFILE || import.meta.env.MODE) as PicoProfile;
+  if (!profile || !['browser-development', 'managed-desktop', 'packaged-production'].includes(profile)) {
+    throw new ApiError({
+      message: `Invalid or missing PICO profile: ${profile || 'undefined'}`,
+      status: 500,
+      detail: `Permitted profiles are: browser-development, managed-desktop, packaged-production`,
+    });
+  }
+
+  // Conflict check: browser-development cannot run inside Tauri host
+  if (profile === 'browser-development' && isTauri()) {
+    throw new ApiError({
+      message: 'Profile conflict: browser-development profile cannot be used within Tauri host',
+      status: 500,
+      detail: 'Tauri environment detected while configured for browser-development profile',
+    });
+  }
+
+  return profile;
+}
 
 export function setCsrfToken(token: string | null): void {
   currentCsrfToken = token;
@@ -154,6 +179,30 @@ export const api = {
   },
 
   async pairOperator(code: string): Promise<OperatorSessionState> {
+    const profile = getPicoProfile();
+
+    if (profile === 'managed-desktop' || profile === 'packaged-production') {
+      if (!isTauri()) {
+        throw new ApiError({
+          message: `Tauri native bridge unavailable in ${profile} profile`,
+          status: 500,
+          detail: `${profile} requires Tauri native IPC and cannot fall back to browser HTTP`,
+        });
+      }
+
+      // In managed desktop companion mode, dispatch via verified native bridge IPC.
+      // The native host verifies the Core peer socket, computes per-request v2 HMAC proof,
+      // retains session cookies and CSRF tokens strictly in volatile native memory,
+      // and returns only sanitized status without releasing credentials to WebView JavaScript.
+      // On failure, fails closed without falling back to direct browser fetch.
+      const rawRes = await invoke<string>('pico_pair_operator', { code });
+      const parsed = typeof rawRes === 'string' ? JSON.parse(rawRes) : rawRes;
+      return {
+        paired: parsed.status === 'paired',
+        approver: parsed.approver || 'local_operator',
+      };
+    }
+
     const res = await request<{ status: string; csrf_token: string; expires_at: string; approver: string }>(
       '/api/operator/pair',
       {
@@ -356,6 +405,24 @@ export const api = {
 
   // --- Diagnostics & System Status ---
   async getHealth(): Promise<SystemHealth> {
+    const profile = getPicoProfile();
+
+    if (profile === 'managed-desktop' || profile === 'packaged-production') {
+      if (!isTauri()) {
+        throw new ApiError({
+          message: `Tauri native bridge unavailable in ${profile} profile`,
+          status: 500,
+          detail: `${profile} requires Tauri native IPC and cannot fall back to browser HTTP`,
+        });
+      }
+
+      // In managed desktop companion mode, dispatch via verified native bridge IPC.
+      // Dispatches GET /health with X-Pico-Bridge-Proof: v2 over the verified same-socket loopback connection.
+      // On failure, fails closed without falling back to direct browser fetch.
+      const rawRes = await invoke<string>('pico_get_system_status');
+      return typeof rawRes === 'string' ? JSON.parse(rawRes) : rawRes;
+    }
+
     return request<SystemHealth>('/health');
   },
 

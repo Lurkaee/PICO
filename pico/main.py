@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
+from pico.api.bridge import BridgeAuthMiddleware, router as bridge_router
 from pico.api.chat import router as chat_router
 from pico.api.conversations import router as conversations_router
 from pico.api.health import router as health_router
@@ -21,6 +22,7 @@ from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
 from pico.api.workflows import router as workflows_router
 
+from pico.core.bridge import init_bridge_secret, set_bridge_secret
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
 from pico.db.base import Base
@@ -57,7 +59,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         workflow_svc.recover_interrupted_workflows()
     # Initialize resource scheduler
     app.state.scheduler = get_scheduler()
-    yield
+    # Initialize native bridge launch secret if running under managed supervisor
+    init_bridge_secret()
+    try:
+        yield
+    finally:
+        set_bridge_secret(None)
 
 
 app = FastAPI(
@@ -78,6 +85,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Accept", "Content-Type", "X-CSRF-Token"],
 )
+# Per-request HMAC verification & anti-replay for native desktop bridge
+app.add_middleware(BridgeAuthMiddleware)
 
 
 
@@ -234,6 +243,7 @@ async def pico_error_handler(request: Request, exc: PicoError) -> JSONResponse:
 
 # Include API Routers
 app.include_router(health_router)
+app.include_router(bridge_router)
 app.include_router(operator_router)
 app.include_router(conversations_router)
 app.include_router(projects_router)

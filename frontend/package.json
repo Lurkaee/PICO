@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:tauri": "vite --host localhost --port 1420 --strictPort",
-    "build": "tsc -b && vite build",
+    "dev": "vite --mode browser-development",
+    "dev:tauri": "vite --mode managed-desktop --host localhost --port 1420 --strictPort",
+    "build": "tsc -b && vite build --mode packaged-production",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
