@@ -17,7 +17,7 @@ import secrets
 import sys
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
