@@ -800,9 +800,10 @@ pub fn run() {
                                     &BackendSupervisionStatus::Verifying { pid },
                                 );
 
+                                // Allow cold-boot headroom for first-run antivirus scanning of bundled Python extensions.
                                 match child.wait_and_verify(
                                     config.bind_port,
-                                    std::time::Duration::from_secs(15),
+                                    std::time::Duration::from_secs(45),
                                 ) {
                                     Ok(()) => Ok((child, pid)),
                                     Err(verify_err) => {
