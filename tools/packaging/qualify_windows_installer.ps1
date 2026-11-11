@@ -284,8 +284,9 @@ if ($uninstProc.ExitCode -ne 0) {
 }
 Start-Sleep -Seconds 1
 
-$picoRunStillExists = $null -ne (Get-ItemPropertyValue -Path $runKeyPath -Name "PICO" -ErrorAction SilentlyContinue)
-$unrelatedActual = Get-ItemPropertyValue -Path $runKeyPath -Name $unrelatedValueName -ErrorAction SilentlyContinue
+$runKeyObj = Get-Item -Path $runKeyPath
+$picoRunStillExists = $null -ne $runKeyObj.GetValue("PICO", $null)
+$unrelatedActual = $runKeyObj.GetValue($unrelatedValueName, $null)
 $unrelatedStillExists = $unrelatedActual -eq $unrelatedValueData
 Remove-ItemProperty -Path $runKeyPath -Name $unrelatedValueName -ErrorAction SilentlyContinue
 
@@ -332,6 +333,7 @@ if ($reportDir -and -not (Test-Path $reportDir)) {
 $report | ConvertTo-Json -Depth 4 | Set-Content -Path $ReportPath -Encoding UTF8
 Write-Host "Qualification report written to $ReportPath"
 $report | ConvertTo-Json -Depth 4
+Write-Host "::notice title=NSIS Qualification Passed::installer=$($report.installer_path) size=$($report.installer_size_bytes) sha256=$($report.installer_sha256) companion_ws_mib=$($report.companion_idle_working_set_mib) companion_priv_mib=$($report.companion_idle_private_mib) core_ws_mib=$($report.core_working_set_mib) wv2_idle=$($report.idle_webview2_process_count) bundled_py=$($report.bundled_python_verified) db_preserved=$($report.user_db_preserved_on_uninstall)"
 
 } catch {
     $errMsg = $_.Exception.Message
