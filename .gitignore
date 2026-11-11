@@ -73,3 +73,4 @@ frontend/dist/
 
 # Tauri & Desktop Shell
 frontend/src-tauri/target/
+frontend/src-tauri/staged/

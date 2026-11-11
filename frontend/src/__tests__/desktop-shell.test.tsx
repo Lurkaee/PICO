@@ -50,6 +50,18 @@ interface TauriConfig {
   };
   bundle?: {
     active?: boolean;
+    targets?: string[] | string;
+    resources?: Record<string, string>;
+    windows?: {
+      webviewInstallMode?: {
+        type?: string;
+        silent?: boolean;
+      };
+      nsis?: {
+        installMode?: string;
+        installerHooks?: string;
+      };
+    };
     [key: string]: unknown;
   };
 }
@@ -224,8 +236,15 @@ describe('Desktop Shell & Window Controls (Milestone P11.2.1)', () => {
       expect(prodCsp).not.toContain('127.0.0.1:1420');
       expect(prodCsp).not.toContain('ws:');
 
-      // Packaging/bundling must remain inactive in P11.2.1
-      expect(config.bundle?.active).toBe(false);
+      // P11.2.4.2 Windows packaging must enforce NSIS currentUser installer invariants
+      expect(config.bundle?.active).toBe(true);
+      expect(config.bundle?.targets).toEqual(['nsis']);
+      expect(config.bundle?.resources).toEqual({
+        'staged/core': 'resources/core',
+        'staged/python': 'resources/python',
+      });
+      expect(config.bundle?.windows?.nsis?.installMode).toBe('currentUser');
+      expect(config.bundle?.windows?.nsis?.installerHooks).toBe('nsis-hooks.nsh');
     });
 
     it('validates Vite strict-port dev configuration and script alignment', () => {
