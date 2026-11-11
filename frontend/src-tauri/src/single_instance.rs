@@ -20,11 +20,8 @@ const MUTEX_NAME: &str = "Local\\PicoDesktopSingleInstanceMutex";
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn CreateMutexW(
-        lpMutexAttributes: *mut c_void,
-        bInitialOwner: BOOL,
-        lpName: LPCWSTR,
-    ) -> HANDLE;
+    fn CreateMutexW(lpMutexAttributes: *mut c_void, bInitialOwner: BOOL, lpName: LPCWSTR)
+        -> HANDLE;
 
     fn GetLastError() -> DWORD;
 
@@ -96,7 +93,10 @@ mod tests {
 
         // 2. Secondary acquire while g1 is held
         let g2 = SingleInstanceGuard::acquire_named(&unique_name).unwrap();
-        assert!(!g2.is_primary(), "Second acquisition while held must be secondary (already exists)");
+        assert!(
+            !g2.is_primary(),
+            "Second acquisition while held must be secondary (already exists)"
+        );
 
         // 3. Drop primary
         drop(g1);
@@ -104,6 +104,9 @@ mod tests {
 
         // 4. Re-acquire after drop
         let g3 = SingleInstanceGuard::acquire_named(&unique_name).unwrap();
-        assert!(g3.is_primary(), "Acquisition after drop must be primary again");
+        assert!(
+            g3.is_primary(),
+            "Acquisition after drop must be primary again"
+        );
     }
 }

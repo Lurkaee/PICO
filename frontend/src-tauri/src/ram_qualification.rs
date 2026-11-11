@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::supervisor::{self, OperatorSessionStore};
     use crate::resolve_backend_launch_config;
+    use crate::supervisor::{self, OperatorSessionStore};
     use std::path::PathBuf;
 
     #[test]
@@ -25,7 +25,11 @@ mod tests {
 
         // Perform mutual handshake and listener PID verification
         let verify_res = child.wait_and_verify(test_port, std::time::Duration::from_secs(20));
-        assert!(verify_res.is_ok(), "wait_and_verify failed: {:?}", verify_res.err());
+        assert!(
+            verify_res.is_ok(),
+            "wait_and_verify failed: {:?}",
+            verify_res.err()
+        );
 
         // Function to sample process memory via PowerShell Get-Process
         let sample_memory = |target_pid: u32| -> (f64, f64) {
@@ -84,7 +88,9 @@ mod tests {
             .output()
             .expect("Failed to mint pairing challenge via python");
 
-        let valid_code = String::from_utf8_lossy(&mint_output.stdout).trim().to_string();
+        let valid_code = String::from_utf8_lossy(&mint_output.stdout)
+            .trim()
+            .to_string();
         let session_store = OperatorSessionStore::new();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -98,7 +104,11 @@ mod tests {
                 &valid_code,
             )
             .await;
-            assert!(pair_res.is_ok(), "Pairing must succeed: {:?}", pair_res.err());
+            assert!(
+                pair_res.is_ok(),
+                "Pairing must succeed: {:?}",
+                pair_res.err()
+            );
         });
 
         std::thread::sleep(std::time::Duration::from_millis(500));

@@ -112,15 +112,8 @@ pub fn is_autostart_enabled_for_key(
     let value_name_w = to_wide_null(value_name);
     let mut hkey: HKEY = ptr::null_mut();
 
-    let open_status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            subkey_w.as_ptr(),
-            0,
-            KEY_READ,
-            &mut hkey,
-        )
-    };
+    let open_status =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey_w.as_ptr(), 0, KEY_READ, &mut hkey) };
 
     if open_status == ERROR_FILE_NOT_FOUND {
         return Ok(AutoStartStatus {
@@ -159,7 +152,10 @@ pub fn is_autostart_enabled_for_key(
     }
 
     if query_size_status != ERROR_SUCCESS {
-        return Err(format!("RegQueryValueExW (size) failed with code {}", query_size_status));
+        return Err(format!(
+            "RegQueryValueExW (size) failed with code {}",
+            query_size_status
+        ));
     }
 
     if val_type != REG_SZ || data_len == 0 {
@@ -183,7 +179,10 @@ pub fn is_autostart_enabled_for_key(
     };
 
     if query_status != ERROR_SUCCESS {
-        return Err(format!("RegQueryValueExW (data) failed with code {}", query_status));
+        return Err(format!(
+            "RegQueryValueExW (data) failed with code {}",
+            query_status
+        ));
     }
 
     let u16_slice = unsafe {
@@ -236,7 +235,10 @@ pub fn enable_autostart_for_key(
     };
 
     if open_status != ERROR_SUCCESS {
-        return Err(format!("RegOpenKeyExW for write failed with code {}", open_status));
+        return Err(format!(
+            "RegOpenKeyExW for write failed with code {}",
+            open_status
+        ));
     }
 
     let _safe_key = SafeHKey(hkey);
@@ -292,7 +294,10 @@ pub fn disable_autostart_for_key(
     }
 
     if open_status != ERROR_SUCCESS {
-        return Err(format!("RegOpenKeyExW for delete failed with code {}", open_status));
+        return Err(format!(
+            "RegOpenKeyExW for delete failed with code {}",
+            open_status
+        ));
     }
 
     let _safe_key = SafeHKey(hkey);
@@ -318,7 +323,11 @@ mod tests {
     #[test]
     fn test_autostart_status_default_disabled_or_valid() {
         let status = is_autostart_enabled();
-        assert!(status.is_ok(), "Querying HKCU Run key should not error: {:?}", status.err());
+        assert!(
+            status.is_ok(),
+            "Querying HKCU Run key should not error: {:?}",
+            status.err()
+        );
     }
 
     #[test]
@@ -335,12 +344,18 @@ mod tests {
         // 2. Enable
         let s1 = enable_autostart_for_key(RUN_KEY_PATH, TEST_VAL, &fake_exe).unwrap();
         assert!(s1.enabled);
-        assert_eq!(s1.executable_path.unwrap(), r#""C:\Program Files\PICO\PICO.exe""#);
+        assert_eq!(
+            s1.executable_path.unwrap(),
+            r#""C:\Program Files\PICO\PICO.exe""#
+        );
 
         // 3. Query
         let s2 = is_autostart_enabled_for_key(RUN_KEY_PATH, TEST_VAL).unwrap();
         assert!(s2.enabled);
-        assert_eq!(s2.executable_path.unwrap(), r#""C:\Program Files\PICO\PICO.exe""#);
+        assert_eq!(
+            s2.executable_path.unwrap(),
+            r#""C:\Program Files\PICO\PICO.exe""#
+        );
 
         // 4. Disable
         let s3 = disable_autostart_for_key(RUN_KEY_PATH, TEST_VAL).unwrap();

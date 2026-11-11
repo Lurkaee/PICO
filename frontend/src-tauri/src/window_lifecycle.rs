@@ -304,7 +304,10 @@ mod tests {
         }
         lc.mark_shutting_down();
         let p = lc.pending_reopen.lock().unwrap();
-        assert!(!*p, "Pending reopen flag must be cleared on application shutdown");
+        assert!(
+            !*p,
+            "Pending reopen flag must be cleared on application shutdown"
+        );
     }
 
     #[test]
