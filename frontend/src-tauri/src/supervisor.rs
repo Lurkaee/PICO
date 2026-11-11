@@ -413,6 +413,7 @@ pub struct LaunchConfig {
     pub working_dir: PathBuf,
     pub bind_host: String,
     pub bind_port: u16,
+    pub env_overrides: Vec<(String, String)>,
 }
 
 impl LaunchConfig {
@@ -434,13 +435,60 @@ impl LaunchConfig {
             working_dir,
             bind_host: "127.0.0.1".to_string(),
             bind_port: 8000,
+            env_overrides: Vec::new(),
         }
+    }
+
+    /// Attaches an environment variable override for the supervised child process.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let key = key.into();
+        let value = value.into();
+        self.env_overrides
+            .retain(|(existing, _)| !existing.eq_ignore_ascii_case(&key));
+        self.env_overrides.push((key, value));
+        self
     }
 
     /// Spawns the managed child backend with OS-enforced Job Object containment and explicit handle inheritance.
     pub fn spawn(&self) -> Result<ManagedChild, String> {
         ManagedChild::spawn(self)
     }
+}
+
+/// Builds the child environment pairs, replacing matching keys case-insensitively and
+/// forcing `PICO_BRIDGE_PIPE_HANDLE` to the designated inherited read handle.
+pub fn build_child_environment_pairs(
+    host_vars: &[(String, String)],
+    env_overrides: &[(String, String)],
+    pipe_handle: usize,
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for (k, v) in host_vars {
+        if k.eq_ignore_ascii_case("PICO_BRIDGE_PIPE_HANDLE") {
+            continue;
+        }
+        if env_overrides
+            .iter()
+            .any(|(override_key, _)| override_key.eq_ignore_ascii_case(k))
+        {
+            continue;
+        }
+        pairs.push((k.clone(), v.clone()));
+    }
+    for (k, v) in env_overrides {
+        if k.eq_ignore_ascii_case("PICO_BRIDGE_PIPE_HANDLE") {
+            continue;
+        }
+        pairs.retain(|(existing, _)| !existing.eq_ignore_ascii_case(k));
+        pairs.push((k.clone(), v.clone()));
+    }
+    pairs.push((
+        "PICO_BRIDGE_PIPE_HANDLE".to_string(),
+        pipe_handle.to_string(),
+    ));
+    // Windows CreateProcessW CREATE_UNICODE_ENVIRONMENT expects case-insensitive sorted names.
+    pairs.sort_by(|(a, _), (b, _)| a.to_ascii_uppercase().cmp(&b.to_ascii_uppercase()));
+    pairs
 }
 
 /// Represents an actively supervised PICO Core child process.
@@ -588,17 +636,16 @@ impl ManagedChild {
             .chain(std::iter::once(0))
             .collect();
 
-        // 8. Construct environment block passing PICO_BRIDGE_PIPE_HANDLE without modifying host process env
+        // 8. Construct environment block applying scoped overrides and PICO_BRIDGE_PIPE_HANDLE
+        // without mutating the host process environment.
+        let host_vars: Vec<(String, String)> = std::env::vars().collect();
+        let child_pairs =
+            build_child_environment_pairs(&host_vars, &config.env_overrides, pipe_r as usize);
         let mut env_block: Vec<u16> = Vec::new();
-        for (k, v) in std::env::vars() {
-            if k != "PICO_BRIDGE_PIPE_HANDLE" {
-                for c in format!("{}={}\0", k, v).encode_utf16() {
-                    env_block.push(c);
-                }
+        for (k, v) in child_pairs {
+            for c in format!("{}={}\0", k, v).encode_utf16() {
+                env_block.push(c);
             }
-        }
-        for c in format!("PICO_BRIDGE_PIPE_HANDLE={}\0", pipe_r as usize).encode_utf16() {
-            env_block.push(c);
         }
         env_block.push(0); // double-null termination
 
@@ -2201,6 +2248,40 @@ mod tests {
             Err(e) => assert!(e.contains("exactly 1 worker")),
             Ok(_) => panic!("--workers=2 syntax must be rejected"),
         }
+    }
+
+    #[test]
+    fn test_build_child_environment_pairs_overrides_case_insensitively() {
+        let host_vars = vec![
+            ("Path".to_string(), "C:\\Windows\\System32".to_string()),
+            ("database_url".to_string(), "sqlite:///./old.db".to_string()),
+            ("PICO_BRIDGE_PIPE_HANDLE".to_string(), "9999".to_string()),
+        ];
+        let overrides = vec![
+            (
+                "DATABASE_URL".to_string(),
+                "sqlite:///C:/Users/Test/AppData/Local/PICO/data/pico.db".to_string(),
+            ),
+            ("PICO_BRIDGE_PIPE_HANDLE".to_string(), "1".to_string()),
+        ];
+
+        let pairs = build_child_environment_pairs(&host_vars, &overrides, 4242);
+        let db_entries: Vec<_> = pairs
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("DATABASE_URL"))
+            .collect();
+        assert_eq!(db_entries.len(), 1);
+        assert_eq!(
+            db_entries[0].1,
+            "sqlite:///C:/Users/Test/AppData/Local/PICO/data/pico.db"
+        );
+
+        let pipe_entries: Vec<_> = pairs
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("PICO_BRIDGE_PIPE_HANDLE"))
+            .collect();
+        assert_eq!(pipe_entries.len(), 1);
+        assert_eq!(pipe_entries[0].1, "4242");
     }
 
     #[test]

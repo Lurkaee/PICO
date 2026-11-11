@@ -17,13 +17,31 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "PICO Team",
+    "resources": {
+      "staged/core": "resources/core",
+      "staged/python": "resources/python"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "displayLanguageSelector": false,
+        "installerHooks": "nsis-hooks.nsh"
+      }
+    }
   }
 }

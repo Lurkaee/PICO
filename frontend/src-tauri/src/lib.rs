@@ -122,34 +122,195 @@ impl Default for SupervisorState {
     }
 }
 
-/// Resolves the trusted PICO workspace root directory.
-///
-/// In packaged installations, detects whether the executable is running from an installed
-/// bundle with adjacent `resources\core` or dedicated bundle directory.
-/// In development mode, resolves the repository root via explicit trusted environment
-/// variable `PICO_WORKSPACE_ROOT` or compile-time manifest location (`CARGO_MANIFEST_DIR`).
-/// Arbitrary process current working directories (`current_dir`) are NEVER used as trust anchors.
-pub fn resolve_trusted_project_root() -> Result<PathBuf, String> {
-    // 1. Packaged installation check: inspect executable directory for resources\core
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            let packaged_core = exe_dir.join("resources").join("core");
-            if packaged_core.is_dir() && packaged_core.join("pico").join("main.py").is_file() {
-                if let Ok(canonical) = std::fs::canonicalize(&packaged_core) {
-                    return Ok(canonical);
-                }
-            }
-            // Check direct adjacent core directory
-            let direct_core = exe_dir.join("core");
-            if direct_core.is_dir() && direct_core.join("pico").join("main.py").is_file() {
-                if let Ok(canonical) = std::fs::canonicalize(&direct_core) {
-                    return Ok(canonical);
-                }
-            }
+/// Operational launch mode separating installed/packaged execution from local repository development.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLaunchMode {
+    Packaged,
+    Development,
+}
+
+fn strip_windows_verbatim_prefix(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(stripped) = raw.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Formats a Windows filesystem path into a valid SQLAlchemy SQLite file URL (`sqlite:///C:/...`).
+pub fn format_windows_sqlite_url(db_path: &Path) -> Result<String, String> {
+    let clean_path = strip_windows_verbatim_prefix(db_path);
+    let path_str = clean_path.to_str().ok_or_else(|| {
+        format!(
+            "Database path '{}' contains non-UTF8 characters",
+            clean_path.display()
+        )
+    })?;
+    let posix = path_str.replace('\\', "/");
+    if posix.is_empty() {
+        return Err("Database path cannot be empty".to_string());
+    }
+    Ok(format!("sqlite:///{}", posix))
+}
+
+fn resolve_local_app_data_base(explicit_base: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(base) = explicit_base {
+        if !base.as_os_str().is_empty() {
+            return Ok(strip_windows_verbatim_prefix(base));
         }
     }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        if !local_app_data.is_empty() {
+            return Ok(strip_windows_verbatim_prefix(&PathBuf::from(
+                local_app_data,
+            )));
+        }
+    }
+    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+        if !user_profile.is_empty() {
+            return Ok(strip_windows_verbatim_prefix(
+                &PathBuf::from(user_profile).join("AppData").join("Local"),
+            ));
+        }
+    }
+    Err(
+        "Failed to resolve per-user LOCALAPPDATA directory for packaged database storage"
+            .to_string(),
+    )
+}
 
-    // 2. Explicit environment variable PICO_WORKSPACE_ROOT
+/// Ensures the per-user packaged data directory (`<LOCALAPPDATA>/PICO/data`) exists and returns it.
+pub fn ensure_packaged_data_dir(local_app_data_override: Option<&Path>) -> Result<PathBuf, String> {
+    let base = resolve_local_app_data_base(local_app_data_override)?;
+    let data_dir = base.join("PICO").join("data");
+    std::fs::create_dir_all(&data_dir).map_err(|e| {
+        format!(
+            "Failed to create packaged per-user data directory '{}': {}",
+            data_dir.display(),
+            e
+        )
+    })?;
+    let canonical = std::fs::canonicalize(&data_dir).unwrap_or(data_dir);
+    Ok(strip_windows_verbatim_prefix(&canonical))
+}
+
+fn is_workspace_cargo_target_dir(exe_dir: &Path) -> bool {
+    let manifest_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let (Ok(canonical_exe_dir), Ok(canonical_target)) = (
+        std::fs::canonicalize(exe_dir),
+        std::fs::canonicalize(&manifest_target),
+    ) else {
+        return false;
+    };
+    canonical_exe_dir.starts_with(&canonical_target)
+}
+
+/// Determines whether the current binary should execute strictly in packaged mode or development mode.
+///
+/// Packaged mode activates whenever an adjacent `resources` directory exists beside the binary OR
+/// whenever the binary is not running out of this repository's own Cargo `target` directory.
+pub fn detect_runtime_launch_mode(exe_dir: Option<&Path>) -> RuntimeLaunchMode {
+    match exe_dir {
+        Some(dir) if dir.join("resources").is_dir() => RuntimeLaunchMode::Packaged,
+        Some(dir) if is_workspace_cargo_target_dir(dir) => RuntimeLaunchMode::Development,
+        _ => RuntimeLaunchMode::Packaged,
+    }
+}
+
+fn validate_core_root(candidate: &Path, require_alembic: bool) -> Result<PathBuf, String> {
+    let canonical_root = std::fs::canonicalize(candidate).map_err(|e| {
+        format!(
+            "Failed to canonicalize Core root '{}': {}",
+            candidate.display(),
+            e
+        )
+    })?;
+    let main_py = canonical_root.join("pico").join("main.py");
+    let pyproject = canonical_root.join("pyproject.toml");
+    let alembic_ini = canonical_root.join("alembic.ini");
+
+    if !main_py.is_file() || !pyproject.is_file() || (require_alembic && !alembic_ini.is_file()) {
+        return Err(format!(
+            "Core root '{}' is invalid: missing pico/main.py, pyproject.toml, or alembic.ini",
+            canonical_root.display()
+        ));
+    }
+    Ok(canonical_root)
+}
+
+/// Resolves packaged launch configuration strictly from `<exe_dir>/resources/{core,python}`.
+///
+/// Fails closed if bundled Core or bundled `python.exe` is missing. Never falls back to `.venv`,
+/// `PICO_WORKSPACE_ROOT`, compile-time `CARGO_MANIFEST_DIR`, system Python, or `PATH`.
+pub fn resolve_packaged_launch_config_from_exe_dir(
+    exe_dir: &Path,
+    explicit_database_url: Option<&str>,
+    local_app_data_override: Option<&Path>,
+) -> Result<supervisor::LaunchConfig, String> {
+    let resources_dir = exe_dir.join("resources");
+    let canonical_resources = std::fs::canonicalize(&resources_dir).map_err(|e| {
+        format!(
+            "Packaged resources directory missing at '{}': {}. Refusing development/PATH fallback.",
+            resources_dir.display(),
+            e
+        )
+    })?;
+
+    let packaged_core = canonical_resources.join("core");
+    let canonical_core = validate_core_root(&packaged_core, true).map_err(|e| {
+        format!(
+            "Packaged Core validation failed under '{}': {}",
+            canonical_resources.display(),
+            e
+        )
+    })?;
+
+    let packaged_python = canonical_resources.join("python").join("python.exe");
+    if !packaged_python.is_file() {
+        return Err(format!(
+            "Bundled Python runtime not found at '{}'. Refusing .venv, system Python, and PATH fallbacks.",
+            packaged_python.display()
+        ));
+    }
+    let canonical_python = std::fs::canonicalize(&packaged_python).map_err(|e| {
+        format!(
+            "Failed to canonicalize bundled Python runtime '{}': {}",
+            packaged_python.display(),
+            e
+        )
+    })?;
+
+    if !canonical_python.starts_with(&canonical_resources)
+        || !canonical_core.starts_with(&canonical_resources)
+    {
+        return Err(
+            "Packaged Core and Python runtime must reside inside the installed resources directory"
+                .to_string(),
+        );
+    }
+
+    let mut config = supervisor::LaunchConfig::default_local(
+        strip_windows_verbatim_prefix(&canonical_python),
+        strip_windows_verbatim_prefix(&canonical_core),
+    );
+
+    let has_explicit_db_override = explicit_database_url
+        .map(|val| !val.trim().is_empty())
+        .unwrap_or(false);
+    if !has_explicit_db_override {
+        let data_dir = ensure_packaged_data_dir(local_app_data_override)?;
+        let db_path = data_dir.join("pico.db");
+        let db_url = format_windows_sqlite_url(&db_path)?;
+        config = config.with_env("DATABASE_URL", db_url);
+    }
+
+    Ok(config)
+}
+
+fn resolve_development_project_root() -> Result<PathBuf, String> {
     let candidate = if let Ok(env_root) = std::env::var("PICO_WORKSPACE_ROOT") {
         PathBuf::from(env_root)
     } else {
@@ -165,89 +326,68 @@ pub fn resolve_trusted_project_root() -> Result<PathBuf, String> {
         }
     };
 
-    let canonical_root = std::fs::canonicalize(&candidate).map_err(|e| {
-        format!(
-            "Failed to canonicalize trusted workspace root '{}': {}",
-            candidate.display(),
-            e
-        )
-    })?;
-
-    let main_py = canonical_root.join("pico").join("main.py");
-    let pyproject = canonical_root.join("pyproject.toml");
-
-    if !main_py.is_file() || !pyproject.is_file() {
-        return Err(format!(
-            "Trusted workspace root '{}' is invalid: missing pico/main.py or pyproject.toml",
-            canonical_root.display()
-        ));
-    }
-
-    Ok(canonical_root)
+    validate_core_root(&candidate, false)
 }
 
-/// Resolves the launch configuration from an explicitly trusted project root.
+/// Resolves the trusted PICO Core workspace root directory for the active launch mode.
 ///
-/// In packaged installations, searches for bundled Python runtime in `resources\python\python.exe`
-/// or `<root>\python.exe` or adjacent virtualenv.
-/// In development installations, resolves `<root>/.venv/Scripts/python.exe`.
-/// Fails closed if no verified interpreter is present. Refuses unmanaged PATH fallback.
+/// In packaged mode, resolves only `<exe_dir>\resources\core` and fails closed if absent.
+/// In development mode, resolves `PICO_WORKSPACE_ROOT` or compile-time repository root.
+/// Arbitrary process current working directories (`current_dir`) are NEVER used as trust anchors.
+pub fn resolve_trusted_project_root() -> Result<PathBuf, String> {
+    let current_exe = std::env::current_exe().ok();
+    let exe_dir = current_exe.as_deref().and_then(|p| p.parent());
+    match detect_runtime_launch_mode(exe_dir) {
+        RuntimeLaunchMode::Packaged => {
+            let dir = exe_dir.ok_or_else(|| {
+                "Failed to resolve installed executable directory in packaged mode".to_string()
+            })?;
+            validate_core_root(&dir.join("resources").join("core"), true)
+        }
+        RuntimeLaunchMode::Development => resolve_development_project_root(),
+    }
+}
+
+/// Resolves a launch configuration from an explicitly provided Core root directory.
+///
+/// If the root follows packaged `<bundle>/resources/core` layout with sibling `python/python.exe`,
+/// resolves strictly in packaged mode (never falling back to `.venv`). Otherwise requires `<root>/.venv`.
 pub fn resolve_backend_launch_config_from_root(
     project_root: &Path,
 ) -> Result<supervisor::LaunchConfig, String> {
     let canonical_root = std::fs::canonicalize(project_root)
         .map_err(|e| format!("Failed to canonicalize project root: {}", e))?;
 
-    // Candidate 1: Packaged bundled Python runtime inside project_root
-    let bundled_in_root = canonical_root.join("python").join("python.exe");
-    let bundled_in_root_direct = canonical_root.join("python.exe");
+    let is_packaged_resources_core = canonical_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("core"))
+        .unwrap_or(false)
+        && canonical_root
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(|n| n.eq_ignore_ascii_case("resources"))
+            .unwrap_or(false);
 
-    // Candidate 2: Packaged sibling python directory (e.g. <install_dir>/resources/python/python.exe or <install_dir>/resources/python/Scripts/python.exe)
-    let sibling_python = canonical_root
-        .parent()
-        .map(|p| p.join("python").join("python.exe"));
-    let sibling_python_scripts = canonical_root
-        .parent()
-        .map(|p| p.join("python").join("Scripts").join("python.exe"));
+    if is_packaged_resources_core {
+        let exe_dir = canonical_root
+            .parent()
+            .and_then(|resources| resources.parent())
+            .ok_or_else(|| {
+                "Failed to resolve packaged bundle root from resources/core".to_string()
+            })?;
+        let explicit_db = std::env::var("DATABASE_URL").ok();
+        return resolve_packaged_launch_config_from_exe_dir(exe_dir, explicit_db.as_deref(), None);
+    }
 
-    // Candidate 3: Standard development .venv
     let venv_python_win = canonical_root
         .join(".venv")
         .join("Scripts")
         .join("python.exe");
     let venv_python_nix = canonical_root.join(".venv").join("bin").join("python");
 
-    let python_exe = if bundled_in_root.is_file() {
-        bundled_in_root
-    } else if bundled_in_root_direct.is_file() {
-        bundled_in_root_direct
-    } else if let Some(ref sib) = sibling_python {
-        if sib.is_file() {
-            sib.clone()
-        } else if let Some(ref sib_scripts) = sibling_python_scripts {
-            if sib_scripts.is_file() {
-                sib_scripts.clone()
-            } else if venv_python_win.is_file() {
-                venv_python_win
-            } else if venv_python_nix.is_file() {
-                venv_python_nix
-            } else {
-                return Err(format!(
-                    "Dedicated Python interpreter not found in '{}' (checked bundled python and .venv). Refusing unmanaged PATH python fallback.",
-                    canonical_root.display()
-                ));
-            }
-        } else if venv_python_win.is_file() {
-            venv_python_win
-        } else if venv_python_nix.is_file() {
-            venv_python_nix
-        } else {
-            return Err(format!(
-                "Dedicated Python interpreter not found in '{}' (checked bundled python and .venv). Refusing unmanaged PATH python fallback.",
-                canonical_root.display()
-            ));
-        }
-    } else if venv_python_win.is_file() {
+    let python_exe = if venv_python_win.is_file() {
         venv_python_win
     } else if venv_python_nix.is_file() {
         venv_python_nix
@@ -261,15 +401,8 @@ pub fn resolve_backend_launch_config_from_root(
     let canonical_python = std::fs::canonicalize(&python_exe)
         .map_err(|e| format!("Failed to canonicalize Python interpreter path: {}", e))?;
 
-    // Verify interpreter trust boundary: must reside either within project_root or in parent's resources tree
-    let within_root = canonical_python.starts_with(&canonical_root);
-    let within_parent = canonical_root
-        .parent()
-        .map(|p| canonical_python.starts_with(p))
-        .unwrap_or(false);
-
-    if !within_root && !within_parent {
-        return Err("Python interpreter must reside within the trusted project root or application installation tree".to_string());
+    if !canonical_python.starts_with(&canonical_root) {
+        return Err("Python interpreter must reside within the trusted project root".to_string());
     }
 
     Ok(supervisor::LaunchConfig::default_local(
@@ -280,10 +413,25 @@ pub fn resolve_backend_launch_config_from_root(
 
 /// Resolves the launch configuration for the supervised PICO Core backend process.
 ///
-/// Enforces trusted root validation and virtualenv interpreter resolution.
+/// Strictly isolates packaged installations (`<exe_dir>\resources\core` +
+/// `<exe_dir>\resources\python\python.exe` + `%LOCALAPPDATA%\PICO\data\pico.db`)
+/// from local development repository launches (`<repo>\.venv\Scripts\python.exe`).
 pub fn resolve_backend_launch_config() -> Result<supervisor::LaunchConfig, String> {
-    let root = resolve_trusted_project_root()?;
-    resolve_backend_launch_config_from_root(&root)
+    let current_exe = std::env::current_exe().ok();
+    let exe_dir = current_exe.as_deref().and_then(|p| p.parent());
+    match detect_runtime_launch_mode(exe_dir) {
+        RuntimeLaunchMode::Packaged => {
+            let dir = exe_dir.ok_or_else(|| {
+                "Failed to resolve installed executable directory in packaged mode".to_string()
+            })?;
+            let explicit_db = std::env::var("DATABASE_URL").ok();
+            resolve_packaged_launch_config_from_exe_dir(dir, explicit_db.as_deref(), None)
+        }
+        RuntimeLaunchMode::Development => {
+            let root = resolve_development_project_root()?;
+            resolve_backend_launch_config_from_root(&root)
+        }
+    }
 }
 
 /// High-level actions corresponding to system tray menu items.
@@ -1106,12 +1254,14 @@ mod tests {
     #[test]
     fn test_packaged_layout_resolution_invariants() {
         let temp_dir = std::env::temp_dir().join(format!("pico_pkg_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
         let core_dir = temp_dir.join("resources").join("core");
         let python_dir = temp_dir.join("resources").join("python");
         let _ = std::fs::create_dir_all(core_dir.join("pico"));
         let _ = std::fs::create_dir_all(&python_dir);
         let _ = std::fs::write(core_dir.join("pico").join("main.py"), "# mock core\n");
         let _ = std::fs::write(core_dir.join("pyproject.toml"), "# mock pyproject\n");
+        let _ = std::fs::write(core_dir.join("alembic.ini"), "[alembic]\n");
         let mock_python = python_dir.join("python.exe");
         let _ = std::fs::write(&mock_python, "# mock python binary\n");
 
@@ -1124,14 +1274,173 @@ mod tests {
         let config = config_res.unwrap();
         assert_eq!(
             config.working_dir,
-            std::fs::canonicalize(&core_dir).unwrap()
+            strip_windows_verbatim_prefix(&std::fs::canonicalize(&core_dir).unwrap())
         );
         assert_eq!(
             config.executable,
-            std::fs::canonicalize(&mock_python).unwrap()
+            strip_windows_verbatim_prefix(&std::fs::canonicalize(&mock_python).unwrap())
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_packaged_mode_fails_closed_without_bundled_python_even_with_decoy_venv() {
+        let temp_dir = std::env::temp_dir().join(format!("pico_pkg_no_py_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let core_dir = temp_dir.join("resources").join("core");
+        let decoy_venv = core_dir.join(".venv").join("Scripts");
+        std::fs::create_dir_all(core_dir.join("pico")).unwrap();
+        std::fs::create_dir_all(&decoy_venv).unwrap();
+        std::fs::write(core_dir.join("pico").join("main.py"), "# mock core\n").unwrap();
+        std::fs::write(core_dir.join("pyproject.toml"), "# mock pyproject\n").unwrap();
+        std::fs::write(core_dir.join("alembic.ini"), "[alembic]\n").unwrap();
+        std::fs::write(decoy_venv.join("python.exe"), "# decoy venv\n").unwrap();
+
+        let err = resolve_packaged_launch_config_from_exe_dir(&temp_dir, None, Some(&temp_dir))
+            .expect_err("Packaged mode MUST fail closed without resources/python/python.exe");
+        assert!(
+            err.contains("Bundled Python runtime not found"),
+            "Unexpected error: {}",
+            err
+        );
+
+        // Even via resolve_backend_launch_config_from_root on resources/core, .venv fallback is refused.
+        let err2 = resolve_backend_launch_config_from_root(&core_dir)
+            .expect_err("Packaged resources/core MUST never fall back to .venv");
+        assert!(
+            err2.contains("Bundled Python runtime not found"),
+            "Unexpected error: {}",
+            err2
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_packaged_mode_fails_closed_when_resources_core_missing() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("pico_pkg_no_core_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let err = resolve_packaged_launch_config_from_exe_dir(&temp_dir, None, Some(&temp_dir))
+            .expect_err("Missing resources directory must fail closed");
+        assert!(
+            err.contains("Packaged resources directory missing"),
+            "Unexpected error: {}",
+            err
+        );
+        assert_eq!(
+            detect_runtime_launch_mode(Some(&temp_dir)),
+            RuntimeLaunchMode::Packaged
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_packaged_mode_configures_per_user_sqlite_url_and_strips_verbatim_prefix() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("pico_pkg_db_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let core_dir = temp_dir.join("bundle").join("resources").join("core");
+        let python_dir = temp_dir.join("bundle").join("resources").join("python");
+        let local_app_base = temp_dir.join("Local App Data");
+        std::fs::create_dir_all(core_dir.join("pico")).unwrap();
+        std::fs::create_dir_all(&python_dir).unwrap();
+        std::fs::create_dir_all(&local_app_base).unwrap();
+        std::fs::write(core_dir.join("pico").join("main.py"), "# mock core\n").unwrap();
+        std::fs::write(core_dir.join("pyproject.toml"), "# mock pyproject\n").unwrap();
+        std::fs::write(core_dir.join("alembic.ini"), "[alembic]\n").unwrap();
+        std::fs::write(python_dir.join("python.exe"), "# mock python\n").unwrap();
+
+        let config = resolve_packaged_launch_config_from_exe_dir(
+            &temp_dir.join("bundle"),
+            None,
+            Some(&local_app_base),
+        )
+        .expect("Packaged launch config must succeed");
+
+        let expected_dir = local_app_base.join("PICO").join("data");
+        assert!(expected_dir.is_dir(), "Per-user data dir must be created");
+
+        let db_override = config
+            .env_overrides
+            .iter()
+            .find(|(k, _)| k == "DATABASE_URL")
+            .map(|(_, v)| v.as_str())
+            .expect("DATABASE_URL override must be injected in packaged mode");
+        assert!(db_override.starts_with("sqlite:///"));
+        assert!(!db_override.contains(r"\\?\"));
+        assert!(!db_override.contains('\\'));
+        assert!(db_override.ends_with("/Local App Data/PICO/data/pico.db"));
+
+        // Preserves existing data directory across repeated launches
+        std::fs::write(expected_dir.join("pico.db"), b"existing-sqlite-bytes").unwrap();
+        let config_again = resolve_packaged_launch_config_from_exe_dir(
+            &temp_dir.join("bundle"),
+            Some("   "),
+            Some(&local_app_base),
+        )
+        .expect("Empty whitespace DATABASE_URL must still resolve packaged DB path");
+        assert!(config_again
+            .env_overrides
+            .iter()
+            .any(|(k, _)| k == "DATABASE_URL"));
+        assert_eq!(
+            std::fs::read(expected_dir.join("pico.db")).unwrap(),
+            b"existing-sqlite-bytes"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_packaged_mode_preserves_explicit_database_url_override() {
+        let temp_dir = std::env::temp_dir().join(format!("pico_pkg_db_ovr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let core_dir = temp_dir.join("bundle").join("resources").join("core");
+        let python_dir = temp_dir.join("bundle").join("resources").join("python");
+        let custom_app_data = temp_dir.join("UnusedLocalAppData");
+        std::fs::create_dir_all(core_dir.join("pico")).unwrap();
+        std::fs::create_dir_all(&python_dir).unwrap();
+        std::fs::write(core_dir.join("pico").join("main.py"), "# mock core\n").unwrap();
+        std::fs::write(core_dir.join("pyproject.toml"), "# mock pyproject\n").unwrap();
+        std::fs::write(core_dir.join("alembic.ini"), "[alembic]\n").unwrap();
+        std::fs::write(python_dir.join("python.exe"), "# mock python\n").unwrap();
+
+        let config = resolve_packaged_launch_config_from_exe_dir(
+            &temp_dir.join("bundle"),
+            Some("sqlite:///C:/custom/user_pico.db"),
+            Some(&custom_app_data),
+        )
+        .expect("Explicit DATABASE_URL override must succeed");
+
+        assert!(
+            !config
+                .env_overrides
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("DATABASE_URL")),
+            "Packaged resolver must not clobber explicit DATABASE_URL override"
+        );
+        assert!(!custom_app_data.join("PICO").exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_detect_runtime_launch_mode_separates_installed_vs_workspace_target() {
+        let current_exe = std::env::current_exe().unwrap();
+        assert_eq!(
+            detect_runtime_launch_mode(current_exe.parent()),
+            RuntimeLaunchMode::Development
+        );
+        let arbitrary_install = Path::new(r"C:\Users\Example\AppData\Local\PICO");
+        assert_eq!(
+            detect_runtime_launch_mode(Some(arbitrary_install)),
+            RuntimeLaunchMode::Packaged
+        );
     }
 
     #[test]
