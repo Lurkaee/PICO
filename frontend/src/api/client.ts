@@ -160,10 +160,20 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
   }
 
-  // Handle empty bodies (e.g. 204 or void endpoints)
+  // Handle empty bodies (204) and reject HTML fallback documents on JSON API paths
+  if (response.status === 204) {
+    return {} as T;
+  }
   const contentType = response.headers.get('content-type');
   if (contentType && contentType.includes('application/json')) {
     return (await response.json()) as T;
+  }
+  if (contentType && contentType.includes('text/html')) {
+    throw new ApiError({
+      message: `Unexpected HTML response for API route ${path}`,
+      status: 502,
+      detail: 'API endpoint returned HTML instead of JSON',
+    });
   }
   return {} as T;
 }
@@ -432,5 +442,20 @@ export const api = {
 
   async getSchedulerMetrics(): Promise<SchedulerMetrics> {
     return request<SchedulerMetrics>('/api/scheduler/metrics');
+  },
+
+  // --- Windows Desktop Auto-Start (Milestone P11.2.4) ---
+  async getAutoStartStatus(): Promise<{ enabled: boolean; executable_path: string | null; matches_current_exe: boolean }> {
+    if (!isTauri()) {
+      return { enabled: false, executable_path: null, matches_current_exe: false };
+    }
+    return invoke<{ enabled: boolean; executable_path: string | null; matches_current_exe: boolean }>('pico_get_autostart_status');
+  },
+
+  async setAutoStart(enabled: boolean): Promise<{ enabled: boolean; executable_path: string | null; matches_current_exe: boolean }> {
+    if (!isTauri()) {
+      return { enabled: false, executable_path: null, matches_current_exe: false };
+    }
+    return invoke<{ enabled: boolean; executable_path: string | null; matches_current_exe: boolean }>('pico_set_autostart', { enabled });
   },
 };
