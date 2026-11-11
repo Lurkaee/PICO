@@ -26,22 +26,22 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-PYTHON_VERSION = "3.13.17"
-PYTHON_MAJOR_MINOR = "3.13"
-PYTHON_ABI = "cp313"
+PYTHON_VERSION = "3.14.10"
+PYTHON_MAJOR_MINOR = "3.14"
+PYTHON_ABI = "cp314"
 TARGET_PLATFORM = "win_amd64"
 EMBED_FILENAME = f"python-{PYTHON_VERSION}-embed-amd64.zip"
 EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{EMBED_FILENAME}"
 # Official SHA-256 extracted from CPython release Sigstore bundle:
-# https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip.sigstore
-EMBED_SHA256 = "9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38"
+# https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip.sigstore
+EMBED_SHA256 = "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
 
 DEV_ONLY_PACKAGES = frozenset({"pytest"})
 
 REQUIRED_EMBED_FILES = (
     "python.exe",
-    "python313.dll",
-    "python313.zip",
+    "python314.dll",
+    "python314.zip",
     "vcruntime140.dll",
     "vcruntime140_1.dll",
 )
@@ -234,10 +234,10 @@ def stage_python_runtime(archive_path: Path, python_dir: Path, lockfile_path: Pa
     for pyc in site_packages.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
 
-    pth_path = python_dir / "python313._pth"
+    pth_path = python_dir / "python314._pth"
     pth_content = "\n".join(
         [
-            "python313.zip",
+            "python314.zip",
             ".",
             "Lib\\site-packages",
             "..\\core",
@@ -340,7 +340,7 @@ def verify_staged_python_imports(core_dir: Path, python_dir: Path) -> None:
 
         probe_code = (
             "import asyncio, importlib, sys; "
-            "assert sys.version_info[:2] == (3, 13), sys.version_info; "
+            "assert sys.version_info[:3] == (3, 14, 10), sys.version_info; "
             "mods = ['fastapi', 'uvicorn', 'pydantic', 'pydantic_settings', "
             "'sqlalchemy', 'alembic', 'httpx', 'anyio', 'pico.main']; "
             "[importlib.import_module(m) for m in mods]; "

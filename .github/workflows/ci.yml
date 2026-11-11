@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master, "feature/**"]
+    branches: [main, master, "feature/**", "fix/**"]
   pull_request:
     branches: [main, master]
 
@@ -145,7 +145,7 @@ jobs:
       - name: Set up Python for native backend supervision
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: "pip"
 
       - name: Create Python virtual environment
@@ -210,29 +210,17 @@ jobs:
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Set up Python 3.13 for runtime staging
+      - name: Set up Python 3.14 for runtime staging
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: "pip"
 
-      - name: Verify or install NSIS toolchain
+      - name: Provision and verify NSIS toolchain
         shell: powershell
-        run: |
-          $nsisDir = "C:\Program Files (x86)\NSIS"
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
-            if (Test-Path "$nsisDir\makensis.exe") {
-              $nsisDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            } else {
-              choco install nsis -y
-              if (Test-Path "$nsisDir\makensis.exe") {
-                $nsisDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              }
-            }
-          }
-          & "$nsisDir\makensis.exe" /VERSION
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/packaging/provision_nsis.ps1 -AllowChocoFallback
 
-      - name: Stage embeddable CPython 3.13 and Core runtime payload
+      - name: Stage embeddable CPython 3.14 and Core runtime payload
         run: python tools/packaging/stage_windows_bundle.py
 
       - name: Build unsigned Windows NSIS installer (0.1.0)

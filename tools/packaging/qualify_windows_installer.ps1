@@ -111,8 +111,8 @@ function Assert-InstalledPayloadHygiene {
 
     $coreMain = Join-Path $InstallDir "resources\core\pico\main.py"
     $bundledPython = Join-Path $InstallDir "resources\python\python.exe"
-    $pythonDll = Join-Path $InstallDir "resources\python\python313.dll"
-    $pythonPth = Join-Path $InstallDir "resources\python\python313._pth"
+    $pythonDll = Join-Path $InstallDir "resources\python\python314.dll"
+    $pythonPth = Join-Path $InstallDir "resources\python\python314._pth"
 
     foreach ($reqFile in @($coreMain, $bundledPython, $pythonDll, $pythonPth)) {
         if (-not (Test-Path $reqFile)) {
@@ -364,6 +364,11 @@ function Invoke-InstalledCompanionCheck {
             throw "SQLite integrity_check failed for $userDbPath (exit=${dbExit}, out='${dbCheckOut}')"
         }
 
+        $bundledPythonVersion = ((& $BundledPython -B -c "import sys; print(sys.version.split()[0])" 2>&1) -join "").Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $bundledPythonVersion) {
+            throw "Failed querying bundled python version from $BundledPython"
+        }
+
         $wsValues = @($samples | ForEach-Object { [double]$_.companion_working_set_mib })
         $privWsValues = @($samples | ForEach-Object { [double]$_.companion_private_ws_mib })
         $privBytesValues = @($samples | ForEach-Object { [double]$_.companion_private_bytes_mib })
@@ -372,6 +377,7 @@ function Invoke-InstalledCompanionCheck {
         return [ordered]@{
             health_check_passed         = $healthOk
             bundled_python_verified     = $bundledPythonUsed
+            bundled_python_version      = $bundledPythonVersion
             db_integrity_check          = ($dbCheckOut -join "")
             sample_count                = $samples.Count
             measured_window_seconds     = $samples[-1].elapsed_seconds
@@ -429,7 +435,7 @@ try {
     $currentStep = "verify_baseline_hygiene"
     $payload = Assert-InstalledPayloadHygiene -InstallDir $layout.InstallDir
 
-    # 2. Launch baseline, verify Core 3.13.17, DB creation, idle RAM
+    # 2. Launch baseline, verify Core 3.14.10, DB creation, idle RAM
     $currentStep = "launch_baseline"
     Write-Host "[2] Verifying baseline installed runtime..."
     $baselineSampleSeconds = if ($resolvedUpgradeInstaller) { 0 } else { $IdleWindowSeconds }
@@ -479,8 +485,12 @@ try {
         $runKeyObj = Get-Item -Path $runKeyPath
         $picoRunAfterUpgrade = $runKeyObj.GetValue("PICO", $null)
         $unrelatedAfterUpgrade = $runKeyObj.GetValue($unrelatedValueName, $null)
+        $expectedUpgradedPicoRunValue = "`"$($layout.PicoExe.FullName)`""
         if (-not $picoRunAfterUpgrade) {
             throw "In-place upgrade removed HKCU Run entry 'PICO'"
+        }
+        if ($picoRunAfterUpgrade -ne $expectedUpgradedPicoRunValue) {
+            throw "In-place upgrade altered HKCU Run entry 'PICO' to '$picoRunAfterUpgrade' (expected '$expectedUpgradedPicoRunValue')"
         }
         if ($unrelatedAfterUpgrade -ne $unrelatedValueData) {
             throw "In-place upgrade modified unrelated HKCU Run entry"
@@ -501,6 +511,9 @@ try {
         $picoRunAfterUpdateHook = $runKeyObj.GetValue("PICO", $null)
         if (-not $picoRunAfterUpdateHook) {
             throw "NSIS_HOOK_POSTUNINSTALL /UPDATE check unexpectedly removed HKCU Run entry 'PICO'"
+        }
+        if ($picoRunAfterUpdateHook -ne $expectedUpgradedPicoRunValue) {
+            throw "NSIS /UPDATE hook altered HKCU Run entry 'PICO' to '$picoRunAfterUpdateHook' (expected '$expectedUpgradedPicoRunValue')"
         }
 
         # Re-apply upgraded installer so final runtime, 60s+ idle RAM, and genuine uninstall run cleanly on upgraded package
@@ -527,7 +540,9 @@ try {
             baseline_version                    = $baselineVersion
             upgraded_version                    = $upgradedVersion
             autostart_preserved_across_upgrade  = $true
+            autostart_value_after_upgrade       = $picoRunAfterUpgrade
             autostart_preserved_on_update_hook  = $true
+            autostart_value_after_update_hook   = $picoRunAfterUpdateHook
             user_db_preserved_across_upgrade    = $true
         }
     }
