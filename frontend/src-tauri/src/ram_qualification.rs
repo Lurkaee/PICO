@@ -10,7 +10,7 @@ mod tests {
     #[test]
     fn test_ram_qualification_process_tree_memory_sampling() {
         let mut config = resolve_backend_launch_config().expect("Config resolution must succeed");
-        let test_port: u16 = 8993;
+        let test_port: u16 = 9005;
         config.bind_port = test_port;
         for i in 0..config.args.len() {
             if config.args[i] == "--port" && i + 1 < config.args.len() {
@@ -91,6 +91,13 @@ mod tests {
         let valid_code = String::from_utf8_lossy(&mint_output.stdout)
             .trim()
             .to_string();
+        assert!(
+            mint_output.status.success() && valid_code.len() == 6,
+            "Failed to mint pairing code (status={:?}, stdout='{}', stderr='{}')",
+            mint_output.status,
+            valid_code,
+            String::from_utf8_lossy(&mint_output.stderr)
+        );
         let session_store = OperatorSessionStore::new();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
