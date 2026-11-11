@@ -1,14 +1,15 @@
-"""Stage PICO Core and pinned embeddable CPython 3.12 runtime for Windows NSIS bundling.
+"""Stage PICO Core and pinned embeddable CPython 3.13 runtime for Windows NSIS bundling.
 
 This script deterministically builds ``frontend/src-tauri/staged/{core,python}``:
-1. Downloads official CPython 3.12.10 x64 embeddable runtime and verifies SHA-256.
-2. Installs pinned runtime dependencies from ``requirements.txt`` (excluding dev-only
-   test tooling such as ``pytest``) into ``staged/python/Lib/site-packages`` using
-   binary wheels targeting CPython 3.12 ``win_amd64``.
-3. Configures isolated ``python312._pth`` to load stdlib, site-packages, and ``..\\core``.
+1. Downloads official CPython 3.13.17 x64 embeddable runtime and verifies SHA-256.
+2. Installs hash-locked direct and transitive runtime wheels from
+   ``tools/packaging/requirements-windows-runtime.lock`` (excluding dev-only test tooling
+   such as ``pytest``) into ``staged/python/Lib/site-packages`` using ``--require-hashes``
+   and ``--only-binary=:all:`` targeting CPython 3.13 ``win_amd64``.
+3. Configures isolated ``python313._pth`` to load stdlib, site-packages, and ``..\\core``.
 4. Copies minimal PICO Core runtime files (``pico/``, ``alembic/``, ``alembic.ini``,
    ``pyproject.toml``) into ``staged/core`` without caches, tests, secrets, or databases.
-5. Verifies payload hygiene and executes real import/App checks using ``staged/python/python.exe``.
+5. Verifies payload hygiene and executes real import/App/health checks using ``staged/python/python.exe``.
 """
 
 from __future__ import annotations
@@ -25,19 +26,22 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-PYTHON_VERSION = "3.12.10"
+PYTHON_VERSION = "3.13.17"
+PYTHON_MAJOR_MINOR = "3.13"
+PYTHON_ABI = "cp313"
+TARGET_PLATFORM = "win_amd64"
 EMBED_FILENAME = f"python-{PYTHON_VERSION}-embed-amd64.zip"
 EMBED_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/{EMBED_FILENAME}"
 # Official SHA-256 extracted from CPython release Sigstore bundle:
-# https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip.sigstore
-EMBED_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
+# https://www.python.org/ftp/python/3.13.17/python-3.13.17-embed-amd64.zip.sigstore
+EMBED_SHA256 = "9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38"
 
 DEV_ONLY_PACKAGES = frozenset({"pytest"})
 
 REQUIRED_EMBED_FILES = (
     "python.exe",
-    "python312.dll",
-    "python312.zip",
+    "python313.dll",
+    "python313.zip",
     "vcruntime140.dll",
     "vcruntime140_1.dll",
 )
@@ -78,6 +82,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest().lower()
 
 
+def _canonical_pkg_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
 def load_runtime_requirements(requirements_path: Path) -> list[str]:
     """Parse pinned requirements.txt entries and exclude dev/test-only packages."""
     if not requirements_path.is_file():
@@ -96,6 +104,60 @@ def load_runtime_requirements(requirements_path: Path) -> list[str]:
     if not runtime_specs:
         raise ValueError(f"No runtime dependencies resolved from {requirements_path}")
     return runtime_specs
+
+
+def load_locked_runtime_requirements(
+    lockfile_path: Path,
+    requirements_path: Path | None = None,
+) -> list[str]:
+    """Parse hash-locked runtime wheel entries and verify alignment with direct runtime specs."""
+    if not lockfile_path.is_file():
+        raise FileNotFoundError(f"Windows runtime lockfile not found: {lockfile_path}")
+
+    locked_entries: list[str] = []
+    locked_map: dict[str, str] = {}
+    for line_no, raw_line in enumerate(lockfile_path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "--hash=sha256:" not in line or "==" not in line:
+            raise ValueError(
+                f"Invalid hash-locked entry in {lockfile_path} line {line_no}: {line}"
+            )
+        spec_part, hash_part = line.split("--hash=sha256:", 1)
+        spec = spec_part.strip()
+        digest = hash_part.strip().lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError(
+                f"Invalid SHA-256 digest in {lockfile_path} line {line_no}: {digest}"
+            )
+        pkg_raw, version = spec.split("==", 1)
+        pkg_norm = _canonical_pkg_name(pkg_raw)
+        if pkg_norm in DEV_ONLY_PACKAGES:
+            raise ValueError(
+                f"Forbidden dev package '{pkg_raw}' present in {lockfile_path} line {line_no}"
+            )
+        locked_entries.append(f"{pkg_norm}=={version.strip()}")
+        locked_map[pkg_norm] = version.strip()
+
+    if not locked_entries:
+        raise ValueError(f"No locked dependencies found in {lockfile_path}")
+
+    if requirements_path is not None:
+        direct_specs = load_runtime_requirements(requirements_path)
+        for direct in direct_specs:
+            if "==" not in direct:
+                raise ValueError(f"Direct runtime spec '{direct}' in {requirements_path} is not pinned")
+            pkg_raw, ver = direct.split("==", 1)
+            pkg_norm = _canonical_pkg_name(pkg_raw)
+            locked_ver = locked_map.get(pkg_norm)
+            if locked_ver != ver.strip():
+                raise ValueError(
+                    f"Lockfile {lockfile_path} out of sync with {requirements_path} for '{pkg_raw}': "
+                    f"requirements has {ver.strip()}, lockfile has {locked_ver}"
+                )
+
+    return locked_entries
 
 
 def ensure_verified_embed_zip(cache_dir: Path) -> Path:
@@ -126,8 +188,8 @@ def ensure_verified_embed_zip(cache_dir: Path) -> Path:
     return archive_path
 
 
-def stage_python_runtime(archive_path: Path, python_dir: Path, runtime_specs: list[str]) -> None:
-    """Extract embeddable CPython 3.12, install runtime wheels, and write python312._pth."""
+def stage_python_runtime(archive_path: Path, python_dir: Path, lockfile_path: Path) -> None:
+    """Extract embeddable CPython 3.13, install hash-locked runtime wheels, and write python313._pth."""
     python_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive_path, "r") as zf:
         zf.extractall(python_dir)
@@ -147,20 +209,23 @@ def stage_python_runtime(archive_path: Path, python_dir: Path, runtime_specs: li
         "--no-input",
         "--disable-pip-version-check",
         "--no-compile",
+        "--require-hashes",
+        "--no-deps",
         "--python-version",
-        "3.12",
+        PYTHON_MAJOR_MINOR,
         "--platform",
-        "win_amd64",
+        TARGET_PLATFORM,
         "--implementation",
         "cp",
         "--abi",
-        "cp312",
+        PYTHON_ABI,
         "--only-binary=:all:",
         "--target",
         str(site_packages),
-        *runtime_specs,
+        "-r",
+        str(lockfile_path),
     ]
-    print("Installing runtime dependencies into staged Lib/site-packages ...")
+    print(f"Installing hash-locked CPython {PYTHON_VERSION} runtime dependencies ...")
     subprocess.run(pip_cmd, check=True)
 
     # Remove bytecode caches or bin wrappers accidentally created in site-packages
@@ -169,10 +234,10 @@ def stage_python_runtime(archive_path: Path, python_dir: Path, runtime_specs: li
     for pyc in site_packages.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
 
-    pth_path = python_dir / "python312._pth"
+    pth_path = python_dir / "python313._pth"
     pth_content = "\n".join(
         [
-            "python312.zip",
+            "python313.zip",
             ".",
             "Lib\\site-packages",
             "..\\core",
@@ -267,15 +332,15 @@ def verify_payload_hygiene(core_dir: Path, python_dir: Path) -> tuple[int, int, 
 
 
 def verify_staged_python_imports(core_dir: Path, python_dir: Path) -> None:
-    """Verify staged embeddable python.exe boots, isolates dev packages, and imports pico.main."""
+    """Verify staged embeddable python.exe boots, isolates dev packages, and serves pico.main."""
     python_exe = python_dir / "python.exe"
     with tempfile.TemporaryDirectory(prefix="pico_stage_db_") as tmp_dir:
         db_path = Path(tmp_dir) / "stage_verify.db"
         db_url = f"sqlite:///{db_path.as_posix()}"
 
         probe_code = (
-            "import importlib, sys; "
-            "assert sys.version_info[:2] == (3, 12), sys.version_info; "
+            "import asyncio, importlib, sys; "
+            "assert sys.version_info[:2] == (3, 13), sys.version_info; "
             "mods = ['fastapi', 'uvicorn', 'pydantic', 'pydantic_settings', "
             "'sqlalchemy', 'alembic', 'httpx', 'anyio', 'pico.main']; "
             "[importlib.import_module(m) for m in mods]; "
@@ -285,8 +350,17 @@ def verify_staged_python_imports(core_dir: Path, python_dir: Path) -> None:
             "except ModuleNotFoundError:\n"
             "    blocked = True\n"
             "assert blocked, 'pytest unexpectedly importable in staged runtime'; "
-            "from pico.main import app; "
-            "assert app.title, 'FastAPI app title missing'; "
+            "import httpx\n"
+            "from pico.main import app\n"
+            "assert app.title, 'FastAPI app title missing'\n"
+            "async def _check_asgi():\n"
+            "    async with app.router.lifespan_context(app):\n"
+            "        transport = httpx.ASGITransport(app=app)\n"
+            "        async with httpx.AsyncClient(transport=transport, base_url='http://127.0.0.1') as client:\n"
+            "            r = await client.get('/health')\n"
+            "            assert r.status_code == 200, r.text\n"
+            "asyncio.run(_check_asgi())\n"
+            "assert __import__('pathlib').Path(sys.argv[1]).is_file(), 'DB not created'\n"
             "print('STAGED_IMPORT_OK', sys.version.split()[0], app.title)"
         )
 
@@ -299,7 +373,7 @@ def verify_staged_python_imports(core_dir: Path, python_dir: Path) -> None:
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         proc = subprocess.run(
-            [str(python_exe), "-B", "-c", probe_code],
+            [str(python_exe), "-B", "-c", probe_code, str(db_path)],
             cwd=str(core_dir),
             env=clean_env,
             capture_output=True,
@@ -358,9 +432,10 @@ def main() -> int:
     shutil.rmtree(core_dir, ignore_errors=True)
     shutil.rmtree(python_dir, ignore_errors=True)
 
-    runtime_specs = load_runtime_requirements(repo_root / "requirements.txt")
+    lockfile_path = repo_root / "tools" / "packaging" / "requirements-windows-runtime.lock"
+    locked_specs = load_locked_runtime_requirements(lockfile_path, repo_root / "requirements.txt")
     archive_path = ensure_verified_embed_zip(cache_dir)
-    stage_python_runtime(archive_path, python_dir, runtime_specs)
+    stage_python_runtime(archive_path, python_dir, lockfile_path)
     stage_core_payload(repo_root, core_dir)
     core_files, python_files, total_bytes = verify_payload_hygiene(core_dir, python_dir)
 
@@ -369,9 +444,14 @@ def main() -> int:
 
     manifest = {
         "python_version": PYTHON_VERSION,
+        "target_platform": TARGET_PLATFORM,
+        "target_abi": PYTHON_ABI,
         "embed_archive": EMBED_FILENAME,
         "embed_sha256": EMBED_SHA256,
-        "runtime_requirements": runtime_specs,
+        "runtime_lockfile": lockfile_path.relative_to(repo_root).as_posix(),
+        "runtime_lockfile_sha256": sha256_file(lockfile_path),
+        "runtime_requirements": locked_specs,
+        "locked_wheel_count": len(locked_specs),
         "excluded_dev_packages": sorted(DEV_ONLY_PACKAGES),
         "core_file_count": core_files,
         "python_file_count": python_files,

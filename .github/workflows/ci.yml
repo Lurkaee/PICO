@@ -145,7 +145,7 @@ jobs:
       - name: Set up Python for native backend supervision
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: "pip"
 
       - name: Create Python virtual environment
@@ -210,10 +210,10 @@ jobs:
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Set up Python 3.12 for runtime staging
+      - name: Set up Python 3.13 for runtime staging
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: "pip"
 
       - name: Verify or install NSIS toolchain
@@ -232,16 +232,56 @@ jobs:
           }
           & "$nsisDir\makensis.exe" /VERSION
 
-      - name: Stage embeddable CPython 3.12 and Core runtime payload
+      - name: Stage embeddable CPython 3.13 and Core runtime payload
         run: python tools/packaging/stage_windows_bundle.py
 
-      - name: Build unsigned Windows NSIS installer
+      - name: Build unsigned Windows NSIS installer (0.1.0)
         working-directory: frontend
         run: pnpm exec tauri build --bundles nsis
 
-      - name: Qualify installed PICO NSIS package (clean install, runtime, RAM, uninstall)
+      - name: Build ephemeral 0.1.1 NSIS upgrade installer and qualify 0.1.0 -> 0.1.1 lifecycle
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/packaging/qualify_windows_installer.ps1
+        run: |
+          $ErrorActionPreference = "Stop"
+          $confPath = "frontend/src-tauri/tauri.conf.json"
+          $originalConf = Get-Content -Path $confPath -Raw -Encoding UTF8
+          $v010Installer = (Get-ChildItem -Path "frontend/src-tauri/target/release/bundle/nsis" -Filter "PICO_0.1.0_*setup.exe" | Select-Object -First 1).FullName
+          if (-not $v010Installer) {
+            throw "Expected PICO_0.1.0 NSIS installer not found after baseline build"
+          }
+          $v011TempDir = Join-Path $env:RUNNER_TEMP "pico-upgrade-test"
+          New-Item -ItemType Directory -Path $v011TempDir -Force | Out-Null
+          $v011Copy = Join-Path $v011TempDir "PICO_0.1.1_x64-setup.exe"
+          try {
+            python -c "import json, pathlib; p = pathlib.Path(r'frontend/src-tauri/tauri.conf.json'); d = json.loads(p.read_text('utf-8')); d['version'] = '0.1.1'; p.write_text(json.dumps(d, indent=2) + '\n', 'utf-8')"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed setting temporary 0.1.1 version in tauri.conf.json"
+            }
+
+            Push-Location frontend
+            try {
+              pnpm exec tauri build --bundles nsis
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed building ephemeral 0.1.1 NSIS upgrade installer (exit $LASTEXITCODE)"
+              }
+            } finally {
+              Pop-Location
+            }
+            $built011 = Get-ChildItem -Path "frontend/src-tauri/target/release/bundle/nsis" -Filter "PICO_0.1.1_*setup.exe" | Select-Object -First 1
+            if (-not $built011) {
+              throw "Expected ephemeral PICO_0.1.1 NSIS installer not found"
+            }
+            Move-Item -Path $built011.FullName -Destination $v011Copy -Force
+          } finally {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText((Resolve-Path $confPath).Path, $originalConf, $utf8NoBom)
+          }
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/packaging/qualify_windows_installer.ps1 `
+            -InstallerPath $v010Installer `
+            -UpgradeInstallerPath $v011Copy `
+            -IdleWindowSeconds 60 `
+            -IdleSampleIntervalSeconds 10
 
       - name: Upload NSIS installer and qualification artifacts
         if: always()
@@ -250,6 +290,6 @@ jobs:
           name: pico-windows-nsis-installer
           if-no-files-found: warn
           path: |
-            frontend/src-tauri/target/release/bundle/nsis/*-setup.exe
+            frontend/src-tauri/target/release/bundle/nsis/PICO_0.1.0_*-setup.exe
             frontend/src-tauri/staged/staging-manifest.json
             frontend/src-tauri/staged/installer-qualification-report.json
