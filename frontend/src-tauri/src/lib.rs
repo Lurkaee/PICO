@@ -8,6 +8,7 @@ use tauri::{
 };
 
 pub mod autostart;
+pub mod companion_render;
 #[cfg(test)]
 pub mod ram_qualification;
 pub mod single_instance;
@@ -497,6 +498,32 @@ fn open_or_focus_command_center(app: &tauri::AppHandle) {
     }
 }
 
+fn sync_supervision_status_ui(
+    app: &tauri::AppHandle,
+    status_item: &tauri::menu::MenuItem<tauri::Wry>,
+    next_status: &BackendSupervisionStatus,
+) {
+    let label = match next_status {
+        BackendSupervisionStatus::Unmanaged => "Status: Unmanaged".to_string(),
+        BackendSupervisionStatus::Starting => "Status: Starting...".to_string(),
+        BackendSupervisionStatus::Verifying { pid } => {
+            format!("Status: Verifying (PID: {})", pid)
+        }
+        BackendSupervisionStatus::Online { pid } => format!("Status: Online (PID: {})", pid),
+        BackendSupervisionStatus::Offline { reason } => format!("Status: Offline ({})", reason),
+    };
+
+    if let Some(state) = app.try_state::<SupervisorState>() {
+        if let Ok(mut status_guard) = state.status.lock() {
+            *status_guard = next_status.clone();
+        }
+    }
+    let _ = status_item.set_text(&label);
+    if let Some(coord) = app.try_state::<companion_render::CompanionRenderCoordinator>() {
+        coord.update_status(next_status, label);
+    }
+}
+
 pub fn run() {
     // Single instance enforcement: acquire named mutex
     let single_instance_guard = match single_instance::SingleInstanceGuard::acquire() {
@@ -515,6 +542,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(SupervisorState::new())
         .manage(window_lifecycle::CommandCenterLifecycle::new())
+        .manage(companion_render::CompanionRenderCoordinator::new(
+            BackendSupervisionStatus::Unmanaged,
+            "Status: Starting...".to_string(),
+        ))
         .invoke_handler(tauri::generate_handler![
             pico_get_system_status,
             pico_pair_operator,
@@ -523,14 +554,19 @@ pub fn run() {
         ])
         .setup(|app| {
             // 1. Initial state transition: Unmanaged -> Starting
+            let initial_status = BackendSupervisionStatus::Starting;
+            let initial_status_text = "Status: Starting...".to_string();
             if let Some(state) = app.try_state::<SupervisorState>() {
                 if let Ok(mut status_guard) = state.status.lock() {
-                    *status_guard = BackendSupervisionStatus::Starting;
+                    *status_guard = initial_status.clone();
                 }
             }
+            if let Some(coord) = app.try_state::<companion_render::CompanionRenderCoordinator>() {
+                coord.update_status(&initial_status, initial_status_text.clone());
+            }
 
-            // 1b. Create the Native Companion Window (Zero WebView2 at startup)
-            let _companion_win = tauri::window::WindowBuilder::new(app, "companion")
+            // 1b. Create the Native Companion Window (Zero WebView2 at startup) and attach GDI+ eyes
+            let companion_win = tauri::window::WindowBuilder::new(app, "companion")
                 .title("PICO Companion")
                 .inner_size(240.0, 120.0)
                 .resizable(false)
@@ -539,68 +575,16 @@ pub fn run() {
                 .visible(true)
                 .build()?;
 
-            // 2. Resolve trusted launch configuration
-            let launch_config_res = resolve_backend_launch_config();
-
-            // 3. Attempt spawn & handshake verification: Starting -> Verifying -> Online (or Offline)
-            let supervision_outcome: Result<(supervisor::ManagedChild, u32), String> =
-                match &launch_config_res {
-                    Ok(config) => match config.spawn() {
-                        Ok(mut child) => {
-                            let pid = child.pid;
-                            if let Some(state) = app.try_state::<SupervisorState>() {
-                                if let Ok(mut status_guard) = state.status.lock() {
-                                    *status_guard = BackendSupervisionStatus::Verifying { pid };
-                                }
-                            }
-
-                            match child.wait_and_verify(
-                                config.bind_port,
-                                std::time::Duration::from_secs(15),
-                            ) {
-                                Ok(()) => Ok((child, pid)),
-                                Err(verify_err) => {
-                                    Err(format!("Startup verification failed: {}", verify_err))
-                                }
-                            }
-                        }
-                        Err(spawn_err) => Err(format!("Process spawn failed: {}", spawn_err)),
-                    },
-                    Err(config_err) => {
-                        Err(format!("Configuration resolution failed: {}", config_err))
-                    }
-                };
-
-            let initial_status_text = match &supervision_outcome {
-                Ok((_, pid)) => format!("Status: Online (PID: {})", pid),
-                Err(reason) => format!("Status: Offline ({})", reason),
-            };
-
-            // Update supervisor state with verified outcome
-            if let Some(state) = app.try_state::<SupervisorState>() {
-                if let Ok(config) = &launch_config_res {
-                    if let Ok(mut port_guard) = state.bind_port.lock() {
-                        *port_guard = config.bind_port;
-                    }
-                }
-                match supervision_outcome {
-                    Ok((child, pid)) => {
-                        if let Ok(mut status_guard) = state.status.lock() {
-                            *status_guard = BackendSupervisionStatus::Online { pid };
-                        }
-                        if let Ok(mut child_guard) = state.child.lock() {
-                            *child_guard = Some(child);
-                        }
-                    }
-                    Err(reason) => {
-                        if let Ok(mut status_guard) = state.status.lock() {
-                            *status_guard = BackendSupervisionStatus::Offline { reason };
-                        }
-                    }
-                }
+            if let Some(coord) = app.try_state::<companion_render::CompanionRenderCoordinator>() {
+                companion_render::attach_companion_renderer(
+                    &companion_win,
+                    app.handle().clone(),
+                    &coord,
+                )
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             }
 
-            // 4. Build system tray menu items per ADR 0001
+            // 2. Build system tray menu items per ADR 0001
             let status_item =
                 MenuItemBuilder::with_id(TrayAction::Status.id(), &initial_status_text)
                     .enabled(TrayAction::Status.is_enabled())
@@ -636,8 +620,9 @@ pub fn run() {
                 .item(&quit_item)
                 .build()?;
 
-            // 5. Spawn background watcher thread to detect runtime backend termination
-            // Dynamically updates system tray status and terminates cleanly on application exit.
+            // 3. Run Core startup, verification, and ongoing liveness supervision on a managed
+            // background thread so the native companion HWND paints real Starting -> Verifying ->
+            // Online/Offline transitions immediately without blocking the UI pump.
             let app_handle = app.handle().clone();
             let status_item_watcher = status_item.clone();
             let shutdown_flag_watcher = if let Some(state) = app.try_state::<SupervisorState>() {
@@ -647,6 +632,69 @@ pub fn run() {
             };
 
             let watcher_thread = std::thread::spawn(move || {
+                let launch_config_res = resolve_backend_launch_config();
+                if let Some(state) = app_handle.try_state::<SupervisorState>() {
+                    if let Ok(config) = &launch_config_res {
+                        if let Ok(mut port_guard) = state.bind_port.lock() {
+                            *port_guard = config.bind_port;
+                        }
+                    }
+                }
+
+                let supervision_outcome: Result<(supervisor::ManagedChild, u32), String> =
+                    match &launch_config_res {
+                        Ok(config) => match config.spawn() {
+                            Ok(mut child) => {
+                                let pid = child.pid;
+                                sync_supervision_status_ui(
+                                    &app_handle,
+                                    &status_item_watcher,
+                                    &BackendSupervisionStatus::Verifying { pid },
+                                );
+
+                                match child.wait_and_verify(
+                                    config.bind_port,
+                                    std::time::Duration::from_secs(15),
+                                ) {
+                                    Ok(()) => Ok((child, pid)),
+                                    Err(verify_err) => {
+                                        let _ = child.terminate();
+                                        Err(format!("Startup verification failed: {}", verify_err))
+                                    }
+                                }
+                            }
+                            Err(spawn_err) => Err(format!("Process spawn failed: {}", spawn_err)),
+                        },
+                        Err(config_err) => {
+                            Err(format!("Configuration resolution failed: {}", config_err))
+                        }
+                    };
+
+                if shutdown_flag_watcher.load(Ordering::Relaxed) {
+                    if let Ok((mut child, _)) = supervision_outcome {
+                        let _ = child.terminate();
+                    }
+                    return;
+                }
+
+                let mut last_status = match supervision_outcome {
+                    Ok((child, pid)) => {
+                        if let Some(state) = app_handle.try_state::<SupervisorState>() {
+                            if let Ok(mut child_guard) = state.child.lock() {
+                                *child_guard = Some(child);
+                            }
+                        }
+                        let next = BackendSupervisionStatus::Online { pid };
+                        sync_supervision_status_ui(&app_handle, &status_item_watcher, &next);
+                        next
+                    }
+                    Err(reason) => {
+                        let next = BackendSupervisionStatus::Offline { reason };
+                        sync_supervision_status_ui(&app_handle, &status_item_watcher, &next);
+                        next
+                    }
+                };
+
                 while !shutdown_flag_watcher.load(Ordering::Relaxed) {
                     std::thread::sleep(std::time::Duration::from_millis(250));
                     if shutdown_flag_watcher.load(Ordering::Relaxed) {
@@ -654,9 +702,9 @@ pub fn run() {
                     }
                     if let Some(state) = app_handle.try_state::<SupervisorState>() {
                         let status = state.check_liveness();
-                        if let BackendSupervisionStatus::Offline { ref reason } = status {
-                            let _ = status_item_watcher
-                                .set_text(format!("Status: Offline ({})", reason));
+                        if status != last_status {
+                            sync_supervision_status_ui(&app_handle, &status_item_watcher, &status);
+                            last_status = status;
                         }
                     }
                 }
@@ -679,7 +727,9 @@ pub fn run() {
                                 open_or_focus_command_center(app);
                             }
                             MenuDispatchEffect::Exit(code) => {
-                                if let Some(lc) = app.try_state::<window_lifecycle::CommandCenterLifecycle>() {
+                                if let Some(lc) =
+                                    app.try_state::<window_lifecycle::CommandCenterLifecycle>()
+                                {
                                     lc.mark_shutting_down();
                                 }
                                 if let Some(state) = app.try_state::<SupervisorState>() {
@@ -740,7 +790,9 @@ pub fn run() {
                         // Prevent synchronous blocking destroy inside callback; dispatch cleanly
                         api.prevent_close();
                         let app = window.app_handle();
-                        if let Some(lc) = app.try_state::<window_lifecycle::CommandCenterLifecycle>() {
+                        if let Some(lc) =
+                            app.try_state::<window_lifecycle::CommandCenterLifecycle>()
+                        {
                             lc.request_close(app);
                         }
                     } else {
@@ -757,7 +809,9 @@ pub fn run() {
                 WindowEvent::Destroyed => {
                     if window.label() == "main" {
                         let app = window.app_handle();
-                        if let Some(lc) = app.try_state::<window_lifecycle::CommandCenterLifecycle>() {
+                        if let Some(lc) =
+                            app.try_state::<window_lifecycle::CommandCenterLifecycle>()
+                        {
                             lc.on_destroyed(app);
                         }
                     }
@@ -1068,8 +1122,14 @@ mod tests {
             config_res.err()
         );
         let config = config_res.unwrap();
-        assert_eq!(config.working_dir, std::fs::canonicalize(&core_dir).unwrap());
-        assert_eq!(config.executable, std::fs::canonicalize(&mock_python).unwrap());
+        assert_eq!(
+            config.working_dir,
+            std::fs::canonicalize(&core_dir).unwrap()
+        );
+        assert_eq!(
+            config.executable,
+            std::fs::canonicalize(&mock_python).unwrap()
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

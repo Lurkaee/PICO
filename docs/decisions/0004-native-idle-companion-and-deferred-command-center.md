@@ -144,3 +144,18 @@ Chromium's mandatory multi-process architecture on Windows 11 allocates ~300 MiB
 - **Negative / Complexity**:
   - Requires implementing a small native Win32/Direct2D window procedure in Rust for the compact eye widget.
   - Requires managing dynamic window lifecycle in Tauri 2 without restarting the supervisor or Python Core.
+
+---
+
+## 7. Measured Implementation Evidence (P11.2.4.1C & P11.2.4.1D)
+
+- **Native Renderer**: Double-buffered Windows GDI+ (`gdiplus.dll`) vector eyes rendered onto the Tauri-managed 240×120 companion HWND via `SetWindowSubclass` / `DefSubclassProc` / `RemoveWindowSubclass` with RAII resource management (`companion_render.rs`). Zero Chromium, Canvas, or WebGL at idle.
+- **Measured Release Idle Footprint (`PICO.exe`, 3s–4s steady & blink-window samples)**:
+  - **Working Set**: `32.52 MiB` (`< 100 MiB` ADR 0001 limit)
+  - **Private Working Set**: `4.95–4.96 MiB`
+  - **Private Bytes**: `6.43–6.46 MiB`
+  - **CPU Usage**: `0.00%` system CPU (`0 ms` delta across 3s steady idle); `0.26%` (`125 ms` delta across 4s window containing blink/paint activity)
+  - **WebView2 Processes (Idle / Post-Close)**: `0`
+- **Deferred Command Center Lifecycle**:
+  - Dedicated non-UI-thread `WebviewWindowBuilder::build()` / `destroy()` (`CommandCenterLifecycle`) spawns `6` `msedgewebview2.exe` processes when open and returns cleanly to `0` on close while preserving Python Core PIDs and native companion eyes.
+- **ADR 0004 Status**: Remains `Proposed` pending P11.2.4.2 packaging/installer completion and formal milestone acceptance.
