@@ -344,9 +344,24 @@ function Invoke-InstalledCompanionCheck {
             throw "SQLite database unexpectedly written inside packaged resources/core directory"
         }
 
-        $dbCheckOut = & $BundledPython -B -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); chk = c.execute('PRAGMA integrity_check').fetchone()[0]; tables = len(c.execute(""SELECT name FROM sqlite_master WHERE type='table'"").fetchall()); print(f'{chk}|{tables}')" $userDbPath
-        if ($LASTEXITCODE -ne 0 -or -not ($dbCheckOut -like "ok|*")) {
-            throw "SQLite integrity_check failed for $userDbPath ($dbCheckOut)"
+        $dbCheckScript = Join-Path ([System.IO.Path]::GetTempPath()) ("pico_db_check_" + [guid]::NewGuid().ToString("N") + ".py")
+        $dbPyCode = @(
+            "import sqlite3, sys"
+            "conn = sqlite3.connect(sys.argv[1])"
+            "chk = conn.execute('PRAGMA integrity_check').fetchone()[0]"
+            "tables = len(conn.execute('SELECT name FROM sqlite_master WHERE type = ?', ('table',)).fetchall())"
+            "conn.close()"
+            "print(f'{chk}|{tables}')"
+        ) -join "`n"
+        [System.IO.File]::WriteAllText($dbCheckScript, $dbPyCode, (New-Object System.Text.UTF8Encoding($false)))
+        try {
+            $dbCheckOut = (& $BundledPython -B $dbCheckScript $userDbPath 2>&1) -join "`n"
+            $dbExit = $LASTEXITCODE
+        } finally {
+            Remove-Item -Path $dbCheckScript -Force -ErrorAction SilentlyContinue
+        }
+        if ($dbExit -ne 0 -or -not ($dbCheckOut -match "^ok\|\d+")) {
+            throw "SQLite integrity_check failed for $userDbPath (exit=${dbExit}, out='${dbCheckOut}')"
         }
 
         $wsValues = @($samples | ForEach-Object { [double]$_.companion_working_set_mib })
