@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Activity, Cpu, Eye, Wrench, RefreshCw, AlertCircle, CheckCircle, Clock } from 'lucide-react';
+import { Activity, Cpu, Eye, Wrench, RefreshCw, AlertCircle, CheckCircle, Clock, Power } from 'lucide-react';
+import { isTauri } from '@tauri-apps/api/core';
 import { api } from '../../api/client';
 import { PerceptionStatus, SchedulerMetrics, SystemHealth, ToolCapability } from '../../types';
 import { useConnectivity } from '../../context/ConnectivityContext';
@@ -20,17 +21,38 @@ export const SystemStatus: React.FC = () => {
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
+  const [autoStartStatus, setAutoStartStatus] = useState<{
+    enabled: boolean;
+    executable_path: string | null;
+    matches_current_exe: boolean;
+  } | null>(null);
+  const [updatingAutoStart, setUpdatingAutoStart] = useState(false);
+
+  const toggleAutoStart = async () => {
+    if (!autoStartStatus || updatingAutoStart) return;
+    setUpdatingAutoStart(true);
+    try {
+      const nextEnabled = !autoStartStatus.enabled;
+      const res = await api.setAutoStart(nextEnabled);
+      setAutoStartStatus(res);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdatingAutoStart(false);
+    }
+  };
 
   const fetchDiagnostics = async () => {
     setLoading(true);
     setErrorNotice(null);
     try {
-      const [h, sStatus, sMetrics, pStatus, caps] = await Promise.allSettled([
+      const [h, sStatus, sMetrics, pStatus, caps, aStatus] = await Promise.allSettled([
         api.getHealth(),
         api.getSchedulerStatus(),
         api.getSchedulerMetrics(),
         api.getPerceptionStatus(),
         api.listCapabilities(),
+        api.getAutoStartStatus(),
       ]);
 
       let anySuccess = false;
@@ -52,6 +74,10 @@ export const SystemStatus: React.FC = () => {
       }
       if (caps.status === 'fulfilled') {
         setCapabilities(caps.value);
+        anySuccess = true;
+      }
+      if (aStatus.status === 'fulfilled') {
+        setAutoStartStatus(aStatus.value);
         anySuccess = true;
       }
 
@@ -183,7 +209,45 @@ export const SystemStatus: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 4: Registered Tool Capabilities */}
+        {/* Card 4: Windows Desktop Shell & Auto-Start */}
+        {isTauri() && (
+          <div className="card">
+            <div className="card-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Power style={{ color: 'var(--primary)', width: 18, height: 18 }} />
+                <h3 style={{ fontSize: '0.95rem' }}>Windows Desktop Integration</h3>
+              </div>
+              <span style={{ fontSize: '0.75rem', color: autoStartStatus?.enabled ? 'var(--success)' : 'var(--text-muted)' }}>
+                {autoStartStatus?.enabled ? 'Auto-Start On' : 'Auto-Start Off'}
+              </span>
+            </div>
+            <div style={{ fontSize: '0.825rem', display: 'flex', flexDirection: 'column', gap: 8, color: 'var(--text-secondary)' }}>
+              <div>Integration: <strong style={{ color: 'var(--text-primary)' }}>Native Windows Shell (HKCU Run)</strong></div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+                <span>Launch on Windows startup:</span>
+                <button
+                  className={`btn ${autoStartStatus?.enabled ? 'btn-danger' : 'btn-secondary'}`}
+                  style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                  onClick={toggleAutoStart}
+                  disabled={updatingAutoStart}
+                >
+                  {updatingAutoStart
+                    ? 'Updating...'
+                    : autoStartStatus?.enabled
+                    ? 'Disable Startup'
+                    : 'Enable Startup'}
+                </button>
+              </div>
+              {autoStartStatus?.executable_path && (
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                  Registered: {autoStartStatus.executable_path}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Card 5: Registered Tool Capabilities */}
         <div className="card" style={{ gridColumn: '1 / -1' }}>
           <div className="card-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

@@ -233,5 +233,20 @@ describe('P11.2.2.2 Slice 1B Native Tauri Command Integration & Explicit Profile
       const pkgJson = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
       expect(pkgJson.scripts['build']).toContain('--mode packaged-production');
     });
+
+    it('14. request rejects text/html SPA fallback responses instead of returning {} to array callers', async () => {
+      vi.stubEnv('VITE_PICO_PROFILE', 'packaged-production');
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+        json: async () => ({}),
+      } as unknown as Response);
+
+      await expect(api.listConversations()).rejects.toThrow(
+        'Unexpected HTML response for API route /api/conversations'
+      );
+    });
   });
 });

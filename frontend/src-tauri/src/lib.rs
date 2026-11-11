@@ -7,7 +7,13 @@ use tauri::{
     Manager, WindowEvent,
 };
 
+pub mod autostart;
+pub mod companion_render;
+#[cfg(test)]
+pub mod ram_qualification;
+pub mod single_instance;
 pub mod supervisor;
+pub mod window_lifecycle;
 
 /// Status of PICO Core backend process supervision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,10 +124,32 @@ impl Default for SupervisorState {
 
 /// Resolves the trusted PICO workspace root directory.
 ///
+/// In packaged installations, detects whether the executable is running from an installed
+/// bundle with adjacent `resources\core` or dedicated bundle directory.
 /// In development mode, resolves the repository root via explicit trusted environment
 /// variable `PICO_WORKSPACE_ROOT` or compile-time manifest location (`CARGO_MANIFEST_DIR`).
 /// Arbitrary process current working directories (`current_dir`) are NEVER used as trust anchors.
 pub fn resolve_trusted_project_root() -> Result<PathBuf, String> {
+    // 1. Packaged installation check: inspect executable directory for resources\core
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let packaged_core = exe_dir.join("resources").join("core");
+            if packaged_core.is_dir() && packaged_core.join("pico").join("main.py").is_file() {
+                if let Ok(canonical) = std::fs::canonicalize(&packaged_core) {
+                    return Ok(canonical);
+                }
+            }
+            // Check direct adjacent core directory
+            let direct_core = exe_dir.join("core");
+            if direct_core.is_dir() && direct_core.join("pico").join("main.py").is_file() {
+                if let Ok(canonical) = std::fs::canonicalize(&direct_core) {
+                    return Ok(canonical);
+                }
+            }
+        }
+    }
+
+    // 2. Explicit environment variable PICO_WORKSPACE_ROOT
     let candidate = if let Ok(env_root) = std::env::var("PICO_WORKSPACE_ROOT") {
         PathBuf::from(env_root)
     } else {
@@ -160,27 +188,72 @@ pub fn resolve_trusted_project_root() -> Result<PathBuf, String> {
 
 /// Resolves the launch configuration from an explicitly trusted project root.
 ///
-/// Fails closed if the dedicated virtualenv interpreter is not present.
-/// Does NOT fall back to unmanaged PATH 'python'.
+/// In packaged installations, searches for bundled Python runtime in `resources\python\python.exe`
+/// or `<root>\python.exe` or adjacent virtualenv.
+/// In development installations, resolves `<root>/.venv/Scripts/python.exe`.
+/// Fails closed if no verified interpreter is present. Refuses unmanaged PATH fallback.
 pub fn resolve_backend_launch_config_from_root(
     project_root: &Path,
 ) -> Result<supervisor::LaunchConfig, String> {
     let canonical_root = std::fs::canonicalize(project_root)
         .map_err(|e| format!("Failed to canonicalize project root: {}", e))?;
 
+    // Candidate 1: Packaged bundled Python runtime inside project_root
+    let bundled_in_root = canonical_root.join("python").join("python.exe");
+    let bundled_in_root_direct = canonical_root.join("python.exe");
+
+    // Candidate 2: Packaged sibling python directory (e.g. <install_dir>/resources/python/python.exe or <install_dir>/resources/python/Scripts/python.exe)
+    let sibling_python = canonical_root
+        .parent()
+        .map(|p| p.join("python").join("python.exe"));
+    let sibling_python_scripts = canonical_root
+        .parent()
+        .map(|p| p.join("python").join("Scripts").join("python.exe"));
+
+    // Candidate 3: Standard development .venv
     let venv_python_win = canonical_root
         .join(".venv")
         .join("Scripts")
         .join("python.exe");
     let venv_python_nix = canonical_root.join(".venv").join("bin").join("python");
 
-    let python_exe = if venv_python_win.is_file() {
+    let python_exe = if bundled_in_root.is_file() {
+        bundled_in_root
+    } else if bundled_in_root_direct.is_file() {
+        bundled_in_root_direct
+    } else if let Some(ref sib) = sibling_python {
+        if sib.is_file() {
+            sib.clone()
+        } else if let Some(ref sib_scripts) = sibling_python_scripts {
+            if sib_scripts.is_file() {
+                sib_scripts.clone()
+            } else if venv_python_win.is_file() {
+                venv_python_win
+            } else if venv_python_nix.is_file() {
+                venv_python_nix
+            } else {
+                return Err(format!(
+                    "Dedicated Python interpreter not found in '{}' (checked bundled python and .venv). Refusing unmanaged PATH python fallback.",
+                    canonical_root.display()
+                ));
+            }
+        } else if venv_python_win.is_file() {
+            venv_python_win
+        } else if venv_python_nix.is_file() {
+            venv_python_nix
+        } else {
+            return Err(format!(
+                "Dedicated Python interpreter not found in '{}' (checked bundled python and .venv). Refusing unmanaged PATH python fallback.",
+                canonical_root.display()
+            ));
+        }
+    } else if venv_python_win.is_file() {
         venv_python_win
     } else if venv_python_nix.is_file() {
         venv_python_nix
     } else {
         return Err(format!(
-            "Dedicated Python virtual environment interpreter not found in '{}' (.venv/Scripts/python.exe). Refusing unmanaged PATH python fallback.",
+            "Dedicated Python interpreter not found in '{}' (.venv/Scripts/python.exe). Refusing unmanaged PATH python fallback.",
             canonical_root.display()
         ));
     };
@@ -188,8 +261,15 @@ pub fn resolve_backend_launch_config_from_root(
     let canonical_python = std::fs::canonicalize(&python_exe)
         .map_err(|e| format!("Failed to canonicalize Python interpreter path: {}", e))?;
 
-    if !canonical_python.starts_with(&canonical_root) {
-        return Err("Python interpreter must reside within the trusted project root".to_string());
+    // Verify interpreter trust boundary: must reside either within project_root or in parent's resources tree
+    let within_root = canonical_python.starts_with(&canonical_root);
+    let within_parent = canonical_root
+        .parent()
+        .map(|p| canonical_python.starts_with(p))
+        .unwrap_or(false);
+
+    if !within_root && !within_parent {
+        return Err("Python interpreter must reside within the trusted project root or application installation tree".to_string());
     }
 
     Ok(supervisor::LaunchConfig::default_local(
@@ -398,83 +478,113 @@ async fn pico_pair_operator(
     .await
 }
 
+#[tauri::command]
+async fn pico_get_autostart_status() -> Result<autostart::AutoStartStatus, String> {
+    autostart::is_autostart_enabled()
+}
+
+#[tauri::command]
+async fn pico_set_autostart(enabled: bool) -> Result<autostart::AutoStartStatus, String> {
+    if enabled {
+        autostart::enable_autostart()
+    } else {
+        autostart::disable_autostart()
+    }
+}
+
+fn open_or_focus_command_center(app: &tauri::AppHandle) {
+    if let Some(lc) = app.try_state::<window_lifecycle::CommandCenterLifecycle>() {
+        lc.request_open(app);
+    }
+}
+
+fn sync_supervision_status_ui(
+    app: &tauri::AppHandle,
+    status_item: &tauri::menu::MenuItem<tauri::Wry>,
+    next_status: &BackendSupervisionStatus,
+) {
+    let label = match next_status {
+        BackendSupervisionStatus::Unmanaged => "Status: Unmanaged".to_string(),
+        BackendSupervisionStatus::Starting => "Status: Starting...".to_string(),
+        BackendSupervisionStatus::Verifying { pid } => {
+            format!("Status: Verifying (PID: {})", pid)
+        }
+        BackendSupervisionStatus::Online { pid } => format!("Status: Online (PID: {})", pid),
+        BackendSupervisionStatus::Offline { reason } => format!("Status: Offline ({})", reason),
+    };
+
+    if let Some(state) = app.try_state::<SupervisorState>() {
+        if let Ok(mut status_guard) = state.status.lock() {
+            *status_guard = next_status.clone();
+        }
+    }
+    let _ = status_item.set_text(&label);
+    if let Some(coord) = app.try_state::<companion_render::CompanionRenderCoordinator>() {
+        coord.update_status(next_status, label);
+    }
+}
+
 pub fn run() {
+    // Single instance enforcement: acquire named mutex
+    let single_instance_guard = match single_instance::SingleInstanceGuard::acquire() {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("Failed to evaluate single instance mutex: {}", e);
+            return;
+        }
+    };
+
+    if !single_instance_guard.is_primary() {
+        eprintln!("Another instance of PICO Desktop Companion is already running. Exiting.");
+        return;
+    }
+
     tauri::Builder::default()
         .manage(SupervisorState::new())
+        .manage(window_lifecycle::CommandCenterLifecycle::new())
+        .manage(companion_render::CompanionRenderCoordinator::new(
+            BackendSupervisionStatus::Unmanaged,
+            "Status: Starting...".to_string(),
+        ))
         .invoke_handler(tauri::generate_handler![
             pico_get_system_status,
-            pico_pair_operator
+            pico_pair_operator,
+            pico_get_autostart_status,
+            pico_set_autostart
         ])
         .setup(|app| {
             // 1. Initial state transition: Unmanaged -> Starting
+            let initial_status = BackendSupervisionStatus::Starting;
+            let initial_status_text = "Status: Starting...".to_string();
             if let Some(state) = app.try_state::<SupervisorState>() {
                 if let Ok(mut status_guard) = state.status.lock() {
-                    *status_guard = BackendSupervisionStatus::Starting;
+                    *status_guard = initial_status.clone();
                 }
             }
-
-            // 2. Resolve trusted launch configuration
-            let launch_config_res = resolve_backend_launch_config();
-
-            // 3. Attempt spawn & handshake verification: Starting -> Verifying -> Online (or Offline)
-            let supervision_outcome: Result<(supervisor::ManagedChild, u32), String> =
-                match &launch_config_res {
-                    Ok(config) => match config.spawn() {
-                        Ok(mut child) => {
-                            let pid = child.pid;
-                            if let Some(state) = app.try_state::<SupervisorState>() {
-                                if let Ok(mut status_guard) = state.status.lock() {
-                                    *status_guard = BackendSupervisionStatus::Verifying { pid };
-                                }
-                            }
-
-                            match child.wait_and_verify(
-                                config.bind_port,
-                                std::time::Duration::from_secs(15),
-                            ) {
-                                Ok(()) => Ok((child, pid)),
-                                Err(verify_err) => {
-                                    Err(format!("Startup verification failed: {}", verify_err))
-                                }
-                            }
-                        }
-                        Err(spawn_err) => Err(format!("Process spawn failed: {}", spawn_err)),
-                    },
-                    Err(config_err) => {
-                        Err(format!("Configuration resolution failed: {}", config_err))
-                    }
-                };
-
-            let initial_status_text = match &supervision_outcome {
-                Ok((_, pid)) => format!("Status: Online (PID: {})", pid),
-                Err(reason) => format!("Status: Offline ({})", reason),
-            };
-
-            // Update supervisor state with verified outcome
-            if let Some(state) = app.try_state::<SupervisorState>() {
-                if let Ok(config) = &launch_config_res {
-                    if let Ok(mut port_guard) = state.bind_port.lock() {
-                        *port_guard = config.bind_port;
-                    }
-                }
-                match supervision_outcome {
-                    Ok((child, pid)) => {
-                        if let Ok(mut status_guard) = state.status.lock() {
-                            *status_guard = BackendSupervisionStatus::Online { pid };
-                        }
-                        if let Ok(mut child_guard) = state.child.lock() {
-                            *child_guard = Some(child);
-                        }
-                    }
-                    Err(reason) => {
-                        if let Ok(mut status_guard) = state.status.lock() {
-                            *status_guard = BackendSupervisionStatus::Offline { reason };
-                        }
-                    }
-                }
+            if let Some(coord) = app.try_state::<companion_render::CompanionRenderCoordinator>() {
+                coord.update_status(&initial_status, initial_status_text.clone());
             }
 
-            // 4. Build system tray menu items per ADR 0001
+            // 1b. Create the Native Companion Window (Zero WebView2 at startup) and attach GDI+ eyes
+            let companion_win = tauri::window::WindowBuilder::new(app, "companion")
+                .title("PICO Companion")
+                .inner_size(240.0, 120.0)
+                .resizable(false)
+                .decorations(true)
+                .always_on_top(true)
+                .visible(true)
+                .build()?;
+
+            if let Some(coord) = app.try_state::<companion_render::CompanionRenderCoordinator>() {
+                companion_render::attach_companion_renderer(
+                    &companion_win,
+                    app.handle().clone(),
+                    &coord,
+                )
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            }
+
+            // 2. Build system tray menu items per ADR 0001
             let status_item =
                 MenuItemBuilder::with_id(TrayAction::Status.id(), &initial_status_text)
                     .enabled(TrayAction::Status.is_enabled())
@@ -510,8 +620,9 @@ pub fn run() {
                 .item(&quit_item)
                 .build()?;
 
-            // 5. Spawn background watcher thread to detect runtime backend termination
-            // Dynamically updates system tray status and terminates cleanly on application exit.
+            // 3. Run Core startup, verification, and ongoing liveness supervision on a managed
+            // background thread so the native companion HWND paints real Starting -> Verifying ->
+            // Online/Offline transitions immediately without blocking the UI pump.
             let app_handle = app.handle().clone();
             let status_item_watcher = status_item.clone();
             let shutdown_flag_watcher = if let Some(state) = app.try_state::<SupervisorState>() {
@@ -521,6 +632,69 @@ pub fn run() {
             };
 
             let watcher_thread = std::thread::spawn(move || {
+                let launch_config_res = resolve_backend_launch_config();
+                if let Some(state) = app_handle.try_state::<SupervisorState>() {
+                    if let Ok(config) = &launch_config_res {
+                        if let Ok(mut port_guard) = state.bind_port.lock() {
+                            *port_guard = config.bind_port;
+                        }
+                    }
+                }
+
+                let supervision_outcome: Result<(supervisor::ManagedChild, u32), String> =
+                    match &launch_config_res {
+                        Ok(config) => match config.spawn() {
+                            Ok(mut child) => {
+                                let pid = child.pid;
+                                sync_supervision_status_ui(
+                                    &app_handle,
+                                    &status_item_watcher,
+                                    &BackendSupervisionStatus::Verifying { pid },
+                                );
+
+                                match child.wait_and_verify(
+                                    config.bind_port,
+                                    std::time::Duration::from_secs(15),
+                                ) {
+                                    Ok(()) => Ok((child, pid)),
+                                    Err(verify_err) => {
+                                        let _ = child.terminate();
+                                        Err(format!("Startup verification failed: {}", verify_err))
+                                    }
+                                }
+                            }
+                            Err(spawn_err) => Err(format!("Process spawn failed: {}", spawn_err)),
+                        },
+                        Err(config_err) => {
+                            Err(format!("Configuration resolution failed: {}", config_err))
+                        }
+                    };
+
+                if shutdown_flag_watcher.load(Ordering::Relaxed) {
+                    if let Ok((mut child, _)) = supervision_outcome {
+                        let _ = child.terminate();
+                    }
+                    return;
+                }
+
+                let mut last_status = match supervision_outcome {
+                    Ok((child, pid)) => {
+                        if let Some(state) = app_handle.try_state::<SupervisorState>() {
+                            if let Ok(mut child_guard) = state.child.lock() {
+                                *child_guard = Some(child);
+                            }
+                        }
+                        let next = BackendSupervisionStatus::Online { pid };
+                        sync_supervision_status_ui(&app_handle, &status_item_watcher, &next);
+                        next
+                    }
+                    Err(reason) => {
+                        let next = BackendSupervisionStatus::Offline { reason };
+                        sync_supervision_status_ui(&app_handle, &status_item_watcher, &next);
+                        next
+                    }
+                };
+
                 while !shutdown_flag_watcher.load(Ordering::Relaxed) {
                     std::thread::sleep(std::time::Duration::from_millis(250));
                     if shutdown_flag_watcher.load(Ordering::Relaxed) {
@@ -528,9 +702,9 @@ pub fn run() {
                     }
                     if let Some(state) = app_handle.try_state::<SupervisorState>() {
                         let status = state.check_liveness();
-                        if let BackendSupervisionStatus::Offline { ref reason } = status {
-                            let _ = status_item_watcher
-                                .set_text(format!("Status: Offline ({})", reason));
+                        if status != last_status {
+                            sync_supervision_status_ui(&app_handle, &status_item_watcher, &status);
+                            last_status = status;
                         }
                     }
                 }
@@ -550,13 +724,14 @@ pub fn run() {
                     if let Some(action) = TrayAction::from_id(event.id().as_ref()) {
                         match decide_menu_dispatch_effect(action) {
                             MenuDispatchEffect::OpenWindow => {
-                                if let Some(window) = app.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.unminimize();
-                                    let _ = window.set_focus();
-                                }
+                                open_or_focus_command_center(app);
                             }
                             MenuDispatchEffect::Exit(code) => {
+                                if let Some(lc) =
+                                    app.try_state::<window_lifecycle::CommandCenterLifecycle>()
+                                {
+                                    lc.mark_shutting_down();
+                                }
                                 if let Some(state) = app.try_state::<SupervisorState>() {
                                     state.shutdown();
                                 }
@@ -594,6 +769,8 @@ pub fn run() {
                                     let _ = window.set_focus();
                                 }
                             }
+                        } else {
+                            open_or_focus_command_center(app);
                         }
                     }
                 });
@@ -607,14 +784,39 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let policy = evaluate_close_request_policy();
-                if policy.prevent_close {
-                    api.prevent_close();
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == "main" {
+                        // Prevent synchronous blocking destroy inside callback; dispatch cleanly
+                        api.prevent_close();
+                        let app = window.app_handle();
+                        if let Some(lc) =
+                            app.try_state::<window_lifecycle::CommandCenterLifecycle>()
+                        {
+                            lc.request_close(app);
+                        }
+                    } else {
+                        // Native companion window close hides or respects close policy
+                        let policy = evaluate_close_request_policy();
+                        if policy.prevent_close {
+                            api.prevent_close();
+                        }
+                        if policy.hide_window {
+                            let _ = window.hide();
+                        }
+                    }
                 }
-                if policy.hide_window {
-                    let _ = window.hide();
+                WindowEvent::Destroyed => {
+                    if window.label() == "main" {
+                        let app = window.app_handle();
+                        if let Some(lc) =
+                            app.try_state::<window_lifecycle::CommandCenterLifecycle>()
+                        {
+                            lc.on_destroyed(app);
+                        }
+                    }
                 }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())
@@ -893,9 +1095,40 @@ mod tests {
         );
         let err_msg = decoy_res.unwrap_err();
         assert!(
-            err_msg.contains("Dedicated Python virtual environment interpreter not found"),
-            "Error message must specify missing virtual environment: {}",
+            err_msg.contains("Dedicated Python interpreter not found"),
+            "Error message must specify missing interpreter: {}",
             err_msg
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_packaged_layout_resolution_invariants() {
+        let temp_dir = std::env::temp_dir().join(format!("pico_pkg_test_{}", std::process::id()));
+        let core_dir = temp_dir.join("resources").join("core");
+        let python_dir = temp_dir.join("resources").join("python");
+        let _ = std::fs::create_dir_all(core_dir.join("pico"));
+        let _ = std::fs::create_dir_all(&python_dir);
+        let _ = std::fs::write(core_dir.join("pico").join("main.py"), "# mock core\n");
+        let _ = std::fs::write(core_dir.join("pyproject.toml"), "# mock pyproject\n");
+        let mock_python = python_dir.join("python.exe");
+        let _ = std::fs::write(&mock_python, "# mock python binary\n");
+
+        let config_res = resolve_backend_launch_config_from_root(&core_dir);
+        assert!(
+            config_res.is_ok(),
+            "Packaged layout with resources/core and resources/python must succeed: {:?}",
+            config_res.err()
+        );
+        let config = config_res.unwrap();
+        assert_eq!(
+            config.working_dir,
+            std::fs::canonicalize(&core_dir).unwrap()
+        );
+        assert_eq!(
+            config.executable,
+            std::fs::canonicalize(&mock_python).unwrap()
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
