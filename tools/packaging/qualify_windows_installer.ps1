@@ -26,6 +26,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$currentStep = "init"
 
 function Resolve-InstallerExe {
     param([string]$ExplicitPath)
@@ -57,6 +58,9 @@ function Get-PicoUninstallEntry {
     return $null
 }
 
+try {
+
+$currentStep = "resolve_installer"
 $resolvedInstaller = Resolve-InstallerExe -ExplicitPath $InstallerPath
 Write-Host "Qualifying NSIS installer: $resolvedInstaller"
 
@@ -65,6 +69,7 @@ $installerSha256 = (Get-FileHash -Path $resolvedInstaller -Algorithm SHA256).Has
 $signature = Get-AuthenticodeSignature -FilePath $resolvedInstaller
 
 # 1. Silent current-user installation
+$currentStep = "silent_install"
 Write-Host "[1/6] Running silent NSIS installation (/S)..."
 $installProc = Start-Process -FilePath $resolvedInstaller -ArgumentList "/S" -PassThru -Wait
 if ($installProc.ExitCode -ne 0) {
@@ -79,7 +84,7 @@ $installDir = if ($uninstallEntry -and $uninstallEntry.InstallLocation) {
 } elseif (Test-Path $defaultInstallDir) {
     $defaultInstallDir
 } else {
-    throw "Could not determine PICO InstallLocation after silent install"
+    throw "Could not determine PICO InstallLocation after silent install (checked uninstall registry and $defaultInstallDir)"
 }
 
 Write-Host "Installed location: $installDir"
@@ -89,7 +94,8 @@ $picoExe = Get-ChildItem -Path $installDir -Filter "*.exe" -File |
     Where-Object { $_.Name -notlike "uninstall*" } |
     Select-Object -First 1
 if (-not $picoExe) {
-    throw "Installed desktop executable not found in $installDir"
+    $topEntries = (Get-ChildItem -Path $installDir -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", "
+    throw "Installed desktop executable not found in $installDir (entries: $topEntries)"
 }
 
 $uninstallExe = Join-Path $installDir "uninstall.exe"
@@ -98,11 +104,17 @@ if (-not (Test-Path $uninstallExe)) {
 }
 
 # 2. Verify installed payload & hygiene
+$currentStep = "verify_payload_hygiene"
 Write-Host "[2/6] Verifying installed resources payload and hygiene..."
 $coreMain = Join-Path $installDir "resources\core\pico\main.py"
 $bundledPython = Join-Path $installDir "resources\python\python.exe"
-if (-not (Test-Path $coreMain)) { throw "Missing bundled Core entrypoint: $coreMain" }
-if (-not (Test-Path $bundledPython)) { throw "Missing bundled Python runtime: $bundledPython" }
+if (-not (Test-Path $coreMain)) {
+    $treeSample = (Get-ChildItem -Path $installDir -Depth 2 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName | Select-Object -First 25) -join "; "
+    throw "Missing bundled Core entrypoint: $coreMain (tree sample: $treeSample)"
+}
+if (-not (Test-Path $bundledPython)) {
+    throw "Missing bundled Python runtime: $bundledPython"
+}
 
 $forbiddenHits = @()
 Get-ChildItem -Path (Join-Path $installDir "resources") -Recurse -Force | ForEach-Object {
@@ -119,6 +131,7 @@ if ($forbiddenHits.Count -gt 0) {
 }
 
 # 3. Launch installed companion app and verify Core + bundled Python + DB + ADR-0001 idle RAM
+$currentStep = "launch_and_health"
 Write-Host "[3/6] Launching installed PICO executable from $installDir..."
 $envBackupDbUrl = $env:DATABASE_URL
 Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
@@ -249,6 +262,7 @@ try {
 }
 
 # 6. Auto-start Run hook & silent uninstall verification
+$currentStep = "uninstall_and_cleanup"
 Write-Host "[6/6] Verifying narrow HKCU Run cleanup and user data preservation on uninstall..."
 $runKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 if (-not (Test-Path $runKeyPath)) {
@@ -314,3 +328,10 @@ if ($reportDir -and -not (Test-Path $reportDir)) {
 $report | ConvertTo-Json -Depth 4 | Set-Content -Path $ReportPath -Encoding UTF8
 Write-Host "Qualification report written to $ReportPath"
 $report | ConvertTo-Json -Depth 4
+
+} catch {
+    $errMsg = $_.Exception.Message
+    $errLine = $_.InvocationInfo.ScriptLineNumber
+    Write-Host "::error title=Installer Qualification Failed ($currentStep at line $errLine)::$errMsg"
+    throw
+}
