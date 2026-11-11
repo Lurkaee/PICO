@@ -40,6 +40,18 @@ extern "system" {
         phkResult: *mut HKEY,
     ) -> LSTATUS;
 
+    fn RegCreateKeyExW(
+        hKey: HKEY,
+        lpSubKey: LPCWSTR,
+        Reserved: DWORD,
+        lpClass: LPCWSTR,
+        dwOptions: DWORD,
+        samDesired: DWORD,
+        lpSecurityAttributes: *mut c_void,
+        phkResult: *mut HKEY,
+        lpdwDisposition: *mut DWORD,
+    ) -> LSTATUS;
+
     fn RegQueryValueExW(
         hKey: HKEY,
         lpValueName: LPCWSTR,
@@ -59,6 +71,9 @@ extern "system" {
     ) -> LSTATUS;
 
     fn RegDeleteValueW(hKey: HKEY, lpValueName: LPCWSTR) -> LSTATUS;
+
+    #[cfg(test)]
+    fn RegDeleteKeyW(hKey: HKEY, lpSubKey: LPCWSTR) -> LSTATUS;
 
     fn RegCloseKey(hKey: HKEY) -> LSTATUS;
 }
@@ -225,18 +240,22 @@ pub fn enable_autostart_for_key(
     let mut hkey: HKEY = ptr::null_mut();
 
     let open_status = unsafe {
-        RegOpenKeyExW(
+        RegCreateKeyExW(
             HKEY_CURRENT_USER,
             subkey_w.as_ptr(),
             0,
+            ptr::null(),
+            0,
             KEY_SET_VALUE | KEY_READ,
+            ptr::null_mut(),
             &mut hkey,
+            ptr::null_mut(),
         )
     };
 
     if open_status != ERROR_SUCCESS {
         return Err(format!(
-            "RegOpenKeyExW for write failed with code {}",
+            "RegCreateKeyExW for write failed with code {}",
             open_status
         ));
     }
@@ -332,17 +351,18 @@ mod tests {
 
     #[test]
     fn test_autostart_lifecycle_in_test_key() {
+        let test_subkey = format!("Software\\PICO_Test_Autostart_{}", std::process::id());
         const TEST_VAL: &str = "PICO_Test_Ephemeral_Val";
         let fake_exe = PathBuf::from(r"C:\Program Files\PICO\PICO.exe");
 
-        // 1. Initial cleanup
-        let _ = disable_autostart_for_key(RUN_KEY_PATH, TEST_VAL);
-        let s0 = is_autostart_enabled_for_key(RUN_KEY_PATH, TEST_VAL).unwrap();
+        // 1. Initial cleanup & missing-key query
+        let _ = disable_autostart_for_key(&test_subkey, TEST_VAL);
+        let s0 = is_autostart_enabled_for_key(&test_subkey, TEST_VAL).unwrap();
         assert!(!s0.enabled);
         assert!(s0.executable_path.is_none());
 
-        // 2. Enable
-        let s1 = enable_autostart_for_key(RUN_KEY_PATH, TEST_VAL, &fake_exe).unwrap();
+        // 2. Enable (must create subkey when absent)
+        let s1 = enable_autostart_for_key(&test_subkey, TEST_VAL, &fake_exe).unwrap();
         assert!(s1.enabled);
         assert_eq!(
             s1.executable_path.unwrap(),
@@ -350,7 +370,7 @@ mod tests {
         );
 
         // 3. Query
-        let s2 = is_autostart_enabled_for_key(RUN_KEY_PATH, TEST_VAL).unwrap();
+        let s2 = is_autostart_enabled_for_key(&test_subkey, TEST_VAL).unwrap();
         assert!(s2.enabled);
         assert_eq!(
             s2.executable_path.unwrap(),
@@ -358,13 +378,17 @@ mod tests {
         );
 
         // 4. Disable
-        let s3 = disable_autostart_for_key(RUN_KEY_PATH, TEST_VAL).unwrap();
+        let s3 = disable_autostart_for_key(&test_subkey, TEST_VAL).unwrap();
         assert!(!s3.enabled);
         assert!(s3.executable_path.is_none());
 
         // 5. Query after disable
-        let s4 = is_autostart_enabled_for_key(RUN_KEY_PATH, TEST_VAL).unwrap();
+        let s4 = is_autostart_enabled_for_key(&test_subkey, TEST_VAL).unwrap();
         assert!(!s4.enabled);
         assert!(s4.executable_path.is_none());
+
+        // Clean up temporary registry key
+        let subkey_w = to_wide_null(&test_subkey);
+        unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, subkey_w.as_ptr()) };
     }
 }

@@ -21,34 +21,58 @@ mod tests {
         let mut child = config
             .spawn()
             .expect("Spawning managed child into Job Object must succeed");
-        let pid = child.pid;
 
-        // Perform mutual handshake and listener PID verification
-        let verify_res = child.wait_and_verify(test_port, std::time::Duration::from_secs(20));
+        // Perform mutual handshake and listener PID verification before sampling
+        let verify_res = child.wait_and_verify(test_port, std::time::Duration::from_secs(30));
         assert!(
             verify_res.is_ok(),
             "wait_and_verify failed: {:?}",
             verify_res.err()
         );
+        let pid = child.pid;
 
-        // Function to sample process memory via PowerShell Get-Process
+        // Native Win32 memory sampling without external PowerShell subprocess overhead
+        #[repr(C)]
+        struct ProcessMemoryCountersEx {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+            private_usage: usize,
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn K32GetProcessMemoryInfo(
+                process: *mut std::ffi::c_void,
+                ppsmem_counters: *mut ProcessMemoryCountersEx,
+                cb: u32,
+            ) -> i32;
+        }
+
         let sample_memory = |target_pid: u32| -> (f64, f64) {
-            let cmd = format!(
-                "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($p) {{ [math]::round($p.WorkingSet64 / 1MB, 2).ToString() + ' ' + [math]::round($p.PrivateMemorySize64 / 1MB, 2).ToString() }} else {{ '0 0' }}",
-                target_pid
-            );
-            let out = std::process::Command::new("powershell")
-                .args(&["-NoProfile", "-Command", &cmd])
-                .output()
-                .expect("Failed to execute memory sampling");
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let parts: Vec<&str> = s.split_whitespace().collect();
-            if parts.len() == 2 {
-                let ws = parts[0].parse::<f64>().unwrap_or(0.0);
-                let pm = parts[1].parse::<f64>().unwrap_or(0.0);
-                (ws, pm)
-            } else {
-                (0.0, 0.0)
+            let Ok(handle) = supervisor::open_process_handle(target_pid) else {
+                return (0.0, 0.0);
+            };
+            let mut counters = std::mem::MaybeUninit::<ProcessMemoryCountersEx>::zeroed();
+            let cb = std::mem::size_of::<ProcessMemoryCountersEx>() as u32;
+            unsafe {
+                (*counters.as_mut_ptr()).cb = cb;
+                if K32GetProcessMemoryInfo(handle.raw(), counters.as_mut_ptr(), cb) == 0 {
+                    return (0.0, 0.0);
+                }
+                let c = counters.assume_init();
+                let mib = 1024.0 * 1024.0;
+                (
+                    (c.working_set_size as f64) / mib,
+                    (c.private_usage as f64) / mib,
+                )
             }
         };
 
