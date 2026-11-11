@@ -80,18 +80,22 @@ Start-Sleep -Seconds 1
 $uninstallEntry = Get-PicoUninstallEntry
 $defaultInstallDir = Join-Path $env:LOCALAPPDATA "PICO"
 $installDir = if ($uninstallEntry -and $uninstallEntry.InstallLocation) {
-    $uninstallEntry.InstallLocation.TrimEnd('\')
+    ($uninstallEntry.InstallLocation.ToString()).Trim().Trim('"').TrimEnd('\')
 } elseif (Test-Path $defaultInstallDir) {
     $defaultInstallDir
 } else {
     throw "Could not determine PICO InstallLocation after silent install (checked uninstall registry and $defaultInstallDir)"
 }
 
+if (-not (Test-Path -LiteralPath $installDir)) {
+    throw "Resolved InstallLocation '$installDir' does not exist on disk"
+}
+
 Write-Host "Installed location: $installDir"
 
-# Locate main executable and uninstaller
-$picoExe = Get-ChildItem -Path $installDir -Filter "*.exe" -File |
-    Where-Object { $_.Name -notlike "uninstall*" } |
+# Locate main executable and uninstaller (avoid provider-specific -File dynamic param)
+$picoExe = Get-ChildItem -LiteralPath $installDir -Filter "*.exe" |
+    Where-Object { -not $_.PSIsContainer -and $_.Name -notlike "uninstall*" } |
     Select-Object -First 1
 if (-not $picoExe) {
     $topEntries = (Get-ChildItem -Path $installDir -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ", "
