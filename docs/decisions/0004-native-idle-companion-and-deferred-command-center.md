@@ -1,7 +1,7 @@
 # 0004. Native Idle Companion Surface & Deferred Command Center
 
 Date: 2026-11-10
-Status: Proposed
+Status: Accepted
 Deciders: PICO Core Team
 Consulted: AGENTS.md, ADR 0001, ADR 0002, ADR 0003
 
@@ -158,4 +158,13 @@ Chromium's mandatory multi-process architecture on Windows 11 allocates ~300 MiB
   - **WebView2 Processes (Idle / Post-Close)**: `0`
 - **Deferred Command Center Lifecycle**:
   - Dedicated non-UI-thread `WebviewWindowBuilder::build()` / `destroy()` (`CommandCenterLifecycle`) spawns `6` `msedgewebview2.exe` processes when open and returns cleanly to `0` on close while preserving Python Core PIDs and native companion eyes.
-- **ADR 0004 Status**: Remains `Proposed` pending P11.2.4.2 packaging/installer completion and formal milestone acceptance.
+- **ADR 0004 Status**: Accepted.
+
+---
+
+## 8. Qualification Waiver & Residual Risk Note
+
+- **Physical Mouse-Drag Testing Waiver**: Manual physical mouse-drag and interactive desktop verification were explicitly waived by the project owner for Milestone P11.2.4.2 closure.
+- **No Physical Interaction Claim**: Physical drag behavior across monitor boundaries and physical double-click interaction have not been independently confirmed through real manual mouse interaction.
+- **Automated Evidence Scope**: All automated code, lifecycle, GDI+ subclass window procedure, NSIS packaging, silent upgrade, uninstall, and idle memory qualification checks passed completely. However, automated tests do not constitute physical human interaction evidence.
+- **Residual Risk**: This limitation remains a documented residual validation risk for physical desktop environments.
