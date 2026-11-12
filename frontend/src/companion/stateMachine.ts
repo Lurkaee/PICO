@@ -215,7 +215,11 @@ export class CompanionStateMachine {
   ): boolean {
     if (captureState === 'capturing') {
       if (!microphoneActive) {
-        // Truthfulness invariant: never display listening if physical/mock capture is inactive
+        // Truthfulness invariant: never display listening if physical/mock capture is inactive.
+        // If companion was previously listening, revert to idle immediately to avoid stuck state.
+        if (this.currentRecord.state === 'listening') {
+          return this.transition('idle', 'perception_audio', detail || 'Microphone capture stopped or inactive', sequence);
+        }
         return false;
       }
       return this.transition('listening', 'perception_audio', detail || 'Microphone capture active', sequence);

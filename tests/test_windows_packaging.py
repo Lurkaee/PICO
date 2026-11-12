@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
+
 import pytest
 
-_STAGE_SCRIPT = (
-    Path(__file__).resolve().parents[1]
-    / "tools"
-    / "packaging"
-    / "stage_windows_bundle.py"
-)
+_STAGE_SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "packaging" / "stage_windows_bundle.py"
 _SPEC = importlib.util.spec_from_file_location("stage_windows_bundle", _STAGE_SCRIPT)
 assert _SPEC and _SPEC.loader
 stage_mod = importlib.util.module_from_spec(_SPEC)
@@ -52,7 +48,8 @@ def test_locked_windows_runtime_manifest_integrity() -> None:
 
     locked = stage_mod.load_locked_runtime_requirements(lock_path, req_path)
     lowered = [entry.lower() for entry in locked]
-    assert len(locked) == 23
+    assert len(locked) == 26
+    assert any(entry.startswith("sounddevice==") for entry in lowered)
     assert not any(entry.startswith("pytest==") for entry in lowered)
     for transitive in ("pydantic-core==", "starlette==", "markupsafe==", "mako==", "h11=="):
         assert any(entry.startswith(transitive) for entry in lowered), f"Missing transitive {transitive}"

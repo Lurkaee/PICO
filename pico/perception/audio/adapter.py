@@ -1,3 +1,17 @@
+"""Audio session manager and speech adapter interfaces for PICO voice runtime (Milestone P11.3).
+
+Architectural Invariants:
+1. Push-to-talk only: No background or wake-word listening without explicit local user consent.
+2. Ephemeral audio memory: Mutable bytearray buffers are actively zeroed in finally blocks on
+   success, failure, cancellation, and shutdown. Raw audio is never persisted to disk.
+3. Truthful device reporting: microphone_active is True ONLY while genuine capture device is recording.
+4. Privacy classification: Audio perception data defaults to INTERNAL and is strictly pinned locally.
+5. Fail closed: When local STT runtime is uninstalled, stop_session reports capability unavailable
+   rather than fabricating recognized speech from untrusted inputs.
+"""
+
+from __future__ import annotations
+
 import base64
 import time
 import uuid
@@ -7,7 +21,11 @@ from typing import Any
 
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ValidationError
-from pico.perception.audio.capture import BaseAudioCaptureDevice
+from pico.perception.audio.capture import (
+    AudioCaptureError,
+    BaseAudioCaptureDevice,
+    zeroize_bytearray,
+)
 from pico.perception.audio.validation import validate_audio_payload
 from pico.perception.classification import (
     compute_trusted_perception_classification,
@@ -23,50 +41,80 @@ from pico.perception.contracts import (
     RetentionPolicy,
 )
 
+AUDIO_SESSION_TTL_SECONDS = 300.0  # 5 minutes
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 class BaseSpeechToTextAdapter(ABC):
+    """Abstract interface for local speech-to-text recognition engines."""
+
     is_mock: bool = False
     is_simulated: bool = False
 
     @abstractmethod
     def is_available(self) -> bool:
         """Report whether local STT runtime and model weights are installed."""
-        ...
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        ...
+        """Report descriptive provider/model name."""
 
     @abstractmethod
-    async def transcribe(self, audio_bytes: bytes, audio_format: str = "wav") -> tuple[str, float]:
-        """Returns (transcription_text, confidence_score)."""
-        ...
+    async def transcribe(self, audio_bytes: bytes | bytearray, audio_format: str = "wav") -> tuple[str, float]:
+        """Transcribe validated audio bytes. Returns (transcription_text, confidence_score)."""
 
 
 class BaseTextToSpeechAdapter(ABC):
+    """Abstract interface for local text-to-speech synthesis engines."""
+
     is_mock: bool = False
     is_simulated: bool = False
 
     @abstractmethod
     def is_available(self) -> bool:
         """Report whether local TTS runtime is installed."""
-        ...
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        ...
+        """Report descriptive provider name."""
 
     @abstractmethod
     async def synthesize(self, text: str, voice_id: str | None = None, speed: float = 1.0) -> tuple[bytes, float]:
-        """Returns (audio_bytes, duration_seconds)."""
-        ...
+        """Synthesize text to audio. Returns (audio_bytes, duration_seconds)."""
+
+
+class LocalWhisperSpeechToTextAdapter(BaseSpeechToTextAdapter):
+    """Production local STT adapter (planned for Milestone P11.3.2).
+
+    Honest capability reporting: reports unavailable until local speech model
+    weights and runtime dependencies are qualified and installed.
+    """
+
+    is_mock: bool = False
+    is_simulated: bool = False
+
+    def is_available(self) -> bool:
+        return False
+
+    def get_provider_name(self) -> str:
+        return "local_whisper (unavailable)"
+
+    async def transcribe(self, audio_bytes: bytes | bytearray, audio_format: str = "wav") -> tuple[str, float]:
+        raise ValidationError(
+            "Speech transcription runtime is unavailable. Audio transcription "
+            "requires an installed local STT engine (planned for Milestone P11.3.2)."
+        )
 
 
 class MockSpeechToTextAdapter(BaseSpeechToTextAdapter):
+    """Deterministic in-memory speech-to-text adapter for test injection ONLY.
+
+    Never used in production flow. Requires explicit injection into AudioSessionManager.
+    """
+
     is_mock: bool = True
     is_simulated: bool = True
 
@@ -79,31 +127,10 @@ class MockSpeechToTextAdapter(BaseSpeechToTextAdapter):
     def get_provider_name(self) -> str:
         return "mock_stt"
 
-    async def transcribe(self, audio_bytes: bytes, audio_format: str = "wav") -> tuple[str, float]:
+    async def transcribe(self, audio_bytes: bytes | bytearray, audio_format: str = "wav") -> tuple[str, float]:
         if not audio_bytes:
             raise ValidationError("Audio payload is empty.")
-        # If payload contains a custom marker, extract it for test flexibility
-        if audio_bytes.startswith(b"TEXT:"):
-            return audio_bytes[5:].decode("utf-8", errors="replace"), 0.98
         return self.default_transcription, 0.95
-
-
-class LocalWhisperSpeechToTextAdapter(BaseSpeechToTextAdapter):
-    is_mock: bool = False
-    is_simulated: bool = False
-
-    def is_available(self) -> bool:
-        # Honest capability reporting: local whisper runtime execution requires installed weights
-        return False
-
-    def get_provider_name(self) -> str:
-        return "local_whisper (unavailable)"
-
-    async def transcribe(self, audio_bytes: bytes, audio_format: str = "wav") -> tuple[str, float]:
-        raise ValidationError(
-            "Local Whisper speech recognition runtime is unavailable. Audio transcription "
-            "requires an installed local STT runtime and model weights."
-        )
 
 
 class MockTextToSpeechAdapter(BaseTextToSpeechAdapter):
@@ -117,7 +144,6 @@ class MockTextToSpeechAdapter(BaseTextToSpeechAdapter):
         return "mock_tts"
 
     async def synthesize(self, text: str, voice_id: str | None = None, speed: float = 1.0) -> tuple[bytes, float]:
-        # Generate minimal RIFF/WAV header (44 bytes) + silence
         wav_header = (
             b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
             b"\x80>\x00\x00\x80>\x00\x00\x01\x00\x08\x00data\x00\x00\x00\x00"
@@ -131,20 +157,21 @@ class LocalTextToSpeechAdapter(BaseTextToSpeechAdapter):
     is_simulated: bool = False
 
     def is_available(self) -> bool:
-        # Honest capability reporting: local pyttsx3 execution requires local audio driver
         return False
 
     def get_provider_name(self) -> str:
-        return "local_pyttsx3 (unavailable)"
+        return "local_piper (unavailable)"
 
     async def synthesize(self, text: str, voice_id: str | None = None, speed: float = 1.0) -> tuple[bytes, float]:
         raise ValidationError(
             "Local speech synthesis runtime is unavailable. Audio synthesis "
-            "requires an installed local TTS runtime."
+            "requires an installed local TTS runtime (planned for Milestone P11.3.4)."
         )
 
 
 class AudioSession:
+    """State record for a single push-to-talk audio session."""
+
     def __init__(self, session_id: str, source_device: str, user_consent: bool) -> None:
         self.session_id = session_id
         self.source_device = source_device
@@ -154,6 +181,8 @@ class AudioSession:
         self.completed_at: datetime | None = None
         self.transcription: str | None = None
         self.confidence: float = 0.0
+        self.delivered: bool = False
+        self.delivered_at: datetime | None = None
 
 
 class AudioSessionManager:
@@ -162,9 +191,10 @@ class AudioSessionManager:
     Non-negotiable invariants:
     1. Push-to-talk only: No background or wake-word listening without explicit activation.
     2. Microphone capture starts ONLY after explicit local user consent.
-    3. Never store raw audio recordings: raw buffers are scrubbed immediately.
+    3. Ephemeral audio memory: Mutable bytearray buffers are zeroed on all lifecycle exits.
     4. Audio data is classified INTERNAL and NEVER sent to cloud services.
     5. Truthful status: microphone_active is True ONLY while genuine capture device is recording.
+    6. Concurrency: Enforces single active recording session policy.
     """
 
     def __init__(
@@ -173,21 +203,25 @@ class AudioSessionManager:
         tts_adapter: BaseTextToSpeechAdapter | None = None,
         capture_device: BaseAudioCaptureDevice | None = None,
     ) -> None:
-        self.stt_adapter = stt_adapter or (
-            LocalWhisperSpeechToTextAdapter()
-            if LocalWhisperSpeechToTextAdapter().is_available()
-            else MockSpeechToTextAdapter()
-        )
-        self.tts_adapter = tts_adapter or (
-            LocalTextToSpeechAdapter()
-            if LocalTextToSpeechAdapter().is_available()
-            else MockTextToSpeechAdapter()
-        )
+        self.stt_adapter = stt_adapter or LocalWhisperSpeechToTextAdapter()
+        self.tts_adapter = tts_adapter or LocalTextToSpeechAdapter()
         self.capture_device = capture_device
         self._active_sessions: dict[str, AudioSession] = {}
 
     def get_session(self, session_id: str) -> AudioSession | None:
         return self._active_sessions.get(session_id)
+
+    def prune_expired_sessions(self) -> None:
+        """Prune stale sessions older than AUDIO_SESSION_TTL_SECONDS to avoid memory leaks."""
+        now = utc_now()
+        expired_ids = [
+            sid
+            for sid, s in self._active_sessions.items()
+            if (now - s.started_at).total_seconds() > AUDIO_SESSION_TTL_SECONDS
+            and s.state != AudioCaptureState.CAPTURING
+        ]
+        for sid in expired_ids:
+            self._active_sessions.pop(sid, None)
 
     def get_status(self) -> dict[str, Any]:
         mic_active = self.capture_device.is_active() if self.capture_device else False
@@ -211,7 +245,7 @@ class AudioSessionManager:
             "max_payload_bytes": settings.AUDIO_MAX_PAYLOAD_BYTES,
             "capture_device": self.capture_device.get_device_info() if self.capture_device else None,
             "graphical_indicator_note": (
-                "Observable microphone_active status contract available. "
+                "Observable microphone_active status contract available. Physical capture active."
                 if mic_active
                 else "Observable microphone_active status contract available. Physical microphone driver is not active."
             ),
@@ -229,6 +263,19 @@ class AudioSessionManager:
         if not user_consent:
             raise AuthorizationError("Explicit user consent is mandatory for audio capture.")
 
+        self.prune_expired_sessions()
+
+        # Enforce single active recording session policy
+        active_captures = [
+            s
+            for s in self._active_sessions.values()
+            if s.state in (AudioCaptureState.CAPTURING, AudioCaptureState.PROCESSING)
+        ]
+        if active_captures:
+            raise AudioCaptureError(
+                "A recording session is already active. Complete or cancel the active session first."
+            )
+
         clean_device = validate_trusted_source_device(Modality.AUDIO, source_device)
         session_id = f"aud_{uuid.uuid4().hex[:16]}"
         session = AudioSession(session_id=session_id, source_device=clean_device, user_consent=user_consent)
@@ -243,7 +290,7 @@ class AudioSessionManager:
         message = (
             "Push-to-talk recording session initialized (microphone active)."
             if mic_active
-            else "Push-to-talk recording session initialized (hardware microphone driver not active; client audio payload required)."
+            else "Push-to-talk session initialized (hardware driver inactive; client payload required)."
         )
 
         return AudioSessionStartResponse(
@@ -270,41 +317,46 @@ class AudioSessionManager:
 
         session.state = AudioCaptureState.PROCESSING
 
-        # Retrieve audio bytes from client payload or active hardware capture device
-        audio_bytes: bytes | None = None
+        # Retrieve audio payload into a mutable bytearray
+        audio_buffer: bytearray | None = None
         if audio_base64:
             try:
-                audio_bytes = base64.b64decode(audio_base64)
+                decoded = base64.b64decode(audio_base64)
+                audio_buffer = bytearray(decoded)
             except Exception as e:
                 session.state = AudioCaptureState.FAILED
                 raise ValidationError(f"Invalid base64 audio payload: {e}") from e
         elif self.capture_device and self.capture_device.is_active():
-            audio_bytes = self.capture_device.stop_capture()
+            audio_buffer = self.capture_device.stop_capture()
         else:
             session.state = AudioCaptureState.FAILED
             raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
 
-        if not audio_bytes:
+        if not audio_buffer:
             session.state = AudioCaptureState.FAILED
             raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
 
-        # Enforce size limits and structural format validity
+        start_t = time.perf_counter()
+        elapsed = 0.0
+
         try:
+            # Enforce size limits and structural format validity first
             validate_audio_payload(
-                audio_bytes,
+                audio_buffer,
                 max_bytes=settings.AUDIO_MAX_PAYLOAD_BYTES,
                 expected_format=audio_format,
             )
-        except ValidationError:
-            session.state = AudioCaptureState.FAILED
-            del audio_bytes
-            raise
 
-        # Transcribe through neutral STT adapter
-        start_t = time.perf_counter()
-        try:
+            # Honest capability verification: fail closed if production STT runtime is unavailable
+            if not self.stt_adapter.is_available():
+                session.state = AudioCaptureState.FAILED
+                if self.capture_device and self.capture_device.is_active():
+                    self.capture_device.cancel_capture()
+                raise ValidationError("Speech transcription runtime is unavailable. No local STT engine is installed.")
+
+            # Transcribe through STT adapter
             transcription, confidence = await self.stt_adapter.transcribe(
-                audio_bytes=audio_bytes,
+                audio_bytes=audio_buffer,
                 audio_format=audio_format,
             )
             elapsed = time.perf_counter() - start_t
@@ -314,10 +366,12 @@ class AudioSessionManager:
             session.completed_at = utc_now()
         except Exception as exc:
             session.state = AudioCaptureState.FAILED
-            raise ValidationError(f"Speech transcription failed: {exc}") from exc
+            if not isinstance(exc, ValidationError):
+                raise ValidationError(f"Speech transcription failed: {exc}") from exc
+            raise
         finally:
-            # INVARIANT: Discard raw audio bytes immediately
-            del audio_bytes
+            # INVARIANT: Zero mutable audio buffer in place on all exits
+            zeroize_bytearray(audio_buffer)
 
         duration_sec = client_duration_seconds or max(0.5, round(elapsed, 2))
         effective_classification = compute_trusted_perception_classification(
@@ -372,11 +426,11 @@ class AudioSessionManager:
             state=session.state,
             microphone_active=False,
             started_at=session.started_at,
-            message="Audio session cancelled and temporary resources scrubbed.",
+            message="Audio session cancelled and temporary resources zeroed.",
         )
 
     def shutdown(self) -> None:
-        """Cancel all active sessions, release hardware capture devices, and scrub memory."""
+        """Cancel all active sessions, release hardware capture devices, and zero memory buffers."""
         for session_id in list(self._active_sessions.keys()):
             try:
                 self.cancel_session(session_id)

@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from pico.api.operator import is_loopback_client
+from pico.core.errors import AuthorizationError
 from pico.db.session import get_db
 from pico.perception.contracts import (
     AudioSessionStartRequest,
@@ -25,6 +27,7 @@ from pico.perception.contracts import (
 )
 from pico.perception.pipeline import PerceptionPipeline
 from pico.repositories.perception_event_repo import PerceptionEventRepository
+
 
 class AudioDeliverRequest(BaseModel):
     conversation_id: str
@@ -116,8 +119,12 @@ def get_audio_session_status(
 def deliver_audio_transcript(
     session_id: str,
     payload: AudioDeliverRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> AudioDeliverResponse:
+    if not is_loopback_client(request):
+        raise AuthorizationError("Voice transcript delivery is strictly restricted to local loopback connections.")
+
     from pico.services.voice_service import VoiceService
 
     voice_svc = VoiceService()
