@@ -128,7 +128,7 @@ jobs:
         run: cargo fmt --check --manifest-path frontend/src-tauri/Cargo.toml
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -196,7 +196,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
