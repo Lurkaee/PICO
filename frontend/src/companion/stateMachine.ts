@@ -69,6 +69,7 @@ export const ACTIVE_SOURCES: ReadonlySet<AuthoritativeSource> = new Set([
   'supervisor_lifecycle',
   'operator_session',
   'system_diagnostics',
+  'perception_audio',
 ]);
 
 export class CompanionStateMachine {
@@ -199,6 +200,40 @@ export class CompanionStateMachine {
     }
 
     return this.transition('error', 'system_diagnostics', detail || `Unknown health status: ${healthStatus}`, sequence);
+  }
+
+  /**
+   * Helper to handle perception audio capture state updates.
+   * Enforces truthfulness: 'listening' is only permitted when microphoneActive is strictly true.
+   * Transitions to 'thinking' when processing, and returns to 'idle' when completed or cancelled.
+   */
+  public handleAudioCaptureState(
+    captureState: 'capturing' | 'processing' | 'completed' | 'cancelled' | 'failed' | string,
+    microphoneActive: boolean,
+    detail?: string,
+    sequence?: number
+  ): boolean {
+    if (captureState === 'capturing') {
+      if (!microphoneActive) {
+        // Truthfulness invariant: never display listening if physical/mock capture is inactive
+        return false;
+      }
+      return this.transition('listening', 'perception_audio', detail || 'Microphone capture active', sequence);
+    }
+
+    if (captureState === 'processing') {
+      return this.transition('thinking', 'perception_audio', detail || 'Transcribing speech audio', sequence);
+    }
+
+    if (captureState === 'completed' || captureState === 'cancelled') {
+      return this.transition('idle', 'perception_audio', detail || 'Audio session finished', sequence);
+    }
+
+    if (captureState === 'failed') {
+      return this.transition('error', 'perception_audio', detail || 'Audio capture or transcription failed', sequence);
+    }
+
+    return false;
   }
 
   /**

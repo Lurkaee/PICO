@@ -7,6 +7,8 @@ from typing import Any
 
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ValidationError
+from pico.perception.audio.capture import BaseAudioCaptureDevice
+from pico.perception.audio.validation import validate_audio_payload
 from pico.perception.classification import (
     compute_trusted_perception_classification,
     validate_trusted_source_device,
@@ -158,16 +160,18 @@ class AudioSessionManager:
     """Manages explicit push-to-talk audio capture sessions.
 
     Non-negotiable invariants:
-    1. Push-to-talk only: No background or wake-word listening.
+    1. Push-to-talk only: No background or wake-word listening without explicit activation.
     2. Microphone capture starts ONLY after explicit local user consent.
     3. Never store raw audio recordings: raw buffers are scrubbed immediately.
     4. Audio data is classified INTERNAL and NEVER sent to cloud services.
+    5. Truthful status: microphone_active is True ONLY while genuine capture device is recording.
     """
 
     def __init__(
         self,
         stt_adapter: BaseSpeechToTextAdapter | None = None,
         tts_adapter: BaseTextToSpeechAdapter | None = None,
+        capture_device: BaseAudioCaptureDevice | None = None,
     ) -> None:
         self.stt_adapter = stt_adapter or (
             LocalWhisperSpeechToTextAdapter()
@@ -179,16 +183,19 @@ class AudioSessionManager:
             if LocalTextToSpeechAdapter().is_available()
             else MockTextToSpeechAdapter()
         )
+        self.capture_device = capture_device
         self._active_sessions: dict[str, AudioSession] = {}
 
     def get_session(self, session_id: str) -> AudioSession | None:
         return self._active_sessions.get(session_id)
 
     def get_status(self) -> dict[str, Any]:
+        mic_active = self.capture_device.is_active() if self.capture_device else False
+        phys_connected = self.capture_device.is_available() if self.capture_device else False
         return {
             "enabled": settings.PERCEPTION_ENABLED,
-            "physical_microphone_connected": False,
-            "microphone_active": False,
+            "physical_microphone_connected": phys_connected,
+            "microphone_active": mic_active,
             "active_sessions_count": sum(
                 1 for s in self._active_sessions.values() if s.state == AudioCaptureState.CAPTURING
             ),
@@ -198,13 +205,15 @@ class AudioSessionManager:
             "tts_available": self.tts_adapter.is_available() and not getattr(self.tts_adapter, "is_mock", False),
             "tts_provider": self.tts_adapter.get_provider_name(),
             "tts_is_mock": getattr(self.tts_adapter, "is_mock", False),
-            "live_speech_capture_available": False,
+            "live_speech_capture_available": phys_connected,
             "api_endpoint_available": True,
             "max_capture_seconds": settings.AUDIO_CAPTURE_MAX_SECONDS,
             "max_payload_bytes": settings.AUDIO_MAX_PAYLOAD_BYTES,
+            "capture_device": self.capture_device.get_device_info() if self.capture_device else None,
             "graphical_indicator_note": (
                 "Observable microphone_active status contract available. "
-                "Physical microphone driver is not active; hardware visual indicator requires client frontend."
+                if mic_active
+                else "Observable microphone_active status contract available. Physical microphone driver is not active."
             ),
         }
 
@@ -223,14 +232,26 @@ class AudioSessionManager:
         clean_device = validate_trusted_source_device(Modality.AUDIO, source_device)
         session_id = f"aud_{uuid.uuid4().hex[:16]}"
         session = AudioSession(session_id=session_id, source_device=clean_device, user_consent=user_consent)
+
+        mic_active = False
+        if self.capture_device:
+            self.capture_device.start_capture()
+            mic_active = self.capture_device.is_active()
+
         self._active_sessions[session_id] = session
+
+        message = (
+            "Push-to-talk recording session initialized (microphone active)."
+            if mic_active
+            else "Push-to-talk recording session initialized (hardware microphone driver not active; client audio payload required)."
+        )
 
         return AudioSessionStartResponse(
             session_id=session_id,
             state=session.state,
-            microphone_active=False,
+            microphone_active=mic_active,
             started_at=session.started_at,
-            message="Push-to-talk recording session initialized (hardware microphone driver not active; client audio payload required).",
+            message=message,
         )
 
     async def stop_session(
@@ -249,28 +270,35 @@ class AudioSessionManager:
 
         session.state = AudioCaptureState.PROCESSING
 
-        # Validate and decode audio bytes - mandatory payload, zero fake audio
-        if not audio_base64:
+        # Retrieve audio bytes from client payload or active hardware capture device
+        audio_bytes: bytes | None = None
+        if audio_base64:
+            try:
+                audio_bytes = base64.b64decode(audio_base64)
+            except Exception as e:
+                session.state = AudioCaptureState.FAILED
+                raise ValidationError(f"Invalid base64 audio payload: {e}") from e
+        elif self.capture_device and self.capture_device.is_active():
+            audio_bytes = self.capture_device.stop_capture()
+        else:
             session.state = AudioCaptureState.FAILED
             raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
-
-        try:
-            audio_bytes = base64.b64decode(audio_base64)
-        except Exception as e:
-            session.state = AudioCaptureState.FAILED
-            raise ValidationError(f"Invalid base64 audio payload: {e}")
 
         if not audio_bytes:
             session.state = AudioCaptureState.FAILED
             raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
 
-        # Enforce size limits
-        if len(audio_bytes) > settings.AUDIO_MAX_PAYLOAD_BYTES:
-            session.state = AudioCaptureState.FAILED
-            raise ValidationError(
-                f"Audio payload size ({len(audio_bytes)} bytes) exceeds limit of "
-                f"{settings.AUDIO_MAX_PAYLOAD_BYTES} bytes."
+        # Enforce size limits and structural format validity
+        try:
+            validate_audio_payload(
+                audio_bytes,
+                max_bytes=settings.AUDIO_MAX_PAYLOAD_BYTES,
+                expected_format=audio_format,
             )
+        except ValidationError:
+            session.state = AudioCaptureState.FAILED
+            del audio_bytes
+            raise
 
         # Transcribe through neutral STT adapter
         start_t = time.perf_counter()
@@ -286,7 +314,7 @@ class AudioSessionManager:
             session.completed_at = utc_now()
         except Exception as exc:
             session.state = AudioCaptureState.FAILED
-            raise ValidationError(f"Speech transcription failed: {exc}")
+            raise ValidationError(f"Speech transcription failed: {exc}") from exc
         finally:
             # INVARIANT: Discard raw audio bytes immediately
             del audio_bytes
@@ -333,6 +361,9 @@ class AudioSessionManager:
         if not session:
             raise ValidationError(f"Audio session '{session_id}' not found.")
 
+        if self.capture_device and self.capture_device.is_active():
+            self.capture_device.cancel_capture()
+
         session.state = AudioCaptureState.CANCELLED
         session.completed_at = utc_now()
 
@@ -343,6 +374,20 @@ class AudioSessionManager:
             started_at=session.started_at,
             message="Audio session cancelled and temporary resources scrubbed.",
         )
+
+    def shutdown(self) -> None:
+        """Cancel all active sessions, release hardware capture devices, and scrub memory."""
+        for session_id in list(self._active_sessions.keys()):
+            try:
+                self.cancel_session(session_id)
+            except Exception:
+                pass
+        if self.capture_device and self.capture_device.is_active():
+            try:
+                self.capture_device.cancel_capture()
+            except Exception:
+                pass
+        self._active_sessions.clear()
 
     async def synthesize_speech(
         self,

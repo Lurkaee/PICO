@@ -128,9 +128,9 @@ describe('P11.2.3 Companion Visual State Machine & Truthfulness Invariants', () 
       sm.handleHealthResponse(true, 'healthy', 'Online', sm.nextSequence());
       expect(sm.getState().state).toBe('idle');
 
-      // Attempt transition to listening with perception_audio (which is not yet an ACTIVE_SOURCE)
-      expect(ACTIVE_SOURCES.has('perception_audio')).toBe(false);
-      const ok = sm.transition('listening', 'perception_audio');
+      // Attempt transition to speaking with voice_tts (which is not yet an ACTIVE_SOURCE)
+      expect(ACTIVE_SOURCES.has('voice_tts')).toBe(false);
+      const ok = sm.transition('speaking', 'voice_tts');
       expect(ok).toBe(false);
       // Companion must stay truthful in idle!
       expect(sm.getState().state).toBe('idle');
@@ -178,6 +178,56 @@ describe('P11.2.3 Companion Visual State Machine & Truthfulness Invariants', () 
       expect(sm.getState().state).toBe('idle');
       expect(sm.getState().reason).toBe('Health check 2');
       expect(sm.getState().sequenceNumber).toBe(s1); // No new sequence number for heartbeat
+    });
+  });
+
+  describe('6. Voice Perception Capture Transitions (Milestone P11.3)', () => {
+    beforeEach(() => {
+      sm.handleHealthResponse(true, 'healthy', 'Online', sm.nextSequence());
+      expect(sm.getState().state).toBe('idle');
+    });
+
+    it('transitions to listening when capturing with microphoneActive=true', () => {
+      const ok = sm.handleAudioCaptureState('capturing', true, 'Recording speech', sm.nextSequence());
+      expect(ok).toBe(true);
+      const st = sm.getState();
+      expect(st.state).toBe('listening');
+      expect(st.source).toBe('perception_audio');
+      expect(st.reason).toBe('Recording speech');
+    });
+
+    it('rejects transition to listening when microphoneActive=false (truthfulness invariant)', () => {
+      const ok = sm.handleAudioCaptureState('capturing', false, 'Simulated recording', sm.nextSequence());
+      expect(ok).toBe(false);
+      // State remains idle!
+      expect(sm.getState().state).toBe('idle');
+    });
+
+    it('transitions from listening to thinking when processing', () => {
+      sm.handleAudioCaptureState('capturing', true, 'Recording', sm.nextSequence());
+      expect(sm.getState().state).toBe('listening');
+
+      const ok = sm.handleAudioCaptureState('processing', false, 'Transcribing', sm.nextSequence());
+      expect(ok).toBe(true);
+      expect(sm.getState().state).toBe('thinking');
+      expect(sm.getState().source).toBe('perception_audio');
+    });
+
+    it('transitions from thinking back to idle when audio session completes or cancels', () => {
+      sm.handleAudioCaptureState('capturing', true, 'Recording', sm.nextSequence());
+      sm.handleAudioCaptureState('processing', false, 'Transcribing', sm.nextSequence());
+      expect(sm.getState().state).toBe('thinking');
+
+      const ok = sm.handleAudioCaptureState('completed', false, 'Finished', sm.nextSequence());
+      expect(ok).toBe(true);
+      expect(sm.getState().state).toBe('idle');
+    });
+
+    it('transitions to error when audio capture fails', () => {
+      sm.handleAudioCaptureState('capturing', true, 'Recording', sm.nextSequence());
+      const ok = sm.handleAudioCaptureState('failed', false, 'Mic error', sm.nextSequence());
+      expect(ok).toBe(true);
+      expect(sm.getState().state).toBe('error');
     });
   });
 });

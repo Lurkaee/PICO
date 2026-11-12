@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from pico.db.session import get_db
@@ -24,6 +25,20 @@ from pico.perception.contracts import (
 )
 from pico.perception.pipeline import PerceptionPipeline
 from pico.repositories.perception_event_repo import PerceptionEventRepository
+
+class AudioDeliverRequest(BaseModel):
+    conversation_id: str
+
+
+class AudioDeliverResponse(BaseModel):
+    session_id: str
+    conversation_id: str
+    message_id: str
+    transcription: str
+    data_classification: str
+    delivered: bool
+    created_at: str
+
 
 router = APIRouter(prefix="/api/perception", tags=["Multimodal Perception"])
 
@@ -91,6 +106,27 @@ def get_audio_session_status(
 ) -> AudioSessionStatusResponse:
     pipeline = PerceptionPipeline(db=db)
     return pipeline.get_audio_session_status(session_id)
+
+
+@router.post(
+    "/audio/session/{session_id}/deliver",
+    response_model=AudioDeliverResponse,
+    summary="Deliver transcribed speech from completed audio session into conversation message history",
+)
+def deliver_audio_transcript(
+    session_id: str,
+    payload: AudioDeliverRequest,
+    db: Session = Depends(get_db),
+) -> AudioDeliverResponse:
+    from pico.services.voice_service import VoiceService
+
+    voice_svc = VoiceService()
+    result = voice_svc.deliver_transcript_to_conversation(
+        session_id=session_id,
+        conversation_id=payload.conversation_id,
+        db=db,
+    )
+    return AudioDeliverResponse(**result)
 
 
 @router.post(
