@@ -39,6 +39,47 @@ def test_load_runtime_requirements_excludes_dev_packages() -> None:
         assert any(s.startswith(expected_prefix) for s in lowered), f"Missing {expected_prefix}"
 
 
+def test_locked_windows_runtime_manifest_integrity() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    lock_path = repo_root / "tools" / "packaging" / "requirements-windows-runtime.lock"
+    req_path = repo_root / "requirements.txt"
+
+    assert stage_mod.PYTHON_VERSION == "3.14.10"
+    assert stage_mod.PYTHON_ABI == "cp314"
+    assert stage_mod.TARGET_PLATFORM == "win_amd64"
+    assert "python314.dll" in stage_mod.REQUIRED_EMBED_FILES
+    assert "python314.zip" in stage_mod.REQUIRED_EMBED_FILES
+
+    locked = stage_mod.load_locked_runtime_requirements(lock_path, req_path)
+    lowered = [entry.lower() for entry in locked]
+    assert len(locked) == 23
+    assert not any(entry.startswith("pytest==") for entry in lowered)
+    for transitive in ("pydantic-core==", "starlette==", "markupsafe==", "mako==", "h11=="):
+        assert any(entry.startswith(transitive) for entry in lowered), f"Missing transitive {transitive}"
+
+
+def test_provision_nsis_script_pins_checksum_and_verifies_version() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "tools" / "packaging" / "provision_nsis.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    assert "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8" in content
+    assert "nsis-3.13/nsis-3.13.zip" in content
+    assert "/VERSION" in content
+    assert "Get-FileHash" in content
+
+
+def test_nsis_autostart_hook_preserves_upgrade_mode() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    hook_path = repo_root / "frontend" / "src-tauri" / "nsis-hooks.nsh"
+    content = hook_path.read_text(encoding="utf-8")
+
+    assert "NSIS_HOOK_POSTUNINSTALL" in content
+    assert "${If} $UpdateMode <> 1" in content
+    assert 'DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "PICO"' in content
+    assert "${EndIf}" in content
+
+
 def test_verify_payload_hygiene_rejects_secrets_and_dbs(tmp_path: Path) -> None:
     core_dir = tmp_path / "core"
     python_dir = tmp_path / "python"
