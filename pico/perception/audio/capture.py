@@ -287,45 +287,48 @@ class LocalAudioCaptureDevice(BaseAudioCaptureDevice):
                 raise AudioCaptureError("Microphone is not currently recording.")
 
             self._is_active = False
-
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except Exception as e:
-                    logger.warning("Error stopping audio input stream: %s", e)
-                finally:
-                    self._stream = None
+            stream = self._stream
+            self._stream = None
 
             raw_pcm = bytearray(self._buffer)
             zeroize_bytearray(self._buffer)
+            channels = self._channels
+            sample_rate = self._sample_rate
 
-            # Package 16-bit PCM frames into a standard WAV format container
-            out = io.BytesIO()
+        # Stop and close audio stream outside lock to prevent deadlock with audio callback thread
+        if stream is not None:
             try:
-                with wave.open(out, "wb") as wf:
-                    wf.setnchannels(self._channels)
-                    wf.setsampwidth(2)  # 16-bit PCM
-                    wf.setframerate(self._sample_rate)
-                    wf.writeframes(raw_pcm)
-                return bytearray(out.getvalue())
-            finally:
-                zeroize_bytearray(raw_pcm)
+                stream.stop()
+                stream.close()
+            except Exception as e:
+                logger.warning("Error stopping audio input stream: %s", e)
+
+        # Package 16-bit PCM frames into a standard WAV format container
+        out = io.BytesIO()
+        try:
+            with wave.open(out, "wb") as wf:
+                wf.setnchannels(channels)
+                wf.setsampwidth(2)  # 16-bit PCM
+                wf.setframerate(sample_rate)
+                wf.writeframes(raw_pcm)
+            return bytearray(out.getvalue())
+        finally:
+            zeroize_bytearray(raw_pcm)
 
     def cancel_capture(self) -> None:
         with self._lock:
             self._is_active = False
-
-            if self._stream is not None:
-                try:
-                    self._stream.stop()
-                    self._stream.close()
-                except Exception:
-                    pass
-                finally:
-                    self._stream = None
-
+            stream = self._stream
+            self._stream = None
             zeroize_bytearray(self._buffer)
+
+        # Stop and close audio stream outside lock to prevent deadlock
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
     def get_device_info(self) -> dict[str, Any]:
         return {

@@ -342,7 +342,7 @@ def verify_staged_python_imports(core_dir: Path, python_dir: Path) -> None:
             "import asyncio, importlib, sys; "
             "assert sys.version_info[:3] == (3, 14, 10), sys.version_info; "
             "mods = ['fastapi', 'uvicorn', 'pydantic', 'pydantic_settings', "
-            "'sqlalchemy', 'alembic', 'httpx', 'anyio', 'pico.main']; "
+            "'sqlalchemy', 'alembic', 'httpx', 'anyio', 'sounddevice', '_cffi_backend', 'pico.main']; "
             "[importlib.import_module(m) for m in mods]; "
             "blocked = False\n"
             "try:\n"

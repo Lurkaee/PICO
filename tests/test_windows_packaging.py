@@ -50,6 +50,8 @@ def test_locked_windows_runtime_manifest_integrity() -> None:
     lowered = [entry.lower() for entry in locked]
     assert len(locked) == 26
     assert any(entry.startswith("sounddevice==") for entry in lowered)
+    assert any(entry.startswith("cffi==") for entry in lowered)
+    assert any(entry.startswith("pycparser==") for entry in lowered)
     assert not any(entry.startswith("pytest==") for entry in lowered)
     for transitive in ("pydantic-core==", "starlette==", "markupsafe==", "mako==", "h11=="):
         assert any(entry.startswith(transitive) for entry in lowered), f"Missing transitive {transitive}"

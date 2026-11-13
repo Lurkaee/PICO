@@ -78,10 +78,17 @@ class PerceptionPipeline:
         )
 
     # --- Audio Pipeline ---
-    def start_audio_session(self, request: AudioSessionStartRequest) -> AudioSessionStartResponse:
+    def start_audio_session(
+        self,
+        request: AudioSessionStartRequest,
+        operator_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> AudioSessionStartResponse:
         return self.audio_manager.start_session(
             user_consent=request.user_consent,
             source_device=request.source_device,
+            operator_id=operator_id,
+            conversation_id=conversation_id or request.conversation_id,
             metadata=request.metadata,
         )
 

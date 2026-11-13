@@ -1000,7 +1000,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
 
         <div className="input-box-wrapper">
-          <VoiceControl onTranscription={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))} />
+          <VoiceControl
+            conversationId={activeConversation?.id}
+            onTranscription={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))}
+            onDelivered={() => {
+              void refreshHistory();
+            }}
+          />
 
           <textarea
             className="chat-textarea"

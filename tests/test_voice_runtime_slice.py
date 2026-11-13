@@ -530,6 +530,16 @@ def test_api_voice_deliver_endpoint_loopback_and_replay() -> None:
     client = TestClient(app)
     db = SessionLocal()
     try:
+        # Pair authenticated local operator
+        from pico.services.operator_session import OperatorSessionService
+
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        assert pair_res.status_code == 200
+        csrf_token = pair_res.json()["csrf_token"]
+        auth_headers = {"X-CSRF-Token": csrf_token}
+
         conv_repo = ConversationRepository(db)
         conv = conv_repo.create(conversation_id=generate_id("conv"), title="API Delivery Test")
 
@@ -538,7 +548,11 @@ def test_api_voice_deliver_endpoint_loopback_and_replay() -> None:
 
         _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="API Voice Message")
 
-        start_resp = client.post("/api/perception/audio/session/start", json={"user_consent": True})
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=auth_headers,
+        )
         assert start_resp.status_code == 201
         sess_id = start_resp.json()["session_id"]
 
@@ -552,10 +566,11 @@ def test_api_voice_deliver_endpoint_loopback_and_replay() -> None:
         assert stop_resp.status_code == 200
         assert stop_resp.json()["transcription"] == "API Voice Message"
 
-        # Deliver transcript into conversation
+        # Deliver transcript into conversation with authenticated operator context
         deliver_resp = client.post(
             f"/api/perception/audio/session/{sess_id}/deliver",
             json={"conversation_id": conv.id},
+            headers=auth_headers,
         )
         assert deliver_resp.status_code == 200
         assert deliver_resp.json()["delivered"] is True
@@ -564,6 +579,7 @@ def test_api_voice_deliver_endpoint_loopback_and_replay() -> None:
         replay_resp = client.post(
             f"/api/perception/audio/session/{sess_id}/deliver",
             json={"conversation_id": conv.id},
+            headers=auth_headers,
         )
         assert replay_resp.status_code == 422
         assert "already been delivered" in replay_resp.json()["detail"]
@@ -579,6 +595,263 @@ def test_api_voice_deliver_endpoint_loopback_and_replay() -> None:
         from pico.perception.pipeline import _shared_audio_manager
 
         _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_non_loopback_rejected() -> None:
+    # Client originating from non-loopback IP (e.g. 192.168.1.50) fails closed
+    client = TestClient(app, client=("192.168.1.50", 45678))
+    res = client.post(
+        "/api/perception/audio/session/aud_fake123/deliver",
+        json={"conversation_id": "conv_fake"},
+    )
+    assert res.status_code == 403
+    assert "loopback" in res.json()["detail"].lower()
+
+
+def test_api_voice_deliver_unauthorized_loopback_rejected() -> None:
+    # Local loopback client WITHOUT operator session cookie or approval token fails closed
+    client = TestClient(app)
+    res = client.post(
+        "/api/perception/audio/session/aud_fake123/deliver",
+        json={"conversation_id": "conv_fake"},
+    )
+    assert res.status_code == 403
+    assert "authenticated" in res.json()["detail"].lower()
+
+
+def test_api_voice_deliver_caller_supplied_transcript_rejected() -> None:
+    # Attempting to inject client-supplied transcript into delivery body fails closed with 422
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    service = OperatorSessionService.get_instance()
+    code = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": code.code})
+    csrf_token = pair_res.json()["csrf_token"]
+
+    res = client.post(
+        "/api/perception/audio/session/aud_test123/deliver",
+        json={"conversation_id": "conv_test", "transcription": "Injected malicious speech"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert res.status_code == 422
+
+
+def test_api_voice_deliver_wrong_conversation_rejected() -> None:
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv_a = conv_repo.create(conversation_id=generate_id("conv"), title="Conv A")
+        conv_b = conv_repo.create(conversation_id=generate_id("conv"), title="Conv B")
+
+        _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Secret message")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv_a.id},
+            headers=headers,
+        )
+        assert start_resp.status_code == 201
+        sess_id = start_resp.json()["session_id"]
+
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        wav_b64 = base64.b64encode(valid_wav).decode("ascii")
+
+        stop_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/stop",
+            json={"audio_base64": wav_b64, "audio_format": "wav"},
+        )
+        assert stop_resp.status_code == 200
+
+        # Attempt to deliver to conv_b when bound to conv_a must fail closed
+        mismatch_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv_b.id},
+            headers=headers,
+        )
+        assert mismatch_resp.status_code == 422
+        assert "was initialized for conversation" in mismatch_resp.json()["detail"]
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_cancelled_session_rejected() -> None:
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Cancel Test")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=headers,
+        )
+        sess_id = start_resp.json()["session_id"]
+
+        # Cancel the session
+        cancel_resp = client.post(f"/api/perception/audio/session/{sess_id}/cancel")
+        assert cancel_resp.status_code == 200
+
+        # Attempting to deliver a cancelled session must fail closed
+        deliv_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv.id},
+            headers=headers,
+        )
+        assert deliv_resp.status_code == 422
+        assert "cancelled" in deliv_resp.json()["detail"]
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_incomplete_session_rejected() -> None:
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Incomplete Test")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=headers,
+        )
+        sess_id = start_resp.json()["session_id"]
+
+        # Still capturing, not completed
+        deliv_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv.id},
+            headers=headers,
+        )
+        assert deliv_resp.status_code == 422
+        assert "not 'completed'" in deliv_resp.json()["detail"]
+
+        client.post(f"/api/perception/audio/session/{sess_id}/cancel")
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_concurrent_replay_race_prevented() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Concurrent Race Test")
+
+        _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Atomic speech")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=headers,
+        )
+        sess_id = start_resp.json()["session_id"]
+
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        wav_b64 = base64.b64encode(valid_wav).decode("ascii")
+
+        stop_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/stop",
+            json={"audio_base64": wav_b64, "audio_format": "wav"},
+        )
+        assert stop_resp.status_code == 200
+
+        # Fire 6 concurrent requests attempting to deliver the exact same session
+        def attempt_deliver() -> int:
+            resp = client.post(
+                f"/api/perception/audio/session/{sess_id}/deliver",
+                json={"conversation_id": conv.id},
+                headers=headers,
+            )
+            return resp.status_code
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(attempt_deliver) for _ in range(6)]
+            status_codes = [f.result() for f in futures]
+
+        # Exactly 1 delivery must succeed (200), all 5 concurrent replays must fail (422)
+        assert status_codes.count(200) == 1, f"Expected exactly one 200, got: {status_codes}"
+        assert status_codes.count(422) == 5, f"Expected 5 rejected (422), got: {status_codes}"
+
+        # Verify exactly 1 message was persisted in database
+        msgs_resp = client.get(f"/api/conversations/{conv.id}/messages")
+        assert msgs_resp.status_code == 200
+        assert len(msgs_resp.json()["items"]) == 1
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_voice_service_wrong_operator_rejected() -> None:
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter()
+    start_res = manager.start_session(user_consent=True, operator_id="operator_alice")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Alice's voice command"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Op Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+        # Attempt delivery with operator_bob must raise AuthorizationError
+        expected_msg = "not authorized to deliver audio session owned by 'operator_alice'"
+        with pytest.raises(AuthorizationError, match=expected_msg):
+            voice_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=db,
+                caller_operator_id="operator_bob",
+            )
+    finally:
         db.close()
 
 

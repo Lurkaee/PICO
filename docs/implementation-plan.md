@@ -400,7 +400,7 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
   - **Objective**: Extend P6 audio infrastructure with genuine local speech recognition and text-to-speech runtimes, with an optional privacy-safe wake-word detector.
   - **Staged Implementation Sequence**:
     1. Local STT/TTS engine selection and hardware qualification gate (RTX 3050 VRAM <1.2GB budget, single-model residency).
-    2. [x] **P11.3.1 Audio Capture & Push-to-Talk Session Lifecycle**: Local audio capture abstraction (`BaseAudioCaptureDevice`), `sounddevice` host driver integration with bounded buffering, deterministic test mocks (`MockAudioCaptureDevice`), strict RIFF/WAVE header validation without synthetic bypasses, best-effort mutable buffer zeroization on all exits, single-session concurrency, session TTL pruning, replay-protected transcript delivery to conversation history (`VoiceService`), and truthful companion state machine transitions.
+    2. [x] **P11.3.1 Audio Capture & Push-to-Talk Session Lifecycle**: Local audio capture abstraction (`BaseAudioCaptureDevice`), `sounddevice` host driver integration with bounded buffering, deadlock-free stream shutdown outside state locks, deterministic test mocks (`MockAudioCaptureDevice`), strict RIFF/WAVE header validation without synthetic bypasses, best-effort mutable buffer zeroization on all exits, single-session concurrency, session TTL pruning, replay-protected transcript delivery to conversation history (`VoiceService`) enforced under strict Policy A authorization (`get_authorization_context` with paired local operator sessions, desktop bridge proofs, and approval tokens), and truthful companion state machine transitions.
     3. Local Speech-to-Text (STT) runtime integration (embedded Whisper engine running locally on CPU or dedicated GPU VRAM).
     4. Local Text-to-Speech (TTS) runtime integration (low-latency natural speech synthesis, e.g. Piper ONNX).
     5. Voice Activity Detection (VAD) & bounded wake-word engine (energy/Silero VAD, optional opt-in wake-word).
@@ -409,9 +409,10 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
     8. Audio privacy, retention, and cryptographic ledger provenance.
     9. Multi-turn voice dialog and barge-in cancellation.
   - **Capability Boundaries & Current Status**:
-    - *Hardware Driver Capture*: Implemented via `sounddevice` with lazy stream opening and bounded buffering up to 10 MB.
-    - *Simulated & Injected Testing*: Tested with mocked streams and `MockAudioCaptureDevice`. Physical microphone acoustics and acoustic quality remain unverified on headless runners.
-    - *Speech Recognition*: Local STT is planned for stage 3; production endpoints fail closed with truthful capability reporting and zero fabricated transcripts.
+    - *Hardware Driver Capture*: Implemented via `sounddevice` with lazy stream opening, bounded buffering up to 10 MB, and deadlock-free stream lifecycle management.
+    - *Simulated & Injected Testing*: Tested with mocked streams, bounded buffers, and `MockAudioCaptureDevice`. Physical microphone acoustics and acoustic quality in physical rooms remain unverified on headless runners.
+    - *Speech Recognition*: Local STT is planned for stage 3; production endpoints fail closed with truthful capability reporting, zero fabricated transcripts, and zero synthetic bypasses.
+    - *Transcript Authorization*: Delivery endpoint (`POST /api/perception/audio/session/{session_id}/deliver`) enforces Policy A caller authorization, operator binding, conversation binding, atomic check-and-set locking, and database-level message persistence deduplication against concurrent races.
   - **Prerequisites**: P6, P10.2.2, P11.2.
   - **Acceptance Criteria**:
     - Push-to-talk transcribes spoken English locally within target latency (<1.5s for 5s utterance on target hardware).

@@ -13,6 +13,7 @@ Architectural Invariants:
 from __future__ import annotations
 
 import base64
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -172,17 +173,29 @@ class LocalTextToSpeechAdapter(BaseTextToSpeechAdapter):
 class AudioSession:
     """State record for a single push-to-talk audio session."""
 
-    def __init__(self, session_id: str, source_device: str, user_consent: bool) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        source_device: str,
+        user_consent: bool,
+        operator_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
         self.session_id = session_id
         self.source_device = source_device
         self.user_consent = user_consent
+        self.operator_id = operator_id
+        self.conversation_id = conversation_id
         self.state = AudioCaptureState.CAPTURING
         self.started_at = utc_now()
         self.completed_at: datetime | None = None
         self.transcription: str | None = None
         self.confidence: float = 0.0
+        self.duration_seconds: float = 0.0
         self.delivered: bool = False
         self.delivered_at: datetime | None = None
+        self.delivered_message_id: str | None = None
+        self._delivery_lock = threading.Lock()
 
 
 class AudioSessionManager:
@@ -255,6 +268,8 @@ class AudioSessionManager:
         self,
         user_consent: bool,
         source_device: str = "mic:local",
+        operator_id: str | None = None,
+        conversation_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AudioSessionStartResponse:
         if not settings.PERCEPTION_ENABLED:
@@ -278,7 +293,13 @@ class AudioSessionManager:
 
         clean_device = validate_trusted_source_device(Modality.AUDIO, source_device)
         session_id = f"aud_{uuid.uuid4().hex[:16]}"
-        session = AudioSession(session_id=session_id, source_device=clean_device, user_consent=user_consent)
+        session = AudioSession(
+            session_id=session_id,
+            source_device=clean_device,
+            user_consent=user_consent,
+            operator_id=operator_id,
+            conversation_id=conversation_id,
+        )
 
         mic_active = False
         if self.capture_device:
@@ -374,6 +395,7 @@ class AudioSessionManager:
             zeroize_bytearray(audio_buffer)
 
         duration_sec = client_duration_seconds or max(0.5, round(elapsed, 2))
+        session.duration_seconds = duration_sec
         effective_classification = compute_trusted_perception_classification(
             modality=Modality.AUDIO,
             source_device=session.source_device,
@@ -418,8 +440,9 @@ class AudioSessionManager:
         if self.capture_device and self.capture_device.is_active():
             self.capture_device.cancel_capture()
 
-        session.state = AudioCaptureState.CANCELLED
-        session.completed_at = utc_now()
+        with session._delivery_lock:
+            session.state = AudioCaptureState.CANCELLED
+            session.completed_at = utc_now()
 
         return AudioSessionStartResponse(
             session_id=session_id,
