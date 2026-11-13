@@ -273,7 +273,7 @@ jobs:
 
       - name: Upload NSIS installer and qualification artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pico-windows-nsis-installer
           if-no-files-found: warn
