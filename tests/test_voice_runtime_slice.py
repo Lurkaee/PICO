@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -822,8 +823,225 @@ def test_api_voice_deliver_concurrent_replay_race_prevented() -> None:
         msgs_resp = client.get(f"/api/conversations/{conv.id}/messages")
         assert msgs_resp.status_code == 200
         assert len(msgs_resp.json()["items"]) == 1
+
+        # Verify exactly 1 audit perception event was persisted for this session
+        events_resp = client.get("/api/perception/events?modality=audio&event_type=voice_transcript_delivery")
+        assert events_resp.status_code == 200
+        delivered_events = [e for e in events_resp.json()["items"] if e.get("session_id") == sess_id]
+        assert len(delivered_events) == 1
     finally:
         _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_voice_service_concurrent_separate_service_instances() -> None:
+    """Requirement: Concurrent delivery through separate service instances must be strictly serialized
+    and deduplicated at the database boundary."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Separate service instances")
+    start_res = manager.start_session(user_consent=True, operator_id="operator_test")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Separate service instances speech"
+
+    db_setup = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db_setup)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Separate Service Test")
+    finally:
+        db_setup.close()
+
+    results: list[tuple[bool, str | None]] = []
+
+    def attempt_with_separate_service() -> tuple[bool, str | None]:
+        # Each thread gets its own db session and its own VoiceService instance
+        thread_db = SessionLocal()
+        thread_svc = VoiceService(audio_manager=manager)
+        try:
+            res = thread_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=thread_db,
+                caller_operator_id="operator_test",
+            )
+            return (True, res["message_id"])
+        except ValidationError as e:
+            return (False, str(e))
+        finally:
+            thread_db.close()
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(attempt_with_separate_service) for _ in range(6)]
+        results = [f.result() for f in futures]
+
+    successes = [r for r in results if r[0] is True]
+    rejections = [r for r in results if r[0] is False]
+
+    assert len(successes) == 1, f"Expected exactly 1 success, got: {results}"
+    assert len(rejections) == 5, f"Expected 5 rejections, got: {results}"
+
+    # Verify actual database state
+    verify_db = SessionLocal()
+    try:
+        msg_repo = MessageRepository(verify_db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+        assert msgs[0].content == "Separate service instances speech"
+    finally:
+        verify_db.close()
+
+
+def test_voice_service_retry_after_successful_delivery() -> None:
+    """Requirement: A retry after successful delivery must fail closed with ValidationError
+    without adding another message."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Retry test")
+    start_res = manager.start_session(user_consent=True, operator_id="op_retry")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Retry transcript"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Retry Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+        # 1. First delivery succeeds
+        res1 = voice_svc.deliver_transcript_to_conversation(
+            session_id=start_res.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_retry",
+        )
+        assert res1["delivered"] is True
+
+        # 2. Immediate second delivery attempt fails closed
+        with pytest.raises(ValidationError, match="already been delivered"):
+            voice_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=db,
+                caller_operator_id="op_retry",
+            )
+
+        # 3. Verify exactly 1 message in database
+        msg_repo = MessageRepository(db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+    finally:
+        db.close()
+
+
+def test_voice_service_failure_during_persistence_preserves_session_for_retry() -> None:
+    """Requirement: If database persistence fails (e.g. database error/rollback), the in-memory
+    session must NOT be permanently marked delivered, enabling safe operator retry."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Fail test")
+    start_res = manager.start_session(user_consent=True, operator_id="op_fail")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Payload to retry"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="DB Error Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+
+        # Simulate a database failure by patching db.commit to raise an OperationalError
+        from unittest.mock import patch
+
+        with patch.object(db, "commit", side_effect=RuntimeError("Simulated DB Disk I/O Failure")):
+            with pytest.raises(RuntimeError, match="Simulated DB Disk I/O Failure"):
+                voice_svc.deliver_transcript_to_conversation(
+                    session_id=start_res.session_id,
+                    conversation_id=conv.id,
+                    db=db,
+                    caller_operator_id="op_fail",
+                )
+
+        # Session must NOT be marked delivered
+        assert sess.delivered is False
+        assert sess.delivered_at is None
+
+        # Retry after DB issue resolves must succeed cleanly
+        res2 = voice_svc.deliver_transcript_to_conversation(
+            session_id=start_res.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_fail",
+        )
+        assert res2["delivered"] is True
+        assert sess.delivered is True
+
+        msg_repo = MessageRepository(db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+    finally:
+        db.close()
+
+
+def test_voice_service_process_level_session_reload_idempotency() -> None:
+    """Requirement: If a process reboots or reloads where the in-memory AudioSessionManager is fresh,
+    attempting to deliver the same session_id again against the database must be rejected by the
+    durable database constraint."""
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Reload Test")
+
+        # Process 1 creates and delivers session
+        manager1 = AudioSessionManager()
+        manager1.stt_adapter = MockSpeechToTextAdapter(default_transcription="Pre-restart speech")
+        start1 = manager1.start_session(user_consent=True, operator_id="op_restart")
+        sess1 = manager1.get_session(start1.session_id)
+        assert sess1 is not None
+        sess1.state = AudioCaptureState.COMPLETED
+        sess1.transcription = "Pre-restart speech"
+
+        svc1 = VoiceService(audio_manager=manager1)
+        res1 = svc1.deliver_transcript_to_conversation(
+            session_id=start1.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_restart",
+        )
+        assert res1["delivered"] is True
+
+        # Process 2 starts up fresh with an empty manager or a restored session that has delivered=False
+        manager2 = AudioSessionManager()
+        manager2.stt_adapter = MockSpeechToTextAdapter(default_transcription="Pre-restart speech")
+        # Simulate session restore or replay in separate process context
+        start2_res = manager2.start_session(user_consent=True, operator_id="op_restart")
+        sess2 = manager2.get_session(start2_res.session_id)
+        assert sess2 is not None
+        # Force session_id to match original
+        original_sess_id = start1.session_id
+        manager2._active_sessions[original_sess_id] = sess2
+        sess2.session_id = original_sess_id
+        sess2.state = AudioCaptureState.COMPLETED
+        sess2.transcription = "Pre-restart speech"
+        sess2.delivered = False  # fresh in-memory state
+
+        svc2 = VoiceService(audio_manager=manager2)
+        # Attempt to deliver must be rejected by durable database constraint
+        with pytest.raises(ValidationError, match="database integrity constraint"):
+            svc2.deliver_transcript_to_conversation(
+                session_id=original_sess_id,
+                conversation_id=conv.id,
+                db=db,
+                caller_operator_id="op_restart",
+            )
+
+        msg_repo = MessageRepository(db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+    finally:
         db.close()
 
 

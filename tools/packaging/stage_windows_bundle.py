@@ -234,6 +234,12 @@ def stage_python_runtime(archive_path: Path, python_dir: Path, lockfile_path: Pa
     for pyc in site_packages.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
 
+    # Prune non-production developer/CI directories bundled inside upstream vendor wheels
+    # (e.g. _sounddevice_data/portaudio-binaries/.github shipped in sounddevice wheel)
+    for forbidden_dir in site_packages.rglob(".github"):
+        if forbidden_dir.is_dir():
+            shutil.rmtree(forbidden_dir, ignore_errors=True)
+
     pth_path = python_dir / "python314._pth"
     pth_content = "\n".join(
         [

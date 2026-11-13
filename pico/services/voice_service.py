@@ -14,15 +14,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pico.core.errors import AuthorizationError, EntityNotFoundError, ValidationError
 from pico.core.id_gen import generate_id
+from pico.models.message import Message
+from pico.models.perception_event import PerceptionEvent
 from pico.perception.audio.adapter import AUDIO_SESSION_TTL_SECONDS, AudioSessionManager, utc_now
 from pico.perception.classification import compute_trusted_perception_classification
 from pico.perception.contracts import AudioCaptureState, Modality
 from pico.repositories.conversation_repo import ConversationRepository
-from pico.repositories.message_repo import MessageRepository
 
 MAX_TRANSCRIPT_LENGTH_CHARS = 10000
 
@@ -116,20 +118,6 @@ class VoiceService:
             if not conversation:
                 raise EntityNotFoundError("Conversation", conversation_id)
 
-            msg_repo = MessageRepository(db)
-
-            # Database-level persistence deduplication check (defense-in-depth against replay)
-            existing_messages = msg_repo.list_by_conversation(conversation_id=conversation_id, limit=500)
-            if any(
-                m.metadata_json and m.metadata_json.get("perception_session_id") == session_id
-                for m in existing_messages
-            ):
-                session.delivered = True
-                raise ValidationError(
-                    f"Audio session '{session_id}' was already recorded in conversation '{conversation_id}'. "
-                    "Replay is rejected."
-                )
-
             # Compute effective classification from trusted perception boundary (enforce at least INTERNAL)
             effective_classification = compute_trusted_perception_classification(
                 modality=Modality.AUDIO,
@@ -146,16 +134,62 @@ class VoiceService:
             }
 
             message_id = generate_id("msg")
-            msg = msg_repo.create(
-                message_id=message_id,
+            event_id = generate_id("pe")
+
+            # Transactionally create the audit PerceptionEvent with unique constraint on session_id,
+            # and create the Conversation Message. If a concurrent attempt or replay race occurs,
+            # the unique index on perception_events(session_id) raises IntegrityError, causing an
+            # immediate rollback and preventing duplicate messages or orphaned state.
+            msg = Message(
+                id=message_id,
                 conversation_id=conversation_id,
                 role="user",
                 content=transcription,
                 data_classification=effective_classification,
                 metadata_json=metadata_dict,
+                created_at=now,
             )
 
-            # Mark delivered to prevent duplicate replay
+            delivery_event = PerceptionEvent(
+                id=event_id,
+                correlation_id=session_id,
+                modality="audio",
+                event_type="voice_transcript_delivery",
+                source_device_id=session.source_device,
+                data_classification=effective_classification,
+                confidence=1.0,
+                raw_payload_scrubbed=True,
+                structured_data={
+                    "message_id": message_id,
+                    "conversation_id": conversation_id,
+                    "operator_id": caller_operator_id or session.operator_id or "local_operator",
+                    "duration_seconds": getattr(session, "duration_seconds", 0.0),
+                },
+                provenance="pico.perception.audio.delivery",
+                retention_policy="short_term_audit",
+                session_id=session_id,
+                parent_event_ids=None,
+                created_at=now,
+            )
+
+            try:
+                db.add(msg)
+                db.add(delivery_event)
+                db.commit()
+                db.refresh(msg)
+            except IntegrityError as exc:
+                db.rollback()
+                session.delivered = True
+                raise ValidationError(
+                    f"Audio session '{session_id}' has already been delivered to conversation '{conversation_id}'. "
+                    "Concurrent or duplicate delivery is rejected by database integrity constraint."
+                ) from exc
+            except Exception:
+                db.rollback()
+                # On unexpected DB failure, do NOT mark session delivered so caller can safely retry
+                raise
+
+            # Transition in-memory session to delivered only after durable DB commit succeeds
             session.delivered = True
             session.delivered_at = now
             session.delivered_message_id = msg.id
