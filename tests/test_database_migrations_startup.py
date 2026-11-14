@@ -38,7 +38,11 @@ from sqlalchemy.orm import sessionmaker
 from alembic import command
 from pico.core.config import settings
 from pico.db.base import Base
-from pico.db.session import apply_pending_migrations
+from pico.db.session import (
+    _canonicalize_sqlite_db_path,
+    _migration_file_lock,
+    apply_pending_migrations,
+)
 from pico.main import app
 from pico.models.conversation import Conversation
 from pico.models.message import Message
@@ -452,5 +456,308 @@ def test_database_startup_concurrent_migrations_safe() -> None:
         insp = inspect(engine)
         assert "uq_perception_events_voice_session" in [idx["name"] for idx in insp.get_indexes("perception_events")]
         engine.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _create_legacy_unversioned_db(db_url: str) -> None:
+    """Helper to construct a valid unversioned legacy database matching pre-c3d4e5f6a7b8 schema."""
+    engine = create_engine(db_url)
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        conn.execute(text("DROP INDEX IF EXISTS uq_perception_events_voice_session"))
+        conn.commit()
+    engine.dispose()
+
+
+def test_database_startup_legacy_missing_table_fails_closed() -> None:
+    """Negative 1: An unversioned database missing a required baseline table fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_missing_tbl_")
+    try:
+        db_path = Path(temp_dir) / "missing_tbl.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Drop one of the required baseline tables
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE workflow_steps;"))
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="Missing expected baseline tables") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "workflow_steps" in str(exc_info.value)
+
+        # Assert database was NOT stamped or modified
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_missing_column_fails_closed() -> None:
+    """Negative 2: An unversioned database missing a required column fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_missing_col_")
+    try:
+        db_path = Path(temp_dir) / "missing_col.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Drop required column 'role' from messages table
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE messages DROP COLUMN role;"))
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="is missing required columns") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "role" in str(exc_info.value)
+        assert "messages" in str(exc_info.value)
+
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_incompatible_column_type_or_nullability_fails_closed() -> None:
+    """Negative 3: An unversioned database with incompatible column nullability or type fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_bad_col_")
+    try:
+        db_path = Path(temp_dir) / "bad_col.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Re-create messages table with nullable 'role' (expected nullable=False)
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE messages;"))
+            conn.execute(
+                text(
+                    "CREATE TABLE messages ("
+                    "id VARCHAR(64) PRIMARY KEY NOT NULL, "
+                    "conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, "
+                    "role VARCHAR(32) NULL, "
+                    "content TEXT NOT NULL, "
+                    "data_classification VARCHAR(32) NOT NULL, "
+                    "token_count INTEGER, "
+                    "metadata_json JSON, "
+                    "created_at DATETIME NOT NULL"
+                    ");"
+                )
+            )
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="nullability mismatch") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "messages.role" in str(exc_info.value)
+
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_missing_foreign_key_fails_closed() -> None:
+    """Negative 4: An unversioned database missing a required foreign key constraint fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_missing_fk_")
+    try:
+        db_path = Path(temp_dir) / "missing_fk.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Re-create messages table WITHOUT the foreign key constraint to conversations
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE messages;"))
+            conn.execute(
+                text(
+                    "CREATE TABLE messages ("
+                    "id VARCHAR(64) PRIMARY KEY NOT NULL, "
+                    "conversation_id VARCHAR(64) NOT NULL, "
+                    "role VARCHAR(32) NOT NULL, "
+                    "content TEXT NOT NULL, "
+                    "data_classification VARCHAR(32) NOT NULL, "
+                    "token_count INTEGER, "
+                    "metadata_json JSON, "
+                    "created_at DATETIME NOT NULL"
+                    ");"
+                )
+            )
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="missing foreign key constraint") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "conversations" in str(exc_info.value)
+        assert "messages" in str(exc_info.value)
+
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_unexpected_partially_upgraded_schema_fails_closed() -> None:
+    """Negative 5: An unversioned database that already has post-baseline indexes fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_partial_upgrade_")
+    try:
+        db_path = Path(temp_dir) / "partial_upgrade.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Unexpected state: uq_perception_events_voice_session already present without alembic_version
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_perception_events_voice_session "
+                    "ON perception_events (session_id) "
+                    "WHERE event_type = 'voice_transcript_delivery';"
+                )
+            )
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="Unexpected partially upgraded schema detected") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "uq_perception_events_voice_session" in str(exc_info.value)
+
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_voice_session_delivery_partial_unique_index_allows_unrelated_events() -> None:
+    """Verify uq_perception_events_voice_session operates strictly on session_id and allows non-delivery events."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_index_id_")
+    try:
+        db_path = Path(temp_dir) / "index_id.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+
+        apply_pending_migrations(db_url)
+        engine = create_engine(db_url)
+        Session = sessionmaker(bind=engine)
+        shared_session_id = "aud_shared_test_123"
+
+        with Session() as s:
+            # 1. Multiple ambient noise samples with identical session_id are permitted
+            ev1 = PerceptionEvent(
+                id="ev_ambient_1",
+                correlation_id="corr_1",
+                modality="audio",
+                event_type="ambient_noise_sample",
+                source_device_id="mic:host",
+                data_classification="INTERNAL",
+                confidence=0.9,
+                raw_payload_scrubbed=True,
+                structured_data={"db": -40.0},
+                provenance="sensor",
+                session_id=shared_session_id,
+            )
+            ev2 = PerceptionEvent(
+                id="ev_ambient_2",
+                correlation_id="corr_2",
+                modality="audio",
+                event_type="ambient_noise_sample",
+                source_device_id="mic:host",
+                data_classification="INTERNAL",
+                confidence=0.9,
+                raw_payload_scrubbed=True,
+                structured_data={"db": -41.0},
+                provenance="sensor",
+                session_id=shared_session_id,
+            )
+            s.add(ev1)
+            s.add(ev2)
+            s.commit()
+
+        # 2. First delivery event with shared_session_id is permitted
+        with Session() as s:
+            ev3 = PerceptionEvent(
+                id="ev_delivery_1",
+                correlation_id="corr_3",
+                modality="audio",
+                event_type="voice_transcript_delivery",
+                source_device_id="mic:host",
+                data_classification="INTERNAL",
+                confidence=1.0,
+                raw_payload_scrubbed=True,
+                structured_data={"transcript": "hello"},
+                provenance="audio:mic:host",
+                session_id=shared_session_id,
+            )
+            s.add(ev3)
+            s.commit()
+
+        # 3. Duplicate delivery event with the same session_id is REJECTED by the unique index
+        with Session() as s:
+            ev4 = PerceptionEvent(
+                id="ev_delivery_2",
+                correlation_id="corr_4",
+                modality="audio",
+                event_type="voice_transcript_delivery",
+                source_device_id="mic:host",
+                data_classification="INTERNAL",
+                confidence=1.0,
+                raw_payload_scrubbed=True,
+                structured_data={"transcript": "duplicate hello"},
+                provenance="audio:mic:host",
+                session_id=shared_session_id,
+            )
+            s.add(ev4)
+            with pytest.raises(Exception, match="UNIQUE constraint failed"):
+                s.commit()
+
+        engine.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_migration_file_lock_canonicalization_and_equivalence() -> None:
+    """Verify _migration_file_lock path canonicalization and relative/absolute equivalence."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_lock_test_")
+    try:
+        db_path = Path(temp_dir) / "lock_target.db"
+        abs_path_str = db_path.resolve().as_posix()
+        url_rel = f"sqlite:///{db_path.name}"
+        url_abs = f"sqlite:///{abs_path_str}"
+
+        # Canonicalize should resolve relative and absolute paths
+        can_rel = _canonicalize_sqlite_db_path(url_rel)
+        can_abs = _canonicalize_sqlite_db_path(url_abs)
+        assert can_abs is not None
+        assert can_abs == db_path.resolve()
+        assert can_rel == Path(db_path.name).resolve()
+
+        # In-memory URLs return None (no lock file)
+        assert _canonicalize_sqlite_db_path("sqlite:///:memory:") is None
+        assert _canonicalize_sqlite_db_path("sqlite://") is None
+        assert _canonicalize_sqlite_db_path("sqlite:///") is None
+
+        # Lock acquisition on absolute URL creates .migration.lock beside target DB
+        with _migration_file_lock(url_abs):
+            expected_lock = db_path.parent / f"{db_path.name}.migration.lock"
+            assert expected_lock.exists()
+
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

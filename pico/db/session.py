@@ -1,6 +1,7 @@
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, event, text
@@ -72,19 +73,30 @@ LEGACY_UNVERSIONED_TABLES: frozenset[str] = frozenset(
 _MIGRATION_THREAD_LOCK = threading.Lock()
 
 
+def _canonicalize_sqlite_db_path(db_url: str) -> Path | None:
+    """Extract and canonicalize physical filesystem path from a SQLite database URL."""
+    if not db_url.startswith("sqlite:"):
+        return None
+    if ":memory:" in db_url or db_url in ("sqlite://", "sqlite:///"):
+        return None
+    prefix = "sqlite:///" if db_url.startswith("sqlite:///") else "sqlite://"
+    raw_path = db_url[len(prefix) :]
+    if "?" in raw_path:
+        raw_path = raw_path.split("?", 1)[0]
+    if not raw_path or raw_path == ":memory:":
+        return None
+    return Path(raw_path).resolve()
+
+
 @contextmanager
 def _migration_file_lock(db_url: str) -> Generator[None, None, None]:
     """Cross-process and cross-thread lock for deterministic database migration execution."""
     import sys
     import time
-    from pathlib import Path
 
     with _MIGRATION_THREAD_LOCK:
-        if db_url.startswith("sqlite:///") and ":memory:" not in db_url:
-            raw_path = db_url[len("sqlite:///") :]
-            if "?" in raw_path:
-                raw_path = raw_path.split("?", 1)[0]
-            db_file = Path(raw_path)
+        db_file = _canonicalize_sqlite_db_path(db_url)
+        if db_file is not None:
             lock_path = db_file.parent / f"{db_file.name}.migration.lock"
             lock_path.parent.mkdir(parents=True, exist_ok=True)
             with open(lock_path, "a+b") as lock_file:
@@ -124,6 +136,95 @@ def _migration_file_lock(db_url: str) -> Generator[None, None, None]:
                         pass
         else:
             yield
+
+
+def validate_legacy_unversioned_schema(insp: Any, db_url: str) -> None:
+    """Validate that an unversioned SQLite database strictly matches the recognized legacy baseline schema.
+
+    Enforces all 18 historical tables for:
+    - Required table presence
+    - Required column presence, type compatibility, and nullability
+    - Primary key constraints
+    - Foreign key constraints
+    - Rejection of unexpected partially upgraded states (e.g. index already exists without alembic_version)
+    """
+    from pico.db.legacy_baseline_manifest import LEGACY_BASELINE_SCHEMA
+
+    table_names = set(insp.get_table_names())
+    expected_tables = set(LEGACY_BASELINE_SCHEMA.keys())
+
+    # 1. Check all 18 required baseline tables
+    if not expected_tables.issubset(table_names):
+        missing = sorted(expected_tables - table_names)
+        diagnostic = (
+            f"Ambiguous unversioned database schema detected on {db_url}. "
+            f"Found tables: {sorted(table_names)}. "
+            f"Missing expected baseline tables: {missing}. "
+            f"Refusing to guess or stamp an arbitrary migration revision."
+        )
+        raise RuntimeError(diagnostic)
+
+    # 2. Check each table's columns, types, nullability, PKs, FKs
+    for table_name, expected_spec in LEGACY_BASELINE_SCHEMA.items():
+        actual_cols = {c["name"]: c for c in insp.get_columns(table_name)}
+        expected_cols = expected_spec["columns"]
+
+        # Missing column
+        missing_cols = sorted(set(expected_cols.keys()) - set(actual_cols.keys()))
+        if missing_cols:
+            raise RuntimeError(
+                f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
+                f"is missing required columns {missing_cols}."
+            )
+
+        # Nullability & Type compatibility
+        for col_name, exp_col in expected_cols.items():
+            act_col = actual_cols[col_name]
+            if act_col["nullable"] != exp_col["nullable"]:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: column '{table_name}.{col_name}' "
+                    f"nullability mismatch (got nullable={act_col['nullable']}, expected {exp_col['nullable']})."
+                )
+
+            act_type = str(act_col["type"]).upper().split("(")[0].strip()
+            exp_type = exp_col["type"].split("(")[0].strip()
+            if act_type != exp_type:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: column '{table_name}.{col_name}' "
+                    f"type mismatch (got {act_type}, expected {exp_type})."
+                )
+
+        # Primary Key
+        act_pk = insp.get_pk_constraint(table_name).get("constrained_columns") or []
+        if sorted(act_pk) != sorted(expected_spec["primary_key"]):
+            raise RuntimeError(
+                f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
+                f"primary key mismatch (got {act_pk}, expected {expected_spec['primary_key']})."
+            )
+
+        # Foreign Keys
+        act_fks = insp.get_foreign_keys(table_name)
+        for exp_fk in expected_spec["foreign_keys"]:
+            matched = any(
+                fk.get("referred_table") == exp_fk["referred_table"]
+                and sorted(fk.get("constrained_columns") or []) == sorted(exp_fk["constrained_columns"])
+                and sorted(fk.get("referred_columns") or []) == sorted(exp_fk["referred_columns"])
+                for fk in act_fks
+            )
+            if not matched:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
+                    f"missing foreign key constraint on {exp_fk['constrained_columns']} -> {exp_fk['referred_table']}."
+                )
+
+    # 3. Check for unexpected partially upgraded schema on perception_events
+    pe_indexes = [idx["name"] for idx in insp.get_indexes("perception_events")]
+    if "uq_perception_events_voice_session" in pe_indexes:
+        raise RuntimeError(
+            f"Unexpected partially upgraded schema detected on {db_url}: "
+            f"table 'perception_events' already contains index 'uq_perception_events_voice_session', "
+            f"but 'alembic_version' is absent. Database may be partially migrated or corrupt."
+        )
 
 
 def apply_pending_migrations(target_database_url: str | None = None) -> None:
@@ -195,39 +296,8 @@ def apply_pending_migrations(target_database_url: str | None = None) -> None:
 
             # 2. Legacy unversioned database: tables exist, but alembic_version table is absent
             elif table_names:
-                # Rigorously validate that existing schema matches the recognized P11.2 unversioned baseline
-                if not LEGACY_UNVERSIONED_TABLES.issubset(table_names):
-                    missing_tables = sorted(LEGACY_UNVERSIONED_TABLES - table_names)
-                    diagnostic = (
-                        f"Ambiguous unversioned database schema detected on {db_url}. "
-                        f"Found tables: {sorted(table_names)}. "
-                        f"Missing expected baseline tables: {missing_tables}. "
-                        f"Refusing to guess or stamp an arbitrary migration revision. "
-                        f"Manual inspection or database recovery is required."
-                    )
-                    logger.error(diagnostic)
-                    raise RuntimeError(diagnostic)
-
-                # Validate key baseline table column definitions
-                pe_cols = {c["name"] for c in insp.get_columns("perception_events")}
-                if not {"id", "session_id", "modality", "event_type", "data_classification"}.issubset(pe_cols):
-                    diagnostic = (
-                        f"Ambiguous unversioned perception_events schema on {db_url}. "
-                        f"Columns {pe_cols} do not match expected baseline."
-                    )
-                    logger.error(diagnostic)
-                    raise RuntimeError(diagnostic)
-
-                # Check if voice session unique index is already present
-                indexes = [idx["name"] for idx in insp.get_indexes("perception_events")]
-                if "uq_perception_events_voice_session" in indexes:
-                    logger.info(
-                        "Recognized legacy unversioned schema with voice index already present on %s; stamping head.",
-                        db_url,
-                    )
-                    command.stamp(alembic_cfg, "c3d4e5f6a7b8")
-                    return
-
+                # Rigorously validate all 18 tables against the recognized P11.2 unversioned baseline
+                validate_legacy_unversioned_schema(insp, db_url)
                 logger.info(
                     "Recognized verified legacy unversioned P11.2 schema baseline on %s; stamping b2c3d4e5f6a7.",
                     db_url,
