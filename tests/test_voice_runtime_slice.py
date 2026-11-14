@@ -251,6 +251,24 @@ def test_validate_audio_payload_unsupported_compressed_format_rejected() -> None
         validate_audio_payload(bad_fmt_wav, expected_format="wav")
 
 
+def test_validate_audio_payload_rejects_stereo_and_non_16k_rates() -> None:
+    """Authoritative contract: Only mono (1 ch), 16000 Hz, 16-bit PCM is accepted in P11.3.1."""
+    # Stereo WAV must fail
+    stereo_wav = make_valid_wav_bytes(duration_sec=0.1, sample_rate=16000, channels=2, bits_per_sample=16)
+    with pytest.raises(ValidationError, match="Unsupported WAV channel count"):
+        validate_audio_payload(stereo_wav, expected_format="wav")
+
+    # 44.1 kHz WAV must fail
+    cd_rate_wav = make_valid_wav_bytes(duration_sec=0.1, sample_rate=44100, channels=1, bits_per_sample=16)
+    with pytest.raises(ValidationError, match="Unsupported WAV sample rate"):
+        validate_audio_payload(cd_rate_wav, expected_format="wav")
+
+    # 24-bit PCM WAV must fail
+    pcm24_wav = make_valid_wav_bytes(duration_sec=0.1, sample_rate=16000, channels=1, bits_per_sample=24)
+    with pytest.raises(ValidationError, match="Unsupported WAV bits per sample"):
+        validate_audio_payload(pcm24_wav, expected_format="wav")
+
+
 def test_validate_audio_payload_inconsistent_byte_rate_rejected() -> None:
     """Corrupted WAV with mismatched byte rate must fail validation."""
     valid_wav = bytearray(make_valid_wav_bytes(duration_sec=0.1))
@@ -611,7 +629,7 @@ def test_api_voice_deliver_non_loopback_rejected() -> None:
 
 
 def test_api_voice_deliver_unauthorized_loopback_rejected() -> None:
-    # Local loopback client WITHOUT operator session cookie or approval token fails closed
+    # Local loopback client WITHOUT operator session cookie or bridge proof fails closed
     client = TestClient(app)
     res = client.post(
         "/api/perception/audio/session/aud_fake123/deliver",
@@ -619,6 +637,23 @@ def test_api_voice_deliver_unauthorized_loopback_rejected() -> None:
     )
     assert res.status_code == 403
     assert "authenticated" in res.json()["detail"].lower()
+
+
+def test_api_voice_deliver_approval_token_alone_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Security Requirement: An approval token (X-Pico-Approval-Token) authorizes single
+    consequential tool executions, but MUST NOT act as generic authentication for voice transcript delivery."""
+    from pico.core.config import settings
+
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "valid_approval_secret_12345")
+    client = TestClient(app)
+    headers = {"X-Pico-Approval-Token": "valid_approval_secret_12345"}
+    res = client.post(
+        "/api/perception/audio/session/aud_fake123/deliver",
+        json={"conversation_id": "conv_fake"},
+        headers=headers,
+    )
+    assert res.status_code == 403
+    assert "operator session or native desktop bridge proof" in res.json()["detail"].lower()
 
 
 def test_api_voice_deliver_caller_supplied_transcript_rejected() -> None:

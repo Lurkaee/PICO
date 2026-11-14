@@ -76,9 +76,7 @@ def start_audio_session(
     caller_operator_id: str | None = None
     if auth_ctx.is_authorized:
         caller_operator_id = (
-            auth_ctx.session.approver
-            if (auth_ctx.session and auth_ctx.session.approver)
-            else auth_ctx.principal
+            auth_ctx.session.approver if (auth_ctx.session and auth_ctx.session.approver) else auth_ctx.principal
         )
     elif is_loopback_client(request):
         caller_operator_id = "local_operator"
@@ -153,15 +151,16 @@ def deliver_audio_transcript(
     if not is_loopback_client(request):
         raise AuthorizationError("Voice transcript delivery is strictly restricted to local loopback connections.")
 
-    if not auth_ctx.is_authorized:
+    # Transcript delivery requires an active paired operator session or native desktop bridge proof.
+    # Generic approval tokens (X-Pico-Approval-Token) authorize single tool/workflow executions,
+    # and MUST NOT act as a generic substitute for operator identity in transcript delivery.
+    if not auth_ctx.is_authorized or auth_ctx.method not in ("operator_session", "bridge_proof"):
         raise AuthorizationError(
-            "Voice transcript delivery requires an authenticated local operator, bridge proof, or approval token."
+            "Voice transcript delivery requires an authenticated local operator session or native desktop bridge proof."
         )
 
     caller_operator_id = (
-        auth_ctx.session.approver
-        if (auth_ctx.session and auth_ctx.session.approver)
-        else auth_ctx.principal
+        auth_ctx.session.approver if (auth_ctx.session and auth_ctx.session.approver) else auth_ctx.principal
     )
 
     from pico.services.voice_service import VoiceService

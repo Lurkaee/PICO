@@ -1,16 +1,19 @@
 """Audio payload and format validation for PICO voice runtime (Milestone P11.3).
 
-Enforces:
+Enforces authoritative audio contract:
 1. Maximum size limit (default 10 MB) to prevent memory exhaustion / DoS.
 2. Structural RIFF/WAVE verification without synthetic bypasses:
    - Declared RIFF and WAVE magic headers.
-   - 'fmt ' chunk presence, size, and PCM encoding validation (format 1 only).
-   - Valid channel count (1 or 2 channels for speech).
-   - Supported sample rate (8000 Hz to 48000 Hz).
-   - Consistent block alignment and byte rate calculations.
+   - 'fmt ' chunk presence, size, and uncompressed PCM encoding (format 1 only).
+   - Valid channel count: exactly 1 channel (mono).
+   - Supported sample rate: exactly 16000 Hz.
+   - Bit depth: signed 16-bit PCM (bits_per_sample == 16).
+   - Block alignment: exactly 2 bytes.
+   - Byte rate: exactly 32000 bytes/sec.
    - 'data' chunk presence, declared bounds, and truncation detection.
    - Minimum (0.05s) and maximum (120s) recording duration limits.
-3. Safe integer and corrupted chunk handling without crashes or partial parsing.
+3. Rejection of IEEE float, compressed codecs, multi-channel stereo, and alternate rates/depths.
+4. Safe integer and corrupted chunk handling without crashes or partial parsing.
 """
 
 from __future__ import annotations
@@ -62,15 +65,14 @@ def validate_audio_payload(
             raise ValidationError("PCM 16-bit audio payload must have an even byte count.")
         return {
             "format": fmt,
+            "channels": 1,
+            "sample_rate": 16000,
+            "bits_per_sample": 16,
             "byte_count": payload_len,
+            "duration_seconds": (payload_len // 2) / 16000.0,
         }
     else:
-        if payload_len < 16:
-            raise ValidationError(f"Audio payload too small for format '{fmt}'.")
-        return {
-            "format": fmt,
-            "byte_count": payload_len,
-        }
+        raise ValidationError(f"Unsupported audio format '{fmt}'. Only 'wav' or 'pcm'/'raw' is accepted.")
 
 
 def _validate_wav_structure(
@@ -140,32 +142,34 @@ def _validate_wav_structure(
                 )
 
             channels = struct.unpack("<H", data[offset + 2 : offset + 4])[0]
-            if channels < 1 or channels > 2:
+            if channels != 1:
                 raise ValidationError(
-                    f"Unsupported WAV channel count: {channels}. Only mono (1) or stereo (2) speech audio is accepted."
+                    f"Unsupported WAV channel count: {channels}. Only mono (1 channel) 16 kHz audio is accepted."
                 )
 
             sample_rate = struct.unpack("<I", data[offset + 4 : offset + 8])[0]
-            if sample_rate < 8000 or sample_rate > 48000:
+            if sample_rate != 16000:
                 raise ValidationError(
-                    f"Unsupported WAV sample rate: {sample_rate} Hz. Supported range is 8000 Hz to 48000 Hz."
+                    f"Unsupported WAV sample rate: {sample_rate} Hz. Only standard 16000 Hz speech audio is accepted."
                 )
 
             byte_rate = struct.unpack("<I", data[offset + 8 : offset + 12])[0]
             block_align = struct.unpack("<H", data[offset + 12 : offset + 14])[0]
             bits_per_sample = struct.unpack("<H", data[offset + 14 : offset + 16])[0]
 
-            if bits_per_sample not in (8, 16, 24, 32):
-                raise ValidationError(f"Unsupported WAV bits per sample: {bits_per_sample}.")
+            if bits_per_sample != 16:
+                raise ValidationError(
+                    f"Unsupported WAV bits per sample: {bits_per_sample}. Only signed 16-bit PCM is accepted."
+                )
 
-            # Alignment consistency checks
-            expected_block_align = channels * (bits_per_sample // 8)
+            # Alignment consistency checks (for mono 16-bit: block_align == 2, byte_rate == 32000)
+            expected_block_align = 2
             if block_align != expected_block_align:
                 raise ValidationError(
                     f"Inconsistent WAV block alignment: declared {block_align}, expected {expected_block_align}."
                 )
 
-            expected_byte_rate = sample_rate * block_align
+            expected_byte_rate = 32000
             if byte_rate != expected_byte_rate:
                 raise ValidationError(
                     f"Inconsistent WAV byte rate: declared {byte_rate}, expected {expected_byte_rate}."

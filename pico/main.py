@@ -1,41 +1,31 @@
 from contextlib import asynccontextmanager
 from pathlib import Path, PureWindowsPath
 from typing import AsyncGenerator
+
 from fastapi import FastAPI, Request, status
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
-from pico.api.bridge import BridgeAuthMiddleware, router as bridge_router
+from pico.api.bridge import BridgeAuthMiddleware
+from pico.api.bridge import router as bridge_router
 from pico.api.chat import router as chat_router
 from pico.api.conversations import router as conversations_router
+from pico.api.filesystem import router as filesystem_router
 from pico.api.health import router as health_router
 from pico.api.homeassistant import router as homeassistant_router
 from pico.api.memory import router as memory_router
 from pico.api.operator import router as operator_router
 from pico.api.perception import router as perception_router
 from pico.api.projects import router as projects_router
-from pico.api.filesystem import router as filesystem_router
 from pico.api.scheduler import router as scheduler_router
 from pico.api.tasks import router as tasks_router
 from pico.api.tools import router as tools_router
 from pico.api.workflows import router as workflows_router
-
 from pico.core.bridge import init_bridge_secret, set_bridge_secret
 from pico.core.config import settings
 from pico.core.errors import AuthorizationError, ConflictError, EntityNotFoundError, PicoError, ValidationError
-from pico.db.base import Base
-from pico.db.session import SessionLocal, engine
-from pico.scheduler import (
-    ContextBudgetExceededError,
-    ModelResidencyConflictError,
-    QueueFullError,
-    RequestCancelledError,
-    ResourceScheduler,
-    SchedulingTimeoutError,
-    get_scheduler,
-)
+from pico.db.session import SessionLocal, apply_pending_migrations
 from pico.providers.errors import (
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -43,14 +33,22 @@ from pico.providers.errors import (
     ProviderModelNotFoundError,
     ProviderTimeoutError,
 )
+from pico.scheduler import (
+    ContextBudgetExceededError,
+    ModelResidencyConflictError,
+    QueueFullError,
+    RequestCancelledError,
+    SchedulingTimeoutError,
+    get_scheduler,
+)
 from pico.services.execution_engine import ToolExecutionEngine
 from pico.workflow.service import WorkflowService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Ensure tables exist on startup
-    Base.metadata.create_all(bind=engine)
+    # Ensure database schema is initialized and migrations applied on startup
+    apply_pending_migrations()
     # Recover any interrupted executions from prior crash
     with SessionLocal() as db:
         engine_svc = ToolExecutionEngine(db)
@@ -89,12 +87,9 @@ app.add_middleware(
 app.add_middleware(BridgeAuthMiddleware)
 
 
-
 # Exception Handlers
 @app.exception_handler(EntityNotFoundError)
-async def entity_not_found_handler(
-    request: Request, exc: EntityNotFoundError
-) -> JSONResponse:
+async def entity_not_found_handler(request: Request, exc: EntityNotFoundError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_404_NOT_FOUND,
         content={"detail": exc.message, "details": exc.details},
@@ -102,9 +97,7 @@ async def entity_not_found_handler(
 
 
 @app.exception_handler(ValidationError)
-async def validation_error_handler(
-    request: Request, exc: ValidationError
-) -> JSONResponse:
+async def validation_error_handler(request: Request, exc: ValidationError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={"detail": exc.message, "details": exc.details},
@@ -112,9 +105,7 @@ async def validation_error_handler(
 
 
 @app.exception_handler(AuthorizationError)
-async def authorization_error_handler(
-    request: Request, exc: AuthorizationError
-) -> JSONResponse:
+async def authorization_error_handler(request: Request, exc: AuthorizationError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN,
         content={"detail": exc.message, "details": exc.details},
@@ -122,9 +113,7 @@ async def authorization_error_handler(
 
 
 @app.exception_handler(ConflictError)
-async def conflict_error_handler(
-    request: Request, exc: ConflictError
-) -> JSONResponse:
+async def conflict_error_handler(request: Request, exc: ConflictError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": exc.message},
@@ -132,21 +121,15 @@ async def conflict_error_handler(
 
 
 @app.exception_handler(IntegrityError)
-async def integrity_error_handler(
-    request: Request, exc: IntegrityError
-) -> JSONResponse:
+async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT,
-        content={
-            "detail": "Database integrity constraint violated (uniqueness or foreign key constraint)."
-        },
+        content={"detail": "Database integrity constraint violated (uniqueness or foreign key constraint)."},
     )
 
 
 @app.exception_handler(ProviderConfigurationError)
-async def provider_config_error_handler(
-    request: Request, exc: ProviderConfigurationError
-) -> JSONResponse:
+async def provider_config_error_handler(request: Request, exc: ProviderConfigurationError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": exc.message, "code": exc.code},
@@ -154,9 +137,7 @@ async def provider_config_error_handler(
 
 
 @app.exception_handler(ProviderConnectionError)
-async def provider_connection_error_handler(
-    request: Request, exc: ProviderConnectionError
-) -> JSONResponse:
+async def provider_connection_error_handler(request: Request, exc: ProviderConnectionError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": exc.message, "code": exc.code},
@@ -164,9 +145,7 @@ async def provider_connection_error_handler(
 
 
 @app.exception_handler(ProviderTimeoutError)
-async def provider_timeout_error_handler(
-    request: Request, exc: ProviderTimeoutError
-) -> JSONResponse:
+async def provider_timeout_error_handler(request: Request, exc: ProviderTimeoutError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
         content={"detail": exc.message, "code": exc.code},
@@ -174,9 +153,7 @@ async def provider_timeout_error_handler(
 
 
 @app.exception_handler(ProviderModelNotFoundError)
-async def provider_model_not_found_handler(
-    request: Request, exc: ProviderModelNotFoundError
-) -> JSONResponse:
+async def provider_model_not_found_handler(request: Request, exc: ProviderModelNotFoundError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_404_NOT_FOUND,
         content={"detail": exc.message, "code": exc.code},
@@ -184,9 +161,7 @@ async def provider_model_not_found_handler(
 
 
 @app.exception_handler(ProviderError)
-async def provider_error_handler(
-    request: Request, exc: ProviderError
-) -> JSONResponse:
+async def provider_error_handler(request: Request, exc: ProviderError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_502_BAD_GATEWAY,
         content={"detail": exc.message, "code": exc.code},
