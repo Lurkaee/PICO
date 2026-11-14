@@ -30,8 +30,18 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "task_id": {"nullable": True, "type": "VARCHAR(64)"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["project_id"], "referred_columns": ["id"], "referred_table": "projects"},
-            {"constrained_columns": ["task_id"], "referred_columns": ["id"], "referred_table": "tasks"},
+            {
+                "constrained_columns": ["project_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "projects",
+            },
+            {
+                "constrained_columns": ["task_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "tasks",
+            },
         ],
         "indexes": [
             {
@@ -62,8 +72,18 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "task_id": {"nullable": True, "type": "VARCHAR(64)"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["execution_id"], "referred_columns": ["id"], "referred_table": "tool_executions"},
-            {"constrained_columns": ["task_id"], "referred_columns": ["id"], "referred_table": "tasks"},
+            {
+                "constrained_columns": ["execution_id"],
+                "options": {"ondelete": "CASCADE"},
+                "referred_columns": ["id"],
+                "referred_table": "tool_executions",
+            },
+            {
+                "constrained_columns": ["task_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "tasks",
+            },
         ],
         "indexes": [
             {"column_names": ["capability_id"], "name": "ix_event_ledger_capability_id", "unique": False},
@@ -87,7 +107,12 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "token_count": {"nullable": True, "type": "INTEGER"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["conversation_id"], "referred_columns": ["id"], "referred_table": "conversations"}
+            {
+                "constrained_columns": ["conversation_id"],
+                "options": {"ondelete": "CASCADE"},
+                "referred_columns": ["id"],
+                "referred_table": "conversations",
+            }
         ],
         "indexes": [
             {"column_names": ["conversation_id"], "name": "ix_messages_conversation_id", "unique": False},
@@ -229,8 +254,18 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "task_category": {"nullable": False, "type": "VARCHAR(64)"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["conversation_id"], "referred_columns": ["id"], "referred_table": "conversations"},
-            {"constrained_columns": ["message_id"], "referred_columns": ["id"], "referred_table": "messages"},
+            {
+                "constrained_columns": ["conversation_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "conversations",
+            },
+            {
+                "constrained_columns": ["message_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "messages",
+            },
         ],
         "indexes": [
             {"column_names": ["conversation_id"], "name": "ix_routing_decisions_conversation_id", "unique": False},
@@ -260,8 +295,18 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "updated_at": {"nullable": False, "type": "DATETIME"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["project_id"], "referred_columns": ["id"], "referred_table": "projects"},
-            {"constrained_columns": ["task_id"], "referred_columns": ["id"], "referred_table": "tasks"},
+            {
+                "constrained_columns": ["project_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "projects",
+            },
+            {
+                "constrained_columns": ["task_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "tasks",
+            },
         ],
         "indexes": [
             {"column_names": ["entity_type"], "name": "ix_semantic_memories_entity_type", "unique": False},
@@ -288,8 +333,18 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "updated_at": {"nullable": False, "type": "DATETIME"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["conversation_id"], "referred_columns": ["id"], "referred_table": "conversations"},
-            {"constrained_columns": ["project_id"], "referred_columns": ["id"], "referred_table": "projects"},
+            {
+                "constrained_columns": ["conversation_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "conversations",
+            },
+            {
+                "constrained_columns": ["project_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "projects",
+            },
         ],
         "indexes": [
             {"column_names": ["conversation_id"], "name": "ix_tasks_conversation_id", "unique": False},
@@ -331,7 +386,14 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "verification_details_json": {"nullable": True, "type": "JSON"},
             "verification_status": {"nullable": True, "type": "VARCHAR(32)"},
         },
-        "foreign_keys": [{"constrained_columns": ["task_id"], "referred_columns": ["id"], "referred_table": "tasks"}],
+        "foreign_keys": [
+            {
+                "constrained_columns": ["task_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "tasks",
+            }
+        ],
         "indexes": [
             {"column_names": ["capability_id"], "name": "ix_tool_executions_capability_id", "unique": False},
             {"column_names": ["idempotency_key"], "name": "ix_tool_executions_idempotency_key", "unique": True},
@@ -364,17 +426,25 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
         "foreign_keys": [
             {
                 "constrained_columns": ["compensation_tool_execution_id"],
+                "options": {"ondelete": "SET NULL"},
                 "referred_columns": ["id"],
                 "referred_table": "tool_executions",
             },
             {
                 "constrained_columns": ["original_tool_execution_id"],
+                "options": {"ondelete": "SET NULL"},
                 "referred_columns": ["id"],
                 "referred_table": "tool_executions",
             },
-            {"constrained_columns": ["workflow_run_id"], "referred_columns": ["id"], "referred_table": "workflow_runs"},
+            {
+                "constrained_columns": ["workflow_run_id"],
+                "options": {"ondelete": "CASCADE"},
+                "referred_columns": ["id"],
+                "referred_table": "workflow_runs",
+            },
             {
                 "constrained_columns": ["workflow_step_id"],
+                "options": {"ondelete": "CASCADE"},
                 "referred_columns": ["id"],
                 "referred_table": "workflow_steps",
             },
@@ -412,7 +482,14 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "total_steps": {"nullable": False, "type": "INTEGER"},
             "updated_at": {"nullable": False, "type": "DATETIME"},
         },
-        "foreign_keys": [{"constrained_columns": ["task_id"], "referred_columns": ["id"], "referred_table": "tasks"}],
+        "foreign_keys": [
+            {
+                "constrained_columns": ["task_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "tasks",
+            }
+        ],
         "indexes": [
             {"column_names": ["correlation_id"], "name": "ix_workflow_runs_correlation_id", "unique": False},
             {"column_names": ["idempotency_key"], "name": "ix_workflow_runs_idempotency_key", "unique": False},
@@ -446,10 +523,16 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
         "foreign_keys": [
             {
                 "constrained_columns": ["tool_execution_id"],
+                "options": {"ondelete": "SET NULL"},
                 "referred_columns": ["id"],
                 "referred_table": "tool_executions",
             },
-            {"constrained_columns": ["workflow_run_id"], "referred_columns": ["id"], "referred_table": "workflow_runs"},
+            {
+                "constrained_columns": ["workflow_run_id"],
+                "options": {"ondelete": "CASCADE"},
+                "referred_columns": ["id"],
+                "referred_table": "workflow_runs",
+            },
         ],
         "indexes": [
             {"column_names": ["capability_id"], "name": "ix_workflow_steps_capability_id", "unique": False},
@@ -485,12 +568,19 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
         "foreign_keys": [
             {
                 "constrained_columns": ["tool_execution_id"],
+                "options": {"ondelete": "SET NULL"},
                 "referred_columns": ["id"],
                 "referred_table": "tool_executions",
             },
-            {"constrained_columns": ["workflow_run_id"], "referred_columns": ["id"], "referred_table": "workflow_runs"},
+            {
+                "constrained_columns": ["workflow_run_id"],
+                "options": {"ondelete": "CASCADE"},
+                "referred_columns": ["id"],
+                "referred_table": "workflow_runs",
+            },
             {
                 "constrained_columns": ["workflow_step_id"],
+                "options": {"ondelete": "CASCADE"},
                 "referred_columns": ["id"],
                 "referred_table": "workflow_steps",
             },
@@ -531,8 +621,18 @@ LEGACY_BASELINE_SCHEMA: dict[str, dict] = {
             "updated_at": {"nullable": False, "type": "DATETIME"},
         },
         "foreign_keys": [
-            {"constrained_columns": ["project_id"], "referred_columns": ["id"], "referred_table": "projects"},
-            {"constrained_columns": ["task_id"], "referred_columns": ["id"], "referred_table": "tasks"},
+            {
+                "constrained_columns": ["project_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "projects",
+            },
+            {
+                "constrained_columns": ["task_id"],
+                "options": {"ondelete": "SET NULL"},
+                "referred_columns": ["id"],
+                "referred_table": "tasks",
+            },
         ],
         "indexes": [
             {"column_names": ["expires_at"], "name": "ix_working_memory_items_expires_at", "unique": False},

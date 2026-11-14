@@ -38,6 +38,7 @@ from sqlalchemy.orm import sessionmaker
 from alembic import command
 from pico.core.config import settings
 from pico.db.base import Base
+from pico.db.legacy_baseline_manifest import LEGACY_BASELINE_SCHEMA
 from pico.db.session import (
     _canonicalize_sqlite_db_path,
     _migration_file_lock,
@@ -271,7 +272,8 @@ def test_database_startup_legacy_unversioned_database(monkeypatch: pytest.Monkey
 
         # 1. Construct the unversioned database using the old startup implementation (Base.metadata.create_all)
         engine_init = create_engine(db_url)
-        Base.metadata.create_all(bind=engine_init)
+        legacy_tables = [Base.metadata.tables[t] for t in LEGACY_BASELINE_SCHEMA.keys()]
+        Base.metadata.create_all(bind=engine_init, tables=legacy_tables)
         with engine_init.connect() as conn:
             # Faithfully match pre-c3d4e5f6a7b8 schema by dropping the index if created from modern model definitions
             conn.execute(text("DROP INDEX IF EXISTS uq_perception_events_voice_session"))
@@ -463,7 +465,8 @@ def test_database_startup_concurrent_migrations_safe() -> None:
 def _create_legacy_unversioned_db(db_url: str) -> None:
     """Helper to construct a valid unversioned legacy database matching pre-c3d4e5f6a7b8 schema."""
     engine = create_engine(db_url)
-    Base.metadata.create_all(bind=engine)
+    legacy_tables = [Base.metadata.tables[t] for t in LEGACY_BASELINE_SCHEMA.keys()]
+    Base.metadata.create_all(bind=engine, tables=legacy_tables)
     with engine.connect() as conn:
         conn.execute(text("DROP INDEX IF EXISTS uq_perception_events_voice_session"))
         conn.commit()
@@ -842,6 +845,125 @@ def test_database_startup_legacy_index_column_mismatch_fails_closed() -> None:
 
         assert "ix_conversations_updated_at" in str(exc_info.value)
 
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_unexpected_extra_table_fails_closed() -> None:
+    """Negative: An unversioned database with an unexpected extra application table fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_extra_tbl_")
+    try:
+        db_path = Path(temp_dir) / "extra_tbl.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Create an unexpected application table
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("CREATE TABLE extra_custom_table (id VARCHAR(64) PRIMARY KEY, data TEXT);"))
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="Unexpected extra tables") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "extra_custom_table" in str(exc_info.value)
+
+        # Confirm database remains unstamped
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_missing_ondelete_cascade_fails_closed() -> None:
+    """Negative: A legacy database where messages.conversation_id lacks ON DELETE CASCADE fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_missing_cascade_")
+    try:
+        db_path = Path(temp_dir) / "missing_cascade.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Re-create messages table with foreign key but WITHOUT ON DELETE CASCADE
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE messages;"))
+            conn.execute(
+                text(
+                    "CREATE TABLE messages ("
+                    "id VARCHAR(64) PRIMARY KEY NOT NULL, "
+                    "conversation_id VARCHAR(64) NOT NULL, "
+                    "role VARCHAR(32) NOT NULL, "
+                    "content TEXT NOT NULL, "
+                    "data_classification VARCHAR(32) NOT NULL, "
+                    "token_count INTEGER, "
+                    "metadata_json JSON, "
+                    "created_at DATETIME NOT NULL, "
+                    "FOREIGN KEY(conversation_id) REFERENCES conversations (id)"
+                    ");"
+                )
+            )
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="ondelete referential action mismatch") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "messages" in str(exc_info.value)
+        assert "ondelete" in str(exc_info.value)
+
+        # Confirm database remains unstamped
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_unexpected_onupdate_action_fails_closed() -> None:
+    """Negative: A legacy database with an unexpected ON UPDATE action fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_bad_onupdate_")
+    try:
+        db_path = Path(temp_dir) / "bad_onupdate.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Re-create messages table with unexpected ON UPDATE CASCADE
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE messages;"))
+            conn.execute(
+                text(
+                    "CREATE TABLE messages ("
+                    "id VARCHAR(64) PRIMARY KEY NOT NULL, "
+                    "conversation_id VARCHAR(64) NOT NULL, "
+                    "role VARCHAR(32) NOT NULL, "
+                    "content TEXT NOT NULL, "
+                    "data_classification VARCHAR(32) NOT NULL, "
+                    "token_count INTEGER, "
+                    "metadata_json JSON, "
+                    "created_at DATETIME NOT NULL, "
+                    "FOREIGN KEY(conversation_id) REFERENCES conversations (id) ON DELETE CASCADE ON UPDATE CASCADE"
+                    ");"
+                )
+            )
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="onupdate referential action mismatch") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "messages" in str(exc_info.value)
+        assert "onupdate" in str(exc_info.value)
+
+        # Confirm database remains unstamped
         engine_check = create_engine(db_url)
         insp = inspect(engine_check)
         assert "alembic_version" not in insp.get_table_names()

@@ -150,16 +150,18 @@ def validate_legacy_unversioned_schema(insp: Any, db_url: str) -> None:
     """
     from pico.db.legacy_baseline_manifest import LEGACY_BASELINE_SCHEMA
 
-    table_names = set(insp.get_table_names())
+    app_tables = {t for t in insp.get_table_names() if not t.startswith("sqlite_")}
     expected_tables = set(LEGACY_BASELINE_SCHEMA.keys())
 
-    # 1. Check all 18 required baseline tables
-    if not expected_tables.issubset(table_names):
-        missing = sorted(expected_tables - table_names)
+    # 1. Check exact 18 required baseline tables
+    if app_tables != expected_tables:
+        missing = sorted(expected_tables - app_tables)
+        unexpected = sorted(app_tables - expected_tables)
         diagnostic = (
             f"Ambiguous unversioned database schema detected on {db_url}. "
-            f"Found tables: {sorted(table_names)}. "
+            f"Found tables: {sorted(app_tables)}. "
             f"Missing expected baseline tables: {missing}. "
+            f"Unexpected extra tables: {unexpected}. "
             f"Refusing to guess or stamp an arbitrary migration revision."
         )
         raise RuntimeError(diagnostic)
@@ -213,17 +215,49 @@ def validate_legacy_unversioned_schema(insp: Any, db_url: str) -> None:
         # Foreign Keys
         act_fks = insp.get_foreign_keys(table_name)
         for exp_fk in expected_spec["foreign_keys"]:
-            matched = any(
-                fk.get("referred_table") == exp_fk["referred_table"]
-                and sorted(fk.get("constrained_columns") or []) == sorted(exp_fk["constrained_columns"])
-                and sorted(fk.get("referred_columns") or []) == sorted(exp_fk["referred_columns"])
-                for fk in act_fks
-            )
-            if not matched:
+            matched_fk = None
+            for fk in act_fks:
+                if (
+                    fk.get("referred_table") == exp_fk["referred_table"]
+                    and sorted(fk.get("constrained_columns") or []) == sorted(exp_fk["constrained_columns"])
+                    and sorted(fk.get("referred_columns") or []) == sorted(exp_fk["referred_columns"])
+                ):
+                    matched_fk = fk
+                    break
+            if not matched_fk:
                 raise RuntimeError(
                     f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
                     f"missing foreign key constraint on {exp_fk['constrained_columns']} -> {exp_fk['referred_table']}."
                 )
+
+            # Validate foreign key referential actions (options: ondelete, onupdate)
+            exp_options = exp_fk.get("options") or {}
+            act_options = matched_fk.get("options") or {}
+
+            exp_ondelete = (exp_options.get("ondelete") or "").upper()
+            act_ondelete = (act_options.get("ondelete") or "").upper()
+            if act_ondelete != exp_ondelete:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: foreign key on "
+                    f"'{table_name}.{exp_fk['constrained_columns']}' ondelete referential action mismatch "
+                    f"(got '{act_ondelete}', expected '{exp_ondelete}')."
+                )
+
+            exp_onupdate = (exp_options.get("onupdate") or "").upper()
+            act_onupdate = (act_options.get("onupdate") or "").upper()
+            if act_onupdate != exp_onupdate:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: foreign key on "
+                    f"'{table_name}.{exp_fk['constrained_columns']}' onupdate referential action mismatch "
+                    f"(got '{act_onupdate}', expected '{exp_onupdate}')."
+                )
+
+        if len(act_fks) > len(expected_spec["foreign_keys"]):
+            raise RuntimeError(
+                f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
+                f"contains unrecognized extra foreign keys (got {len(act_fks)}, "
+                f"expected {len(expected_spec['foreign_keys'])})."
+            )
 
         # Expected Indexes
         act_indexes = {
