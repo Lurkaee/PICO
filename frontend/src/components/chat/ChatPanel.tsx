@@ -50,8 +50,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
   };
 
-  const refreshHistory = async (targetId?: unknown) => {
-    const targetConvId = typeof targetId === 'string' && targetId ? targetId : (activeConversation?.id ?? null);
+  const refreshHistory = async (targetConvId?: string) => {
     if (!targetConvId || targetConvId !== activeConversationIdRef.current) return;
     const token = ++historyRequestIdRef.current;
     setLoadingHistory(true);
@@ -651,7 +650,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={refreshHistory}
+              onClick={() => { void refreshHistory(activeConversation?.id); }}
               disabled={loadingHistory || !isBackendReachable}
               style={{ fontSize: '0.75rem', padding: '3px 8px' }}
             >
@@ -1018,7 +1017,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             conversationId={activeConversation?.id}
             onTranscription={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))}
             onDelivered={(delivery) => {
-              void refreshHistory(delivery?.conversation_id ?? activeConversation?.id);
+              void refreshHistory(delivery?.conversation_id);
             }}
           />
 

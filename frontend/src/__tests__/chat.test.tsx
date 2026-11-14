@@ -678,7 +678,8 @@ it('immediately clears prior conversation messages on switch and handles failed 
 
     // 3. Switch to conversation B while A's delivery is still pending
     rerender(<ChatPanel {...props} activeConversation={conversation('conv_B')} />);
-    expect(api.getMessages).toHaveBeenCalledWith('conv_B', 50, 0);
+    expect(api.getMessages).toHaveBeenCalledTimes(2);
+    expect(api.getMessages).toHaveBeenLastCalledWith('conv_B', 50, 0);
 
     // 4. Now allow A's delayed delivery callback to complete and invoke onDelivered -> refreshHistory('conv_A')
     await act(async () => {
@@ -693,14 +694,150 @@ it('immediately clears prior conversation messages on switch and handles failed 
       });
     });
 
+    // Verify refreshHistory received A's delivered conversation ID and returned early:
+    // No additional history request was started for either B or A
+    expect(api.getMessages).toHaveBeenCalledTimes(2);
+
     // 5. Resolve conv_B history request
     await act(async () => {
       resolveConvB([msgB]);
     });
 
-    // 6. Confirm B's history loads normally, its loading state clears, and A's inactive refresh did not invalidate it
+    // 6. Confirm B's original pending history loads normally, its loading state clears, and A's inactive refresh did not invalidate it
     await screen.findByText('Active Conversation B Message');
     expect(screen.getByText('Active Conversation B Message')).toBeInTheDocument();
     expect(screen.queryByText(/Loading conversation history/)).not.toBeInTheDocument();
+  });
+
+  it('triggers normal delivery history refresh when delivered conversation matches active conversation', async () => {
+    vi.mocked(api.getPerceptionStatus).mockResolvedValue({
+      enabled: true,
+      audio_capture_enabled: true,
+      vision_enabled: false,
+      motion_enabled: false,
+      environmental_enabled: false,
+      adapter_mode: 'mock',
+      active_audio_sessions: 0,
+    });
+
+    vi.mocked(api.startAudioSession).mockResolvedValue({
+      session_id: 'session_conv_A',
+      status: 'active',
+    });
+
+    vi.mocked(api.stopAudioSession).mockResolvedValue({
+      session_id: 'session_conv_A',
+      transcription: 'Voice text for A',
+      status: 'completed',
+    });
+
+    const msgA1 = {
+      id: 'msg_a_initial',
+      conversation_id: 'conv_A',
+      content: 'Initial message in A',
+      role: 'user' as const,
+      created_at: '2026-10-22T10:00:00Z',
+    };
+
+    const msgA2 = {
+      id: 'msg_a_trans',
+      conversation_id: 'conv_A',
+      content: 'Voice text for A',
+      role: 'user' as const,
+      created_at: '2026-10-22T10:00:05Z',
+    };
+
+    let fetchCount = 0;
+    vi.mocked(api.getMessages).mockImplementation(async (convId: string) => {
+      if (convId === 'conv_A') {
+        fetchCount++;
+        return fetchCount === 1 ? [msgA1] : [msgA1, msgA2];
+      }
+      return [];
+    });
+
+    vi.mocked(api.deliverAudioTranscript).mockResolvedValue({
+      session_id: 'session_conv_A',
+      conversation_id: 'conv_A',
+      message_id: 'msg_a_trans',
+      transcription: 'Voice text for A',
+      data_classification: 'INTERNAL',
+      delivered: true,
+      created_at: '2026-10-22T10:00:05Z',
+    });
+
+    // 1. Render ChatPanel with active conversation A
+    render(<ChatPanel {...props} activeConversation={conversation('conv_A')} />);
+    await screen.findByText('Initial message in A');
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+    expect(api.getMessages).toHaveBeenCalledWith('conv_A', 50, 0);
+
+    // 2. Start recording and stop/deliver while conv_A remains active
+    const micBtn = await screen.findByLabelText('Start voice capture session');
+    fireEvent.click(micBtn);
+
+    const stopBtn = await screen.findByLabelText('Stop recording and transcribe');
+    fireEvent.click(stopBtn);
+
+    // 3. Confirm delivery occurred and triggered refreshHistory('conv_A')
+    await waitFor(() => expect(api.deliverAudioTranscript).toHaveBeenCalledWith('session_conv_A', 'conv_A'));
+    await screen.findByText('Voice text for A');
+    expect(api.getMessages).toHaveBeenCalledTimes(2);
+    expect(api.getMessages).toHaveBeenLastCalledWith('conv_A', 50, 0);
+    expect(screen.queryByText(/Loading conversation history/)).not.toBeInTheDocument();
+  });
+
+  it('does not substitute active conversation when delivery payload lacks conversation_id', async () => {
+    vi.mocked(api.getPerceptionStatus).mockResolvedValue({
+      enabled: true,
+      audio_capture_enabled: true,
+      vision_enabled: false,
+      motion_enabled: false,
+      environmental_enabled: false,
+      adapter_mode: 'mock',
+      active_audio_sessions: 0,
+    });
+
+    vi.mocked(api.startAudioSession).mockResolvedValue({
+      session_id: 'session_no_conv',
+      status: 'active',
+    });
+
+    vi.mocked(api.stopAudioSession).mockResolvedValue({
+      session_id: 'session_no_conv',
+      transcription: 'Orphan voice text',
+      status: 'completed',
+    });
+
+    vi.mocked(api.deliverAudioTranscript).mockResolvedValue({
+      session_id: 'session_no_conv',
+      conversation_id: undefined as unknown as string,
+      message_id: 'msg_orphan',
+      transcription: 'Orphan voice text',
+      data_classification: 'INTERNAL',
+      delivered: true,
+      created_at: '2026-10-22T10:00:00Z',
+    });
+
+    vi.mocked(api.getMessages).mockResolvedValue([]);
+
+    render(<ChatPanel {...props} activeConversation={conversation('conv_A')} />);
+    await waitFor(() => expect(screen.queryByText(/Loading conversation history/)).not.toBeInTheDocument());
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+
+    const micBtn = await screen.findByLabelText('Start voice capture session');
+    fireEvent.click(micBtn);
+
+    const stopBtn = await screen.findByLabelText('Stop recording and transcribe');
+    fireEvent.click(stopBtn);
+
+    await waitFor(() => expect(api.deliverAudioTranscript).toHaveBeenCalledWith('session_no_conv', 'conv_A'));
+
+    // Wait short period to ensure onDelivered has processed
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Because conversation_id is missing from delivery, refreshHistory must NOT substitute activeConversation
+    // and must not trigger an additional getMessages fetch
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
   });
 });
