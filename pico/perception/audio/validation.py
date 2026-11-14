@@ -95,18 +95,18 @@ def _validate_wav_structure(
     if declared_riff_size < 36:
         raise ValidationError(f"Corrupted WAV: declared RIFF size too small ({declared_riff_size} bytes).")
 
+    riff_end = declared_riff_size + 8
     # Guard against truncated file: data must contain at least the declared size + 8 header bytes
-    if data_len < declared_riff_size + 8:
+    if data_len < riff_end:
         raise ValidationError(
-            f"Truncated WAV payload: file size ({data_len} bytes) is less than declared RIFF size "
-            f"({declared_riff_size + 8} bytes)."
+            f"Truncated WAV payload: file size ({data_len} bytes) is less than declared RIFF size ({riff_end} bytes)."
         )
 
     wave_id = data[8:12]
     if wave_id != b"WAVE":
         raise ValidationError("Audio payload missing 'WAVE' format identifier.")
 
-    # 2. Iterate chunks
+    # 2. Iterate chunks strictly within declared RIFF boundary
     offset = 12
     fmt_found = False
     data_found = False
@@ -117,16 +117,28 @@ def _validate_wav_structure(
     block_align = 0
     audio_data_size = 0
 
-    while offset + 8 <= data_len:
+    while offset < riff_end:
+        if offset + 8 > riff_end:
+            raise ValidationError(
+                f"Malformed WAV chunk header at offset {offset}: crosses declared RIFF boundary ({riff_end} bytes)."
+            )
+
         chunk_id = bytes(data[offset : offset + 4])
         chunk_size = struct.unpack("<I", data[offset + 4 : offset + 8])[0]
         offset += 8
 
-        # Integer overflow / bounds guard
-        if offset + chunk_size > data_len:
+        # Integer overflow / bounds guard against declared RIFF boundary
+        if offset + chunk_size > riff_end:
             raise ValidationError(
                 f"Malformed WAV chunk '{chunk_id.decode('ascii', errors='replace')}': "
-                f"declared size {chunk_size} exceeds file length."
+                f"declared size {chunk_size} exceeds declared RIFF boundary ({riff_end} bytes)."
+            )
+
+        padding = chunk_size % 2
+        if offset + chunk_size + padding > riff_end:
+            raise ValidationError(
+                f"Malformed WAV chunk '{chunk_id.decode('ascii', errors='replace')}': "
+                f"chunk padding crosses declared RIFF boundary ({riff_end} bytes)."
             )
 
         if chunk_id == b"fmt ":
@@ -179,21 +191,15 @@ def _validate_wav_structure(
             if not fmt_found:
                 raise ValidationError("Malformed WAV: 'data' chunk appeared before 'fmt ' chunk.")
 
+            if data_found:
+                raise ValidationError("Malformed WAV: duplicate 'data' chunk detected.")
+
             data_found = True
             audio_data_size = chunk_size
 
             if audio_data_size == 0:
                 raise ValidationError("WAV 'data' chunk is empty (0 bytes).")
 
-            # Check that available bytes in payload match declared data size
-            available_data = data_len - offset
-            if available_data < audio_data_size:
-                raise ValidationError(
-                    f"Truncated WAV audio data: declared {audio_data_size} bytes, available {available_data} bytes."
-                )
-
-        # Chunks are padded to word boundary (even size)
-        padding = chunk_size % 2
         offset += chunk_size + padding
 
     if not fmt_found:

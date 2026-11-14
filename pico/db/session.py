@@ -75,17 +75,21 @@ _MIGRATION_THREAD_LOCK = threading.Lock()
 
 def _canonicalize_sqlite_db_path(db_url: str) -> Path | None:
     """Extract and canonicalize physical filesystem path from a SQLite database URL."""
-    if not db_url.startswith("sqlite:"):
+    from sqlalchemy.engine import make_url
+
+    try:
+        url_obj = make_url(db_url)
+    except Exception:
         return None
-    if ":memory:" in db_url or db_url in ("sqlite://", "sqlite:///"):
+
+    if not url_obj.drivername.startswith("sqlite"):
         return None
-    prefix = "sqlite:///" if db_url.startswith("sqlite:///") else "sqlite://"
-    raw_path = db_url[len(prefix) :]
-    if "?" in raw_path:
-        raw_path = raw_path.split("?", 1)[0]
-    if not raw_path or raw_path == ":memory:":
+
+    db_name = url_obj.database
+    if not db_name or db_name == ":memory:":
         return None
-    return Path(raw_path).resolve()
+
+    return Path(db_name).resolve()
 
 
 @contextmanager
@@ -283,6 +287,15 @@ def validate_legacy_unversioned_schema(insp: Any, db_url: str) -> None:
                         f"unique mismatch (got {actual_idx.get('unique')}, expected {exp_idx['unique']})."
                     )
 
+            # Reject unexpected partial-index predicate; all baseline indexes must be full indexes
+            dialect_opts = actual_idx.get("dialect_options") or {}
+            sqlite_where = dialect_opts.get("sqlite_where")
+            if sqlite_where is not None and str(sqlite_where).strip():
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: index '{idx_name}' on table '{table_name}' "
+                    f"has unexpected partial index predicate (got '{sqlite_where}', expected full index)."
+                )
+
     # 3. Check for unexpected partially upgraded schema on perception_events
     pe_indexes = [idx["name"] for idx in insp.get_indexes("perception_events")]
     if "uq_perception_events_voice_session" in pe_indexes:
@@ -328,23 +341,25 @@ def apply_pending_migrations(target_database_url: str | None = None) -> None:
     db_url = target_database_url or settings.DATABASE_URL
 
     if not ini_path:
-        logger.warning("alembic.ini not found in candidates %s; falling back to Base.metadata.create_all.", candidates)
-        from pico.db.base import Base
+        raise RuntimeError(
+            f"Required Alembic migration assets are missing. Looked for 'alembic.ini' in {candidates}. "
+            "PICO Core cannot safely perform database migrations without Alembic configuration. "
+            "Startup aborted to prevent silent schema degradation or missing security indexes."
+        )
 
-        check_engine = engine if str(engine.url) == db_url else create_engine(db_url)
-        try:
-            Base.metadata.create_all(bind=check_engine)
-        finally:
-            if check_engine is not engine:
-                check_engine.dispose()
-        return
+    script_loc = ini_path.parent / "alembic"
+    if not script_loc.is_dir():
+        raise RuntimeError(
+            f"Required Alembic migrations directory is missing at '{script_loc}'. "
+            "PICO Core cannot safely perform database migrations without migration versions. "
+            "Startup aborted to prevent unverified schema initialization."
+        )
 
     alembic_cfg = Config(str(ini_path))
-    alembic_cfg.set_main_option("sqlalchemy.url", db_url)
-    # Ensure script_location is resolved relative to the directory containing alembic.ini
-    script_loc = ini_path.parent / "alembic"
-    if script_loc.is_dir():
-        alembic_cfg.set_main_option("script_location", str(script_loc))
+    alembic_cfg.set_main_option("script_location", str(script_loc))
+    # Escape literal percent signs so ConfigParser does not raise interpolation errors on valid filenames
+    escaped_db_url = db_url.replace("%", "%%")
+    alembic_cfg.set_main_option("sqlalchemy.url", escaped_db_url)
 
     with _migration_file_lock(db_url):
         check_engine = engine if str(engine.url) == db_url else create_engine(db_url)

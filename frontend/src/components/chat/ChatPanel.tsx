@@ -38,6 +38,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const activeConversationIdRef = useRef<string | null>(activeConversation?.id ?? null);
+  const historyRequestIdRef = useRef<number>(0);
   const activeStreamIdRef = useRef<number>(0);
   const streamConversationIdRef = useRef<string | null>(null);
   const synthesisRequestIdRef = useRef<number>(0);
@@ -49,25 +50,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
   };
 
-  const refreshHistory = async () => {
-    if (!activeConversation) return;
-    setLoadingHistory(true);
-    setStreamError(null);
+  const refreshHistory = async (targetId?: unknown) => {
+    const targetConvId = typeof targetId === 'string' && targetId ? targetId : (activeConversation?.id ?? null);
+    if (!targetConvId) return;
+    const token = ++historyRequestIdRef.current;
+    if (activeConversationIdRef.current === targetConvId) {
+      setLoadingHistory(true);
+      setStreamError(null);
+    }
     try {
-      const history = await api.getMessages(activeConversation.id, 50, 0);
-      const sorted = [...(history || [])].reverse();
-      setMessages(sorted);
-      setAmbiguousOutcome(false);
+      const history = await api.getMessages(targetConvId, 50, 0);
+      if (historyRequestIdRef.current === token && activeConversationIdRef.current === targetConvId) {
+        const sorted = [...(history || [])].reverse();
+        setMessages(sorted);
+        setAmbiguousOutcome(false);
+      }
     } catch (err) {
-      setStreamError(`Failed to refresh history: ${err instanceof Error ? err.message : String(err)}`);
+      if (historyRequestIdRef.current === token && activeConversationIdRef.current === targetConvId) {
+        setStreamError(`Failed to refresh history: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
-      setLoadingHistory(false);
+      if (historyRequestIdRef.current === token && activeConversationIdRef.current === targetConvId) {
+        setLoadingHistory(false);
+      }
     }
   };
 
   // Load message history when active conversation changes
   useEffect(() => {
     activeConversationIdRef.current = activeConversation?.id ?? null;
+    historyRequestIdRef.current += 1;
+    const currentToken = historyRequestIdRef.current;
+    const targetConvId = activeConversation?.id ?? null;
     if (!activeConversation) {
       setMessages([]);
       setStreaming(false);
@@ -104,25 +118,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     api
       .getMessages(activeConversation.id, 50, 0)
       .then((history) => {
-        if (isMounted) {
+        if (isMounted && historyRequestIdRef.current === currentToken && activeConversationIdRef.current === targetConvId) {
           const sorted = [...(history || [])].reverse();
           setMessages((prev) => {
             if (prev.length === 0) return sorted;
             const existingIds = new Set(sorted.map((m) => m.id));
             const newLocal = prev.filter(
-              (m) => m.conversation_id === activeConversation.id && !existingIds.has(m.id)
+              (m) => m.conversation_id === targetConvId && !existingIds.has(m.id)
             );
             return [...sorted, ...newLocal];
           });
         }
       })
       .catch((err) => {
-        if (isMounted) {
+        if (isMounted && historyRequestIdRef.current === currentToken && activeConversationIdRef.current === targetConvId) {
           setStreamError(`Failed to load history: ${err.message}`);
         }
       })
       .finally(() => {
-        if (isMounted) setLoadingHistory(false);
+        if (isMounted && historyRequestIdRef.current === currentToken && activeConversationIdRef.current === targetConvId) {
+          setLoadingHistory(false);
+        }
       });
 
     return () => {
@@ -1004,7 +1020,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             conversationId={activeConversation?.id}
             onTranscription={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))}
             onDelivered={() => {
-              void refreshHistory();
+              void refreshHistory(activeConversation?.id);
             }}
           />
 

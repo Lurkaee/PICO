@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -179,11 +180,25 @@ class VoiceService:
                 db.refresh(msg)
             except IntegrityError as exc:
                 db.rollback()
-                session.delivered = True
-                raise ValidationError(
-                    f"Audio session '{session_id}' has already been delivered to conversation '{conversation_id}'. "
-                    "Concurrent or duplicate delivery is rejected by database integrity constraint."
-                ) from exc
+                existing_delivery = (
+                    db.execute(
+                        select(PerceptionEvent).where(
+                            PerceptionEvent.session_id == session_id,
+                            PerceptionEvent.event_type == "voice_transcript_delivery",
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if existing_delivery is not None:
+                    session.delivered = True
+                    raise ValidationError(
+                        f"Audio session '{session_id}' has already been delivered to conversation '{conversation_id}'. "
+                        "Concurrent or duplicate delivery is rejected by database integrity constraint."
+                    ) from exc
+                # If no existing delivery event exists in the database, this integrity error was caused
+                # by another constraint (e.g. invalid foreign key), so do NOT mark the in-memory session delivered.
+                raise ValidationError(f"Voice delivery transaction failed integrity check on database: {exc}.") from exc
             except Exception:
                 db.rollback()
                 # On unexpected DB failure, do NOT mark session delivered so caller can safely retry

@@ -21,7 +21,7 @@ import threading
 import time
 import wave
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from pico.core.errors import ValidationError
@@ -203,17 +203,25 @@ class LocalAudioCaptureDevice(BaseAudioCaptureDevice):
         try:
             import sounddevice as sd
 
-            devices = sd.query_devices()
             if self.device_index is not None:
                 dev = sd.query_devices(self.device_index)
-                return bool(isinstance(dev, dict) and dev.get("max_input_channels", 0) > 0)
+                return bool(isinstance(dev, Mapping) and dev.get("max_input_channels", 0) > 0)
 
-            # Check if any input device is available
-            if isinstance(devices, list):
-                return any(d.get("max_input_channels", 0) > 0 for d in devices if isinstance(d, dict))
-            elif isinstance(devices, dict):
+            devices = sd.query_devices()
+
+            # Single device dictionary returned
+            if isinstance(devices, Mapping):
                 return bool(devices.get("max_input_channels", 0) > 0)
-            return False
+
+            # Sequence of devices: supports list, tuple, sounddevice.DeviceList, or custom Sequence
+            if isinstance(devices, (Sequence, list, tuple)):
+                return any(bool(isinstance(d, Mapping) and d.get("max_input_channels", 0) > 0) for d in devices)
+
+            # Duck-type iterable of mappings
+            try:
+                return any(bool(isinstance(d, Mapping) and d.get("max_input_channels", 0) > 0) for d in devices)
+            except TypeError:
+                return False
         except Exception:
             return False
 

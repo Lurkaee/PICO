@@ -34,6 +34,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
   const activeSessionIdRef = useRef<string | null>(null);
+  const boundConversationIdRef = useRef<string | null>(null);
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
@@ -53,6 +54,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
       mounted = false;
       const sessionId = activeSessionIdRef.current;
       activeSessionIdRef.current = null;
+      boundConversationIdRef.current = null;
       if (sessionId && typeof api.cancelAudioSession === 'function') {
         void Promise.resolve(api.cancelAudioSession(sessionId)).catch(() => {
           // Cleanup must continue even if the backend is unavailable.
@@ -73,13 +75,16 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
     setErrorNotice(null);
     setProcessing(true);
     try {
+      const currentConvId = conversationId || null;
+      boundConversationIdRef.current = currentConvId;
       // Explicit user initiation passed through API contract with user_consent=true
-      const session = conversationId
-        ? await api.startAudioSession(true, conversationId)
+      const session = currentConvId
+        ? await api.startAudioSession(true, currentConvId)
         : await api.startAudioSession(true);
       setActiveSessionId(session.session_id);
       setIsRecording(true);
     } catch (err) {
+      boundConversationIdRef.current = null;
       setErrorNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setProcessing(false);
@@ -94,22 +99,38 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
     }
     setProcessing(true);
     setErrorNotice(null);
+    const targetConvId = boundConversationIdRef.current;
+    const sessionIdToStop = activeSessionId;
     try {
-      const res = await api.stopAudioSession(activeSessionId);
+      const res = await api.stopAudioSession(sessionIdToStop);
       setIsRecording(false);
       setActiveSessionId(null);
       activeSessionIdRef.current = null;
+      boundConversationIdRef.current = null;
       if (res.transcription && res.transcription.trim()) {
         const text = res.transcription.trim();
-        if (conversationId && onDelivered) {
+        if (targetConvId && onDelivered) {
           try {
-            const delRes = await api.deliverAudioTranscript(activeSessionId, conversationId);
+            const delRes = await api.deliverAudioTranscript(sessionIdToStop, targetConvId);
             onDelivered(delRes);
           } catch {
-            onTranscription(text);
+            // Delivery failed. Only fall back to local draft editor if user is still on the same conversation!
+            if (conversationId === targetConvId) {
+              onTranscription(text);
+              setErrorNotice('Direct transcript delivery failed; transcript placed into input editor.');
+            } else {
+              setErrorNotice(
+                `Direct transcript delivery to conversation '${targetConvId}' failed. To prevent cross-conversation leakage, transcript was not inserted into current conversation.`
+              );
+            }
           }
         } else {
-          onTranscription(text);
+          // Session had no bound conversation at start: only populate draft editor if no conversation or still on original state
+          if (!targetConvId || conversationId === targetConvId) {
+            onTranscription(text);
+          } else {
+            setErrorNotice('Active conversation changed during capture; transcript discarded to prevent cross-conversation leak.');
+          }
         }
       } else {
         setErrorNotice('No speech detected or adapter returned empty transcription.');
@@ -118,7 +139,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
       const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
       if (isNet) {
         setAmbiguousSession({
-          sessionId: activeSessionId,
+          sessionId: sessionIdToStop,
           action: 'stop',
           reason: 'Network interrupted during audio stop; server outcome is unconfirmed.',
           timestamp: new Date().toLocaleTimeString(),
@@ -129,6 +150,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
         setIsRecording(false);
         setActiveSessionId(null);
         activeSessionIdRef.current = null;
+        boundConversationIdRef.current = null;
       }
     } finally {
       setProcessing(false);
@@ -148,6 +170,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
       setIsRecording(false);
       setActiveSessionId(null);
       activeSessionIdRef.current = null;
+      boundConversationIdRef.current = null;
       setErrorNotice('Audio capture session cancelled.');
     } catch (err) {
       const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
@@ -164,6 +187,7 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
         setIsRecording(false);
         setActiveSessionId(null);
         activeSessionIdRef.current = null;
+        boundConversationIdRef.current = null;
       }
     } finally {
       setProcessing(false);
@@ -182,12 +206,14 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
           setIsRecording(false);
           setActiveSessionId(null);
           activeSessionIdRef.current = null;
+          boundConversationIdRef.current = null;
           setErrorNotice('Audio session cancellation confirmed by server.');
         } else if (status.state === 'completed' || status.state === 'failed') {
           setAmbiguousSession(null);
           setIsRecording(false);
           setActiveSessionId(null);
           activeSessionIdRef.current = null;
+          boundConversationIdRef.current = null;
           setErrorNotice(`Audio session resolved as ${status.state} on server.`);
         } else {
           setErrorNotice(
@@ -200,12 +226,14 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
           setIsRecording(false);
           setActiveSessionId(null);
           activeSessionIdRef.current = null;
+          boundConversationIdRef.current = null;
           setErrorNotice('Audio session stop confirmed by server.');
         } else if (status.state === 'cancelled' || status.state === 'failed') {
           setAmbiguousSession(null);
           setIsRecording(false);
           setActiveSessionId(null);
           activeSessionIdRef.current = null;
+          boundConversationIdRef.current = null;
           setErrorNotice(`Audio session resolved as ${status.state} on server.`);
         } else {
           setErrorNotice(

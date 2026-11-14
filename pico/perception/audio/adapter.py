@@ -13,6 +13,7 @@ Architectural Invariants:
 from __future__ import annotations
 
 import base64
+import logging
 import threading
 import time
 import uuid
@@ -41,6 +42,8 @@ from pico.perception.contracts import (
     NormalizedPerceptionEvent,
     RetentionPolicy,
 )
+
+logger = logging.getLogger(__name__)
 
 AUDIO_SESSION_TTL_SECONDS = 300.0  # 5 minutes
 
@@ -225,14 +228,24 @@ class AudioSessionManager:
         return self._active_sessions.get(session_id)
 
     def prune_expired_sessions(self) -> None:
-        """Prune stale sessions older than AUDIO_SESSION_TTL_SECONDS to avoid memory leaks."""
+        """Prune stale sessions older than AUDIO_SESSION_TTL_SECONDS to avoid memory leaks.
+
+        Safely releases hardware and mutable buffers for abandoned capture sessions before pruning.
+        """
         now = utc_now()
-        expired_ids = [
-            sid
-            for sid, s in self._active_sessions.items()
-            if (now - s.started_at).total_seconds() > AUDIO_SESSION_TTL_SECONDS
-            and s.state != AudioCaptureState.CAPTURING
-        ]
+        expired_ids: list[str] = []
+        for sid, s in list(self._active_sessions.items()):
+            if (now - s.started_at).total_seconds() > AUDIO_SESSION_TTL_SECONDS:
+                if s.state in (AudioCaptureState.CAPTURING, AudioCaptureState.PROCESSING):
+                    # Abandoned capture session exceeded TTL: safely cancel physical device and transition to terminal
+                    if self.capture_device and self.capture_device.is_active():
+                        try:
+                            self.capture_device.cancel_capture()
+                        except Exception as exc:
+                            logger.warning("Error cancelling capture device during expired session pruning: %s", exc)
+                    s.state = AudioCaptureState.FAILED
+                expired_ids.append(sid)
+
         for sid in expired_ids:
             self._active_sessions.pop(sid, None)
 
@@ -348,7 +361,17 @@ class AudioSessionManager:
                 session.state = AudioCaptureState.FAILED
                 raise ValidationError(f"Invalid base64 audio payload: {e}") from e
         elif self.capture_device and self.capture_device.is_active():
-            audio_buffer = self.capture_device.stop_capture()
+            try:
+                audio_buffer = self.capture_device.stop_capture()
+            except Exception as exc:
+                session.state = AudioCaptureState.FAILED
+                try:
+                    self.capture_device.cancel_capture()
+                except Exception:
+                    pass
+                if not isinstance(exc, ValidationError):
+                    raise AudioCaptureError(f"Audio capture stop failed: {exc}") from exc
+                raise
         else:
             session.state = AudioCaptureState.FAILED
             raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")

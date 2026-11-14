@@ -37,6 +37,7 @@ from pico.perception.audio.adapter import (
 )
 from pico.perception.audio.capture import (
     AudioCaptureError,
+    BaseAudioCaptureDevice,
     LocalAudioCaptureDevice,
     MockAudioCaptureDevice,
     zeroize_bytearray,
@@ -140,6 +141,79 @@ def test_local_audio_capture_device_honest_availability() -> None:
     assert info["driver_type"] == "sounddevice"
     assert isinstance(dev.is_available(), bool)
     assert dev.is_active() is False
+
+
+def test_local_audio_capture_device_query_discovery_sequences(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test LocalAudioCaptureDevice.is_available across custom sequence types, empty sequences,
+    output-only devices, explicit index, and driver errors."""
+    import sounddevice as sd
+
+    class CustomDeviceSequence:
+        def __init__(self, items: list[dict[str, Any]]) -> None:
+            self._items = items
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def __getitem__(self, idx: int) -> dict[str, Any]:
+            return self._items[idx]
+
+        def __iter__(self):
+            return iter(self._items)
+
+    dev = LocalAudioCaptureDevice()
+
+    # 1. At least one available input device in custom sequence / tuple-like
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda *args, **kwargs: CustomDeviceSequence(
+            [
+                {"name": "Speakers", "max_input_channels": 0, "max_output_channels": 2},
+                {"name": "USB Microphone", "max_input_channels": 1, "max_output_channels": 0},
+            ]
+        ),
+    )
+    assert dev.is_available() is True
+
+    # 2. Output-only devices in sequence
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda *args, **kwargs: (
+            {"name": "Headphones", "max_input_channels": 0, "max_output_channels": 2},
+            {"name": "HDMI Out", "max_input_channels": 0, "max_output_channels": 8},
+        ),
+    )
+    assert dev.is_available() is False
+
+    # 3. An empty sequence
+    monkeypatch.setattr(sd, "query_devices", lambda *args, **kwargs: CustomDeviceSequence([]))
+    assert dev.is_available() is False
+
+    # 4. An explicit device index returning a dictionary
+    dev_indexed = LocalAudioCaptureDevice(device_index=2)
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda idx=None, *args, **kwargs: {"name": "Mic 2", "max_input_channels": 2} if idx == 2 else {},
+    )
+    assert dev_indexed.is_available() is True
+
+    dev_indexed_out = LocalAudioCaptureDevice(device_index=3)
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda idx=None, *args, **kwargs: {"name": "Speaker 3", "max_input_channels": 0} if idx == 3 else {},
+    )
+    assert dev_indexed_out.is_available() is False
+
+    # 5. Driver / query exceptions
+    def failing_query(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("PortAudio driver crashed or unavailable")
+
+    monkeypatch.setattr(sd, "query_devices", failing_query)
+    assert dev.is_available() is False
 
 
 def test_local_audio_capture_device_mocked_stream_lifecycle_and_bounded_buffer() -> None:
@@ -299,6 +373,61 @@ def test_validate_audio_payload_duration_limits() -> None:
         validate_audio_payload(long_wav, max_duration_seconds=1.0, expected_format="wav")
 
 
+def test_validate_audio_payload_riff_boundary_and_duplicate_data_rejection() -> None:
+    """Requirement 5: Strict RIFF container boundary and duplicate data chunk rejection."""
+    import struct
+
+    # 1. Payload whose declared RIFF size ends before an appended data chunk
+    header_only = bytearray(
+        b"RIFF\x24\x00\x00\x00"  # RIFF size = 36 (riff_end = 44)
+        b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"  # fmt chunk (ends at 36)
+        b"junk\x00\x00\x00\x00"  # junk chunk size 0 (ends at 44)
+    )
+    # Append 'data' chunk outside the declared RIFF container
+    appended_data = b"data\x40\x1f\x00\x00" + (b"\x00" * 8000)
+    payload = bytes(header_only + appended_data)
+    with pytest.raises(ValidationError, match="missing required 'data' chunk"):
+        validate_audio_payload(payload, expected_format="wav")
+
+    # 2. Chunk header or padding crossing RIFF boundary
+    # Declared RIFF size = 40 (riff_end = 48). At offset 44, only 4 bytes remain so chunk header crosses RIFF boundary
+    bad_header_wav = bytearray(
+        b"RIFF\x28\x00\x00\x00"  # RIFF size = 40 (riff_end = 48)
+        b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"  # fmt chunk (ends at 36)
+        b"junk\x00\x00\x00\x00"  # junk chunk size 0 (ends at 44)
+        b"data"  # 4 bytes truncated header before riff_end
+    )
+    with pytest.raises(ValidationError, match="crosses declared RIFF boundary"):
+        validate_audio_payload(bytes(bad_header_wav), expected_format="wav")
+
+    # Chunk body crossing RIFF boundary:
+    # Declared RIFF size = 46 (riff_end = 54). At offset 44, chunk claims size 32 (exceeding riff_end 54)
+    bad_body_wav = bytearray(
+        b"RIFF\x2e\x00\x00\x00"  # RIFF size = 46 (riff_end = 54)
+        b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"  # fmt chunk (ends at 36)
+        b"junk\x00\x00\x00\x00"  # junk chunk size 0 (ends at 44)
+        b"junk\x20\x00\x00\x00" + (b"\x00" * 32)  # junk chunk claims size 32 (would end at 84, exceeding riff_end 54)
+    )
+    with pytest.raises(ValidationError, match="exceeds declared RIFF boundary"):
+        validate_audio_payload(bytes(bad_body_wav), expected_format="wav")
+
+    # 3. Duplicate 'data' chunk
+    valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+    # Insert another data chunk after the first
+    # Find first data chunk
+    data_idx = valid_wav.find(b"data")
+    assert data_idx != -1
+    d_size = struct.unpack("<I", valid_wav[data_idx + 4 : data_idx + 8])[0]
+    first_data_end = data_idx + 8 + d_size
+    second_data = b"data\x10\x00\x00\x00" + (b"\x00" * 16)
+    dup_data_wav = bytearray(valid_wav[:first_data_end] + second_data + valid_wav[first_data_end:])
+    # Update RIFF size
+    new_riff_size = len(dup_data_wav) - 8
+    dup_data_wav[4:8] = struct.pack("<I", new_riff_size)
+    with pytest.raises(ValidationError, match="duplicate 'data' chunk detected"):
+        validate_audio_payload(bytes(dup_data_wav), expected_format="wav")
+
+
 # ============================================================================
 # 3. Ephemeral Memory Zeroization Invariants
 # ============================================================================
@@ -414,6 +543,98 @@ def test_session_manager_session_pruning() -> None:
 
     manager.prune_expired_sessions()
     assert sess.session_id not in manager._active_sessions
+
+
+def test_session_manager_abandoned_capture_session_pruning_and_device_release() -> None:
+    """Requirement 4: TTL pruning of an abandoned session in CAPTURING/PROCESSING state must cancel
+    capture on the device, release resources, mark session FAILED, and remove it from active sessions."""
+
+    class FakeDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.cancelled = False
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.cancelled = False
+
+        def stop_capture(self) -> bytearray:
+            self.active = False
+            return bytearray()
+
+        def cancel_capture(self) -> None:
+            self.active = False
+            self.cancelled = True
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "fake"}
+
+    dev = FakeDevice()
+    manager = AudioSessionManager(capture_device=dev)
+    res = manager.start_session(user_consent=True)
+    assert dev.active is True
+
+    # Artificially age the session past TTL while still CAPTURING
+    sess = manager._active_sessions[res.session_id]
+    sess.started_at = utc_now() - timedelta(seconds=350)
+
+    manager.prune_expired_sessions()
+
+    # Device must have cancel_capture called and be released
+    assert dev.active is False
+    assert dev.cancelled is True
+    assert res.session_id not in manager._active_sessions
+
+
+@pytest.mark.anyio
+async def test_session_manager_stop_capture_exception_handling() -> None:
+    """Requirement 4: If capture_device.stop_capture() raises an unexpected exception, cancel_capture()
+    must be called to release device, session state must become FAILED, and AudioCaptureError must be raised."""
+
+    class CrashingCaptureDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.cancelled = False
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.cancelled = False
+
+        def stop_capture(self) -> bytearray:
+            raise RuntimeError("Hardware disconnect during audio stream readout")
+
+        def cancel_capture(self) -> None:
+            self.active = False
+            self.cancelled = True
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "crashing"}
+
+    dev = CrashingCaptureDevice()
+    manager = AudioSessionManager(capture_device=dev)
+    res = manager.start_session(user_consent=True)
+    assert dev.active is True
+
+    with pytest.raises(AudioCaptureError, match="Hardware disconnect during audio stream readout"):
+        await manager.stop_session(res.session_id)
+
+    assert dev.active is False
+    assert dev.cancelled is True
+    sess = manager.get_session(res.session_id)
+    assert sess is not None
+    assert sess.state == AudioCaptureState.FAILED
 
 
 # ============================================================================
@@ -1104,6 +1325,60 @@ def test_voice_service_wrong_operator_rejected() -> None:
                 db=db,
                 caller_operator_id="operator_bob",
             )
+    finally:
+        db.close()
+
+
+def test_voice_service_non_delivery_integrity_error_preserves_retryable_state() -> None:
+    """Requirement 6: If an IntegrityError occurs without a committed voice_transcript_delivery event
+    (e.g. foreign key constraint violation), the in-memory session must NOT be marked delivered,
+    allowing caller retry or recovery once conditions are corrected."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Constraint test")
+    start_res = manager.start_session(user_consent=True, operator_id="op_fk")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Constraint test speech"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="FK Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+
+        # Simulate an IntegrityError that does NOT have a committed delivery event (e.g. FK constraint)
+        from unittest.mock import patch
+
+        from sqlalchemy.exc import IntegrityError
+
+        with patch.object(
+            db,
+            "commit",
+            side_effect=IntegrityError("INSERT failed", params={}, orig=Exception("FOREIGN KEY constraint failed")),
+        ):
+            with pytest.raises(ValidationError, match="Voice delivery transaction failed integrity check on database"):
+                voice_svc.deliver_transcript_to_conversation(
+                    session_id=start_res.session_id,
+                    conversation_id=conv.id,
+                    db=db,
+                    caller_operator_id="op_fk",
+                )
+
+        # In-memory session MUST NOT be marked delivered because no delivery event exists in DB
+        assert sess.delivered is False
+        assert sess.delivered_at is None
+
+        # After resolving the constraint issue, retry succeeds cleanly
+        res = voice_svc.deliver_transcript_to_conversation(
+            session_id=start_res.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_fk",
+        )
+        assert res["delivered"] is True
+        assert sess.delivered is True
     finally:
         db.close()
 

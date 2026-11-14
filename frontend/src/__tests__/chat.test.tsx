@@ -551,4 +551,63 @@ it('immediately clears prior conversation messages on switch and handles failed 
     fireEvent.change(inputEl, { target: { value: 'Follow-up message' } });
     expect(sendBtn).not.toBeDisabled();
   });
+
+  it('discards stale in-flight history response when switching conversation before promise resolves', async () => {
+    let resolveConvA: (msgs: any[]) => void = () => {};
+    const promiseConvA = new Promise<any[]>((resolve) => {
+      resolveConvA = resolve;
+    });
+
+    let resolveConvB: (msgs: any[]) => void = () => {};
+    const promiseConvB = new Promise<any[]>((resolve) => {
+      resolveConvB = resolve;
+    });
+
+    vi.mocked(api.getMessages).mockImplementation((convId: string) => {
+      if (convId === 'conv_A') return promiseConvA;
+      if (convId === 'conv_B') return promiseConvB;
+      return Promise.resolve([]);
+    });
+
+    const msgA = {
+      id: 'msg_a_1',
+      conversation_id: 'conv_A',
+      content: 'Conversation A Message',
+      role: 'user' as const,
+      created_at: '2026-10-22T10:00:00Z',
+    };
+    const msgB = {
+      id: 'msg_b_1',
+      conversation_id: 'conv_B',
+      content: 'Conversation B Message',
+      role: 'user' as const,
+      created_at: '2026-10-22T10:00:01Z',
+    };
+
+    // 1. Render on conversation A
+    const { rerender } = render(<ChatPanel {...props} activeConversation={conversation('conv_A')} />);
+
+    // Request for conv_A is in flight
+    expect(api.getMessages).toHaveBeenCalledWith('conv_A', 50, 0);
+
+    // 2. Switch to conversation B before A resolves
+    rerender(<ChatPanel {...props} activeConversation={conversation('conv_B')} />);
+    expect(api.getMessages).toHaveBeenCalledWith('conv_B', 50, 0);
+
+    // 3. Resolve conv_B history
+    await act(async () => {
+      resolveConvB([msgB]);
+    });
+    await screen.findByText('Conversation B Message');
+    expect(screen.getByText('Conversation B Message')).toBeInTheDocument();
+
+    // 4. Resolve stale conv_A history afterwards
+    await act(async () => {
+      resolveConvA([msgA]);
+    });
+
+    // 5. Conv B message remains displayed, Conv A message must be completely discarded
+    expect(screen.getByText('Conversation B Message')).toBeInTheDocument();
+    expect(screen.queryByText('Conversation A Message')).not.toBeInTheDocument();
+  });
 });

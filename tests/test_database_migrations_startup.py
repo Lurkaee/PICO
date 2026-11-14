@@ -752,6 +752,12 @@ def test_database_migration_file_lock_canonicalization_and_equivalence() -> None
         assert can_abs == db_path.resolve()
         assert can_rel == Path(db_path.name).resolve()
 
+        # Support driver-qualified SQLite URLs (e.g. sqlite+pysqlite, sqlite+aiosqlite)
+        url_driver = f"sqlite+pysqlite:///{abs_path_str}"
+        assert _canonicalize_sqlite_db_path(url_driver) == db_path.resolve()
+        assert _canonicalize_sqlite_db_path("sqlite+aiosqlite:///pico.db") == Path("pico.db").resolve()
+        assert _canonicalize_sqlite_db_path("postgresql://user:pass@localhost/db") is None
+
         # In-memory URLs return None (no lock file)
         assert _canonicalize_sqlite_db_path("sqlite:///:memory:") is None
         assert _canonicalize_sqlite_db_path("sqlite://") is None
@@ -968,5 +974,82 @@ def test_database_startup_legacy_unexpected_onupdate_action_fails_closed() -> No
         insp = inspect(engine_check)
         assert "alembic_version" not in insp.get_table_names()
         engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_unexpected_partial_index_predicate_fails_closed() -> None:
+    """Negative: A legacy database where a baseline index has a partial WHERE predicate fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_partial_idx_")
+    try:
+        db_path = Path(temp_dir) / "partial_idx.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Replace ix_tool_executions_idempotency_key with a partial unique index
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP INDEX ix_tool_executions_idempotency_key;"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX ix_tool_executions_idempotency_key "
+                    "ON tool_executions (idempotency_key) WHERE idempotency_key = 'legacy-only';"
+                )
+            )
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="unexpected partial index predicate") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "ix_tool_executions_idempotency_key" in str(exc_info.value)
+        assert "tool_executions" in str(exc_info.value)
+
+        # Confirm database remains unstamped
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_missing_alembic_assets_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Requirement 7: Startup fails closed when required Alembic migration assets are missing."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_missing_alembic_")
+    try:
+        db_path = Path(temp_dir) / "test.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+
+        orig_is_file = Path.is_file
+
+        def mock_is_file(self: Path) -> bool:
+            if self.name == "alembic.ini":
+                return False
+            return orig_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", mock_is_file)
+
+        with pytest.raises(RuntimeError, match="Required Alembic migration assets are missing"):
+            apply_pending_migrations(db_url)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_url_with_literal_percent_sign_succeeds() -> None:
+    """Requirement 7: SQLite URLs containing literal percent signs (%) run migrations cleanly."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_percent_")
+    try:
+        # Create a database filename containing literal '%'
+        db_path = Path(temp_dir) / "pico%20project%test.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+
+        apply_pending_migrations(db_url)
+
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            assert rev == "c3d4e5f6a7b8"
+        engine.dispose()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
