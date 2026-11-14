@@ -177,6 +177,14 @@ def validate_legacy_unversioned_schema(insp: Any, db_url: str) -> None:
                 f"is missing required columns {missing_cols}."
             )
 
+        # Unrecognized extra columns
+        extra_cols = sorted(set(actual_cols.keys()) - set(expected_cols.keys()))
+        if extra_cols:
+            raise RuntimeError(
+                f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
+                f"contains unrecognized extra columns {extra_cols}."
+            )
+
         # Nullability & Type compatibility
         for col_name, exp_col in expected_cols.items():
             act_col = actual_cols[col_name]
@@ -216,6 +224,30 @@ def validate_legacy_unversioned_schema(insp: Any, db_url: str) -> None:
                     f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
                     f"missing foreign key constraint on {exp_fk['constrained_columns']} -> {exp_fk['referred_table']}."
                 )
+
+        # Expected Indexes
+        act_indexes = {
+            idx["name"]: idx for idx in insp.get_indexes(table_name) if not idx["name"].startswith("sqlite_autoindex_")
+        }
+        for exp_idx in expected_spec.get("indexes", []):
+            idx_name = exp_idx["name"]
+            if idx_name not in act_indexes:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: table '{table_name}' "
+                    f"is missing expected index '{idx_name}'."
+                )
+            actual_idx = act_indexes[idx_name]
+            if actual_idx.get("column_names") != exp_idx["column_names"]:
+                raise RuntimeError(
+                    f"Incompatible unversioned database schema on {db_url}: index '{idx_name}' on table '{table_name}' "
+                    f"column mismatch (got {actual_idx.get('column_names')}, expected {exp_idx['column_names']})."
+                )
+            if idx_name != "ix_workflow_runs_idempotency_key":
+                if bool(actual_idx.get("unique")) != bool(exp_idx["unique"]):
+                    raise RuntimeError(
+                        f"Incompatible unversioned schema on {db_url}: index '{idx_name}' on table '{table_name}' "
+                        f"unique mismatch (got {actual_idx.get('unique')}, expected {exp_idx['unique']})."
+                    )
 
     # 3. Check for unexpected partially upgraded schema on perception_events
     pe_indexes = [idx["name"] for idx in insp.get_indexes("perception_events")]

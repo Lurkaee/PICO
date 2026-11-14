@@ -761,3 +761,90 @@ def test_database_migration_file_lock_canonicalization_and_equivalence() -> None
 
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_unrecognized_extra_column_fails_closed() -> None:
+    """Negative: An unversioned database containing an unrecognized extra column fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_extra_col_")
+    try:
+        db_path = Path(temp_dir) / "extra_col.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Inject an unauthorized extra column into conversations
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE conversations ADD COLUMN rogue_extra_col TEXT;"))
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="unrecognized extra columns") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "rogue_extra_col" in str(exc_info.value)
+        assert "conversations" in str(exc_info.value)
+
+        # Confirm database is untouched and not stamped
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_missing_expected_index_fails_closed() -> None:
+    """Negative: An unversioned database missing an expected baseline index fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_missing_idx_")
+    try:
+        db_path = Path(temp_dir) / "missing_idx.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Drop expected index on conversations
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP INDEX ix_conversations_updated_at;"))
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="is missing expected index") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "ix_conversations_updated_at" in str(exc_info.value)
+
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_database_startup_legacy_index_column_mismatch_fails_closed() -> None:
+    """Negative: An unversioned database with an index defined on the wrong column fails closed."""
+    temp_dir = tempfile.mkdtemp(prefix="pico_bad_idx_")
+    try:
+        db_path = Path(temp_dir) / "bad_idx.db"
+        db_url = f"sqlite:///{db_path.as_posix()}"
+        _create_legacy_unversioned_db(db_url)
+
+        # Invert/change columns indexed by ix_conversations_updated_at
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            conn.execute(text("DROP INDEX ix_conversations_updated_at;"))
+            conn.execute(text("CREATE INDEX ix_conversations_updated_at ON conversations (title);"))
+            conn.commit()
+        engine.dispose()
+
+        with pytest.raises(RuntimeError, match="column mismatch") as exc_info:
+            apply_pending_migrations(db_url)
+
+        assert "ix_conversations_updated_at" in str(exc_info.value)
+
+        engine_check = create_engine(db_url)
+        insp = inspect(engine_check)
+        assert "alembic_version" not in insp.get_table_names()
+        engine_check.dispose()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
