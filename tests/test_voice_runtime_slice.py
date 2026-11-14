@@ -592,6 +592,184 @@ def test_session_manager_abandoned_capture_session_pruning_and_device_release() 
     assert res.session_id not in manager._active_sessions
 
 
+def test_session_manager_pruning_and_concurrent_start_serialization() -> None:
+    """Requirement: The manager-level lifecycle lock must serialize pruning of an expired
+    session and starting a replacement session, so that the old pruning operation cannot
+    cancel the replacement session's capture device."""
+    import threading
+    import time
+
+    class RaceConditionMockDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.cancel_count = 0
+            self.start_count = 0
+            self.pruning_inside_cancel = threading.Event()
+            self.allow_cancel_to_finish = threading.Event()
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.start_count += 1
+
+        def stop_capture(self) -> bytearray:
+            self.active = False
+            return bytearray()
+
+        def cancel_capture(self) -> None:
+            self.active = False
+            self.cancel_count += 1
+            # Signal that pruning has entered cancel_capture
+            self.pruning_inside_cancel.set()
+            # Wait for main test to allow finish (ensuring pruning holds the lock while start_session waits)
+            self.allow_cancel_to_finish.wait(timeout=2.0)
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "race_mock"}
+
+    dev = RaceConditionMockDevice()
+    dev.allow_cancel_to_finish.set()  # for initial start
+    manager = AudioSessionManager(capture_device=dev)
+
+    # 1. Start session 1 and artificially age it past TTL
+    start1 = manager.start_session(user_consent=True)
+    assert dev.is_active() is True
+    assert dev.start_count == 1
+    sess1 = manager.get_session(start1.session_id)
+    assert sess1 is not None
+    sess1.started_at = utc_now() - timedelta(seconds=350)
+
+    # Reset events for controlled race
+    dev.pruning_inside_cancel.clear()
+    dev.allow_cancel_to_finish.clear()
+
+    # 2. Spawn Thread 1 to run prune_expired_sessions
+    prune_thread = threading.Thread(target=manager.prune_expired_sessions)
+    prune_thread.start()
+
+    # Wait until Thread 1 enters cancel_capture (inside prune_expired_sessions, holding _lifecycle_lock)
+    assert dev.pruning_inside_cancel.wait(timeout=2.0) is True
+
+    # 3. Spawn Thread 2 attempting to start a replacement session concurrently
+    start2_holder: dict[str, Any] = {}
+
+    def try_start_session() -> None:
+        try:
+            res = manager.start_session(user_consent=True)
+            start2_holder["result"] = res
+        except Exception as e:
+            start2_holder["error"] = e
+
+    start_thread = threading.Thread(target=try_start_session)
+    start_thread.start()
+
+    # Give Thread 2 time to block on _lifecycle_lock
+    time.sleep(0.05)
+
+    # 4. Now allow Thread 1 to finish cancel_capture and complete pruning
+    dev.allow_cancel_to_finish.set()
+    prune_thread.join(timeout=2.0)
+    assert not prune_thread.is_alive()
+
+    # 5. Thread 2 should now unblock, acquire _lifecycle_lock, and successfully start replacement session
+    start_thread.join(timeout=2.0)
+    assert not start_thread.is_alive()
+
+    assert "result" in start2_holder, f"start_session failed: {start2_holder.get('error')}"
+    start2 = start2_holder["result"]
+
+    # 6. Crucial invariants:
+    # - Old session 1 was pruned and cancelled
+    assert start1.session_id not in manager._active_sessions
+    # - Replacement session 2 is active and recording
+    assert start2.session_id in manager._active_sessions
+    sess2 = manager.get_session(start2.session_id)
+    assert sess2 is not None
+    assert sess2.state == AudioCaptureState.CAPTURING
+    # - Device is currently active (was NOT cancelled by the old pruning operation)
+    assert dev.is_active() is True
+    # - Device was started twice (once for sess1, once for sess2) and cancelled once (for sess1)
+    assert dev.start_count == 2
+    assert dev.cancel_count == 1
+    # - Manager reports truthful state
+    status = manager.get_status()
+    assert status["microphone_active"] is True
+    assert status["active_sessions_count"] == 1
+
+
+def test_session_manager_concurrent_starts_admit_single_owner() -> None:
+    """Requirement: Concurrent start requests must be serialized so that exactly one session
+    acquires the capture device and other concurrent callers are rejected."""
+    import threading
+
+    class SimpleMockDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.start_count = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.start_count += 1
+
+        def stop_capture(self) -> bytearray:
+            self.active = False
+            return bytearray()
+
+        def cancel_capture(self) -> None:
+            self.active = False
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "simple"}
+
+    dev = SimpleMockDevice()
+    manager = AudioSessionManager(capture_device=dev)
+
+    barrier = threading.Barrier(10)
+    successes: list[str] = []
+    failures: list[Exception] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            res = manager.start_session(user_consent=True)
+            with lock:
+                successes.append(res.session_id)
+        except Exception as e:
+            with lock:
+                failures.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3.0)
+
+    # Exactly 1 success, 9 AudioCaptureError failures
+    assert len(successes) == 1
+    assert len(failures) == 9
+    for f in failures:
+        assert isinstance(f, AudioCaptureError)
+        assert "already active" in str(f)
+
+    assert dev.is_active() is True
+    assert dev.start_count == 1
+    status = manager.get_status()
+    assert status["microphone_active"] is True
+    assert status["active_sessions_count"] == 1
+
+
 @pytest.mark.anyio
 async def test_session_manager_stop_capture_exception_handling() -> None:
     """Requirement 4: If capture_device.stop_capture() raises an unexpected exception, cancel_capture()

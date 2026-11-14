@@ -7,7 +7,7 @@ import { useConnectivity } from '../../context/ConnectivityContext';
 interface VoiceControlProps {
   onTranscription: (text: string) => void;
   conversationId?: string;
-  onDelivered?: (delivery: { session_id: string; message_id: string; transcription: string }) => void;
+  onDelivered?: (delivery: { session_id: string; conversation_id?: string; message_id: string; transcription: string }) => void;
   disabled?: boolean;
 }
 

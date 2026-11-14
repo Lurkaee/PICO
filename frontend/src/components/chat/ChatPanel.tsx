@@ -52,12 +52,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const refreshHistory = async (targetId?: unknown) => {
     const targetConvId = typeof targetId === 'string' && targetId ? targetId : (activeConversation?.id ?? null);
-    if (!targetConvId) return;
+    if (!targetConvId || targetConvId !== activeConversationIdRef.current) return;
     const token = ++historyRequestIdRef.current;
-    if (activeConversationIdRef.current === targetConvId) {
-      setLoadingHistory(true);
-      setStreamError(null);
-    }
+    setLoadingHistory(true);
+    setStreamError(null);
     try {
       const history = await api.getMessages(targetConvId, 50, 0);
       if (historyRequestIdRef.current === token && activeConversationIdRef.current === targetConvId) {
@@ -1019,8 +1017,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <VoiceControl
             conversationId={activeConversation?.id}
             onTranscription={(text) => setInput((prev) => (prev ? `${prev} ${text}` : text))}
-            onDelivered={() => {
-              void refreshHistory(activeConversation?.id);
+            onDelivered={(delivery) => {
+              void refreshHistory(delivery?.conversation_id ?? activeConversation?.id);
             }}
           />
 

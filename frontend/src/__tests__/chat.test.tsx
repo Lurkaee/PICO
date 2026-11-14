@@ -12,6 +12,11 @@ vi.mock('../api/client', () => ({
       enabled: false,
       audio_capture_enabled: false,
     }),
+    startAudioSession: vi.fn(),
+    stopAudioSession: vi.fn(),
+    cancelAudioSession: vi.fn(),
+    deliverAudioTranscript: vi.fn(),
+    getAudioSessionStatus: vi.fn(),
   },
 }));
 
@@ -609,5 +614,93 @@ it('immediately clears prior conversation messages on switch and handles failed 
     // 5. Conv B message remains displayed, Conv A message must be completely discarded
     expect(screen.getByText('Conversation B Message')).toBeInTheDocument();
     expect(screen.queryByText('Conversation A Message')).not.toBeInTheDocument();
+  });
+
+  it('ignores delayed inactive conversation delivery refresh and preserves in-flight active conversation history', async () => {
+    vi.mocked(api.getPerceptionStatus).mockResolvedValue({
+      enabled: true,
+      audio_capture_enabled: true,
+      vision_enabled: false,
+      motion_enabled: false,
+      environmental_enabled: false,
+      adapter_mode: 'mock',
+      active_audio_sessions: 0,
+    });
+
+    vi.mocked(api.startAudioSession).mockResolvedValue({
+      session_id: 'session_conv_A',
+      status: 'active',
+    });
+
+    vi.mocked(api.stopAudioSession).mockResolvedValue({
+      session_id: 'session_conv_A',
+      transcription: 'Voice text for A',
+      status: 'completed',
+    });
+
+    let resolveDeliveryA: (res: any) => void = () => {};
+    const promiseDeliveryA = new Promise<any>((resolve) => {
+      resolveDeliveryA = resolve;
+    });
+    vi.mocked(api.deliverAudioTranscript).mockReturnValue(promiseDeliveryA);
+
+    let resolveConvB: (msgs: any[]) => void = () => {};
+    const promiseConvB = new Promise<any[]>((resolve) => {
+      resolveConvB = resolve;
+    });
+
+    const msgB = {
+      id: 'msg_b_1',
+      conversation_id: 'conv_B',
+      content: 'Active Conversation B Message',
+      role: 'user' as const,
+      created_at: '2026-10-22T10:00:01Z',
+    };
+
+    vi.mocked(api.getMessages).mockImplementation((convId: string) => {
+      if (convId === 'conv_A') return Promise.resolve([]);
+      if (convId === 'conv_B') return promiseConvB;
+      return Promise.resolve([]);
+    });
+
+    // 1. Start with conversation A
+    const { rerender } = render(<ChatPanel {...props} activeConversation={conversation('conv_A')} />);
+    await waitFor(() => expect(screen.queryByText(/Loading conversation history/)).not.toBeInTheDocument());
+
+    // 2. Begin voice capture and stop/delivery while conv_A is active
+    const micBtn = await screen.findByLabelText('Start voice capture session');
+    fireEvent.click(micBtn);
+
+    const stopBtn = await screen.findByLabelText('Stop recording and transcribe');
+    fireEvent.click(stopBtn);
+
+    await waitFor(() => expect(api.deliverAudioTranscript).toHaveBeenCalledWith('session_conv_A', 'conv_A'));
+
+    // 3. Switch to conversation B while A's delivery is still pending
+    rerender(<ChatPanel {...props} activeConversation={conversation('conv_B')} />);
+    expect(api.getMessages).toHaveBeenCalledWith('conv_B', 50, 0);
+
+    // 4. Now allow A's delayed delivery callback to complete and invoke onDelivered -> refreshHistory('conv_A')
+    await act(async () => {
+      resolveDeliveryA({
+        session_id: 'session_conv_A',
+        conversation_id: 'conv_A',
+        message_id: 'msg_a_trans',
+        transcription: 'Voice text for A',
+        data_classification: 'INTERNAL',
+        delivered: true,
+        created_at: '2026-10-22T10:00:00Z',
+      });
+    });
+
+    // 5. Resolve conv_B history request
+    await act(async () => {
+      resolveConvB([msgB]);
+    });
+
+    // 6. Confirm B's history loads normally, its loading state clears, and A's inactive refresh did not invalidate it
+    await screen.findByText('Active Conversation B Message');
+    expect(screen.getByText('Active Conversation B Message')).toBeInTheDocument();
+    expect(screen.queryByText(/Loading conversation history/)).not.toBeInTheDocument();
   });
 });

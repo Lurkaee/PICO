@@ -223,6 +223,7 @@ class AudioSessionManager:
         self.tts_adapter = tts_adapter or LocalTextToSpeechAdapter()
         self.capture_device = capture_device
         self._active_sessions: dict[str, AudioSession] = {}
+        self._lifecycle_lock = threading.RLock()
 
     def get_session(self, session_id: str) -> AudioSession | None:
         return self._active_sessions.get(session_id)
@@ -232,22 +233,26 @@ class AudioSessionManager:
 
         Safely releases hardware and mutable buffers for abandoned capture sessions before pruning.
         """
-        now = utc_now()
-        expired_ids: list[str] = []
-        for sid, s in list(self._active_sessions.items()):
-            if (now - s.started_at).total_seconds() > AUDIO_SESSION_TTL_SECONDS:
-                if s.state in (AudioCaptureState.CAPTURING, AudioCaptureState.PROCESSING):
-                    # Abandoned capture session exceeded TTL: safely cancel physical device and transition to terminal
-                    if self.capture_device and self.capture_device.is_active():
-                        try:
-                            self.capture_device.cancel_capture()
-                        except Exception as exc:
-                            logger.warning("Error cancelling capture device during expired session pruning: %s", exc)
-                    s.state = AudioCaptureState.FAILED
-                expired_ids.append(sid)
+        with self._lifecycle_lock:
+            now = utc_now()
+            expired_ids: list[str] = []
+            for sid, s in list(self._active_sessions.items()):
+                if (now - s.started_at).total_seconds() > AUDIO_SESSION_TTL_SECONDS:
+                    if s.state in (AudioCaptureState.CAPTURING, AudioCaptureState.PROCESSING):
+                        # Abandoned capture session exceeded TTL: safely cancel physical device.
+                        if self.capture_device and self.capture_device.is_active():
+                            try:
+                                self.capture_device.cancel_capture()
+                            except Exception as exc:
+                                logger.warning(
+                                    "Error cancelling capture device during expired session pruning: %s",
+                                    exc,
+                                )
+                        s.state = AudioCaptureState.FAILED
+                    expired_ids.append(sid)
 
-        for sid in expired_ids:
-            self._active_sessions.pop(sid, None)
+            for sid in expired_ids:
+                self._active_sessions.pop(sid, None)
 
     def get_status(self) -> dict[str, Any]:
         mic_active = self.capture_device.is_active() if self.capture_device else False
@@ -291,35 +296,37 @@ class AudioSessionManager:
         if not user_consent:
             raise AuthorizationError("Explicit user consent is mandatory for audio capture.")
 
-        self.prune_expired_sessions()
+        clean_device = validate_trusted_source_device(Modality.AUDIO, source_device)
 
-        # Enforce single active recording session policy
-        active_captures = [
-            s
-            for s in self._active_sessions.values()
-            if s.state in (AudioCaptureState.CAPTURING, AudioCaptureState.PROCESSING)
-        ]
-        if active_captures:
-            raise AudioCaptureError(
-                "A recording session is already active. Complete or cancel the active session first."
+        with self._lifecycle_lock:
+            self.prune_expired_sessions()
+
+            # Enforce single active recording session policy
+            active_captures = [
+                s
+                for s in self._active_sessions.values()
+                if s.state in (AudioCaptureState.CAPTURING, AudioCaptureState.PROCESSING)
+            ]
+            if active_captures:
+                raise AudioCaptureError(
+                    "A recording session is already active. Complete or cancel the active session first."
+                )
+
+            session_id = f"aud_{uuid.uuid4().hex[:16]}"
+            session = AudioSession(
+                session_id=session_id,
+                source_device=clean_device,
+                user_consent=user_consent,
+                operator_id=operator_id,
+                conversation_id=conversation_id,
             )
 
-        clean_device = validate_trusted_source_device(Modality.AUDIO, source_device)
-        session_id = f"aud_{uuid.uuid4().hex[:16]}"
-        session = AudioSession(
-            session_id=session_id,
-            source_device=clean_device,
-            user_consent=user_consent,
-            operator_id=operator_id,
-            conversation_id=conversation_id,
-        )
+            mic_active = False
+            if self.capture_device:
+                self.capture_device.start_capture()
+                mic_active = self.capture_device.is_active()
 
-        mic_active = False
-        if self.capture_device:
-            self.capture_device.start_capture()
-            mic_active = self.capture_device.is_active()
-
-        self._active_sessions[session_id] = session
+            self._active_sessions[session_id] = session
 
         message = (
             "Push-to-talk recording session initialized (microphone active)."
@@ -342,43 +349,44 @@ class AudioSessionManager:
         audio_format: str = "wav",
         client_duration_seconds: float | None = None,
     ) -> tuple[AudioSessionStopResponse, NormalizedPerceptionEvent]:
-        session = self._active_sessions.get(session_id)
-        if not session:
-            raise ValidationError(f"Audio session '{session_id}' not found.")
+        with self._lifecycle_lock:
+            session = self._active_sessions.get(session_id)
+            if not session:
+                raise ValidationError(f"Audio session '{session_id}' not found.")
 
-        if session.state != AudioCaptureState.CAPTURING:
-            raise ValidationError(f"Session '{session_id}' is in '{session.state.value}' state, not capturing.")
+            if session.state != AudioCaptureState.CAPTURING:
+                raise ValidationError(f"Session '{session_id}' is in '{session.state.value}' state, not capturing.")
 
-        session.state = AudioCaptureState.PROCESSING
+            session.state = AudioCaptureState.PROCESSING
 
-        # Retrieve audio payload into a mutable bytearray
-        audio_buffer: bytearray | None = None
-        if audio_base64:
-            try:
-                decoded = base64.b64decode(audio_base64)
-                audio_buffer = bytearray(decoded)
-            except Exception as e:
-                session.state = AudioCaptureState.FAILED
-                raise ValidationError(f"Invalid base64 audio payload: {e}") from e
-        elif self.capture_device and self.capture_device.is_active():
-            try:
-                audio_buffer = self.capture_device.stop_capture()
-            except Exception as exc:
-                session.state = AudioCaptureState.FAILED
+            # Retrieve audio payload into a mutable bytearray
+            audio_buffer: bytearray | None = None
+            if audio_base64:
                 try:
-                    self.capture_device.cancel_capture()
-                except Exception:
-                    pass
-                if not isinstance(exc, ValidationError):
-                    raise AudioCaptureError(f"Audio capture stop failed: {exc}") from exc
-                raise
-        else:
-            session.state = AudioCaptureState.FAILED
-            raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
+                    decoded = base64.b64decode(audio_base64)
+                    audio_buffer = bytearray(decoded)
+                except Exception as e:
+                    session.state = AudioCaptureState.FAILED
+                    raise ValidationError(f"Invalid base64 audio payload: {e}") from e
+            elif self.capture_device and self.capture_device.is_active():
+                try:
+                    audio_buffer = self.capture_device.stop_capture()
+                except Exception as exc:
+                    session.state = AudioCaptureState.FAILED
+                    try:
+                        self.capture_device.cancel_capture()
+                    except Exception:
+                        pass
+                    if not isinstance(exc, ValidationError):
+                        raise AudioCaptureError(f"Audio capture stop failed: {exc}") from exc
+                    raise
+            else:
+                session.state = AudioCaptureState.FAILED
+                raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
 
-        if not audio_buffer:
-            session.state = AudioCaptureState.FAILED
-            raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
+            if not audio_buffer:
+                session.state = AudioCaptureState.FAILED
+                raise ValidationError("Audio payload is empty or missing. Transcription requires an audio payload.")
 
         start_t = time.perf_counter()
         elapsed = 0.0
@@ -456,16 +464,17 @@ class AudioSessionManager:
         return response, event
 
     def cancel_session(self, session_id: str) -> AudioSessionStartResponse:
-        session = self._active_sessions.get(session_id)
-        if not session:
-            raise ValidationError(f"Audio session '{session_id}' not found.")
+        with self._lifecycle_lock:
+            session = self._active_sessions.get(session_id)
+            if not session:
+                raise ValidationError(f"Audio session '{session_id}' not found.")
 
-        if self.capture_device and self.capture_device.is_active():
-            self.capture_device.cancel_capture()
+            if self.capture_device and self.capture_device.is_active():
+                self.capture_device.cancel_capture()
 
-        with session._delivery_lock:
-            session.state = AudioCaptureState.CANCELLED
-            session.completed_at = utc_now()
+            with session._delivery_lock:
+                session.state = AudioCaptureState.CANCELLED
+                session.completed_at = utc_now()
 
         return AudioSessionStartResponse(
             session_id=session_id,
@@ -477,17 +486,18 @@ class AudioSessionManager:
 
     def shutdown(self) -> None:
         """Cancel all active sessions, release hardware capture devices, and zero memory buffers."""
-        for session_id in list(self._active_sessions.keys()):
-            try:
-                self.cancel_session(session_id)
-            except Exception:
-                pass
-        if self.capture_device and self.capture_device.is_active():
-            try:
-                self.capture_device.cancel_capture()
-            except Exception:
-                pass
-        self._active_sessions.clear()
+        with self._lifecycle_lock:
+            for session_id in list(self._active_sessions.keys()):
+                try:
+                    self.cancel_session(session_id)
+                except Exception:
+                    pass
+            if self.capture_device and self.capture_device.is_active():
+                try:
+                    self.capture_device.cancel_capture()
+                except Exception:
+                    pass
+            self._active_sessions.clear()
 
     async def synthesize_speech(
         self,
