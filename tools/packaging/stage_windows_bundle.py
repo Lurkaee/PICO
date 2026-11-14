@@ -1,12 +1,12 @@
-"""Stage PICO Core and pinned embeddable CPython 3.13 runtime for Windows NSIS bundling.
+"""Stage PICO Core and pinned embeddable CPython 3.14 runtime for Windows NSIS bundling.
 
 This script deterministically builds ``frontend/src-tauri/staged/{core,python}``:
-1. Downloads official CPython 3.13.17 x64 embeddable runtime and verifies SHA-256.
+1. Downloads official CPython 3.14.10 x64 embeddable runtime and verifies SHA-256.
 2. Installs hash-locked direct and transitive runtime wheels from
    ``tools/packaging/requirements-windows-runtime.lock`` (excluding dev-only test tooling
    such as ``pytest``) into ``staged/python/Lib/site-packages`` using ``--require-hashes``
-   and ``--only-binary=:all:`` targeting CPython 3.13 ``win_amd64``.
-3. Configures isolated ``python313._pth`` to load stdlib, site-packages, and ``..\\core``.
+   and ``--only-binary=:all:`` targeting CPython 3.14 ``win_amd64``.
+3. Configures isolated ``python314._pth`` to load stdlib, site-packages, and ``..\\core``.
 4. Copies minimal PICO Core runtime files (``pico/``, ``alembic/``, ``alembic.ini``,
    ``pyproject.toml``) into ``staged/core`` without caches, tests, secrets, or databases.
 5. Verifies payload hygiene and executes real import/App/health checks using ``staged/python/python.exe``.
@@ -121,22 +121,16 @@ def load_locked_runtime_requirements(
         if not line or line.startswith("#"):
             continue
         if "--hash=sha256:" not in line or "==" not in line:
-            raise ValueError(
-                f"Invalid hash-locked entry in {lockfile_path} line {line_no}: {line}"
-            )
+            raise ValueError(f"Invalid hash-locked entry in {lockfile_path} line {line_no}: {line}")
         spec_part, hash_part = line.split("--hash=sha256:", 1)
         spec = spec_part.strip()
         digest = hash_part.strip().lower()
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
-            raise ValueError(
-                f"Invalid SHA-256 digest in {lockfile_path} line {line_no}: {digest}"
-            )
+            raise ValueError(f"Invalid SHA-256 digest in {lockfile_path} line {line_no}: {digest}")
         pkg_raw, version = spec.split("==", 1)
         pkg_norm = _canonical_pkg_name(pkg_raw)
         if pkg_norm in DEV_ONLY_PACKAGES:
-            raise ValueError(
-                f"Forbidden dev package '{pkg_raw}' present in {lockfile_path} line {line_no}"
-            )
+            raise ValueError(f"Forbidden dev package '{pkg_raw}' present in {lockfile_path} line {line_no}")
         locked_entries.append(f"{pkg_norm}=={version.strip()}")
         locked_map[pkg_norm] = version.strip()
 
@@ -180,16 +174,14 @@ def ensure_verified_embed_zip(cache_dir: Path) -> Path:
     actual = sha256_file(tmp_path)
     if actual != EMBED_SHA256:
         tmp_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"SHA-256 mismatch for {EMBED_FILENAME}: expected {EMBED_SHA256}, got {actual}"
-        )
+        raise RuntimeError(f"SHA-256 mismatch for {EMBED_FILENAME}: expected {EMBED_SHA256}, got {actual}")
 
     tmp_path.replace(archive_path)
     return archive_path
 
 
 def stage_python_runtime(archive_path: Path, python_dir: Path, lockfile_path: Path) -> None:
-    """Extract embeddable CPython 3.13, install hash-locked runtime wheels, and write python313._pth."""
+    """Extract embeddable CPython 3.14, install hash-locked runtime wheels, and write python314._pth."""
     python_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive_path, "r") as zf:
         zf.extractall(python_dir)
@@ -233,6 +225,12 @@ def stage_python_runtime(archive_path: Path, python_dir: Path, lockfile_path: Pa
         shutil.rmtree(cache_dir, ignore_errors=True)
     for pyc in site_packages.rglob("*.pyc"):
         pyc.unlink(missing_ok=True)
+
+    # Prune non-production developer/CI directories bundled inside upstream vendor wheels
+    # (e.g. _sounddevice_data/portaudio-binaries/.github shipped in sounddevice wheel)
+    for forbidden_dir in site_packages.rglob(".github"):
+        if forbidden_dir.is_dir():
+            shutil.rmtree(forbidden_dir, ignore_errors=True)
 
     pth_path = python_dir / "python314._pth"
     pth_content = "\n".join(
@@ -342,8 +340,11 @@ def verify_staged_python_imports(core_dir: Path, python_dir: Path) -> None:
             "import asyncio, importlib, sys; "
             "assert sys.version_info[:3] == (3, 14, 10), sys.version_info; "
             "mods = ['fastapi', 'uvicorn', 'pydantic', 'pydantic_settings', "
-            "'sqlalchemy', 'alembic', 'httpx', 'anyio', 'pico.main']; "
+            "'sqlalchemy', 'alembic', 'httpx', 'anyio', 'sounddevice', '_cffi_backend', 'pico.main']; "
             "[importlib.import_module(m) for m in mods]; "
+            "import sounddevice as sd; "
+            "assert sd.get_portaudio_version()[0] > 0, 'PortAudio DLL failed to report version'; "
+            "assert callable(sd.RawInputStream), 'RawInputStream interface missing'; "
             "blocked = False\n"
             "try:\n"
             "    import pytest\n"
@@ -417,13 +418,9 @@ def main() -> int:
 
     repo_root = args.repo_root.resolve()
     staged_root = (
-        args.output_dir.resolve()
-        if args.output_dir is not None
-        else repo_root / "frontend" / "src-tauri" / "staged"
+        args.output_dir.resolve() if args.output_dir is not None else repo_root / "frontend" / "src-tauri" / "staged"
     )
-    cache_dir = (
-        args.cache_dir.resolve() if args.cache_dir is not None else staged_root / ".cache"
-    )
+    cache_dir = args.cache_dir.resolve() if args.cache_dir is not None else staged_root / ".cache"
 
     core_dir = staged_root / "core"
     python_dir = staged_root / "python"

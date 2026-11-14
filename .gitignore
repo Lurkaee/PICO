@@ -33,6 +33,7 @@ env/
 data/
 *.db-wal
 *.db-shm
+*.migration.lock
 
 # Testing & Coverage
 .pytest_cache/

@@ -6,6 +6,8 @@ import { useConnectivity } from '../../context/ConnectivityContext';
 
 interface VoiceControlProps {
   onTranscription: (text: string) => void;
+  conversationId?: string;
+  onDelivered?: (delivery: { session_id: string; message_id: string; transcription: string }) => void;
   disabled?: boolean;
 }
 
@@ -16,7 +18,12 @@ interface AmbiguousVoiceOperation {
   timestamp: string;
 }
 
-export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, disabled }) => {
+export const VoiceControl: React.FC<VoiceControlProps> = ({
+  onTranscription,
+  conversationId,
+  onDelivered,
+  disabled,
+}) => {
   const { isBackendReachable } = useConnectivity();
   const [perceptionStatus, setPerceptionStatus] = useState<PerceptionStatus | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -67,7 +74,9 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
     setProcessing(true);
     try {
       // Explicit user initiation passed through API contract with user_consent=true
-      const session = await api.startAudioSession(true);
+      const session = conversationId
+        ? await api.startAudioSession(true, conversationId)
+        : await api.startAudioSession(true);
       setActiveSessionId(session.session_id);
       setIsRecording(true);
     } catch (err) {
@@ -91,7 +100,17 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({ onTranscription, dis
       setActiveSessionId(null);
       activeSessionIdRef.current = null;
       if (res.transcription && res.transcription.trim()) {
-        onTranscription(res.transcription.trim());
+        const text = res.transcription.trim();
+        if (conversationId && onDelivered) {
+          try {
+            const delRes = await api.deliverAudioTranscript(activeSessionId, conversationId);
+            onDelivered(delRes);
+          } catch {
+            onTranscription(text);
+          }
+        } else {
+          onTranscription(text);
+        }
       } else {
         setErrorNotice('No speech detected or adapter returned empty transcription.');
       }

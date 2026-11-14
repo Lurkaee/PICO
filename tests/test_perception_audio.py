@@ -1,5 +1,8 @@
 import base64
+import struct
+
 import pytest
+
 from pico.core.errors import AuthorizationError, ValidationError
 from pico.perception.audio.adapter import (
     AudioSessionManager,
@@ -11,9 +14,34 @@ from pico.perception.audio.adapter import (
 from pico.perception.contracts import AudioCaptureState, Modality
 
 
+def make_valid_wav_bytes(duration_sec: float = 0.2, sample_rate: int = 16000) -> bytes:
+    block_align = 2
+    byte_rate = sample_rate * block_align
+    num_samples = int(duration_sec * sample_rate)
+    data_size = num_samples * block_align
+    riff_size = 36 + data_size
+    buf = bytearray()
+    buf.extend(b"RIFF")
+    buf.extend(struct.pack("<I", riff_size))
+    buf.extend(b"WAVE")
+    buf.extend(b"fmt ")
+    buf.extend(struct.pack("<I", 16))
+    buf.extend(struct.pack("<H", 1))
+    buf.extend(struct.pack("<H", 1))
+    buf.extend(struct.pack("<I", sample_rate))
+    buf.extend(struct.pack("<I", byte_rate))
+    buf.extend(struct.pack("<H", block_align))
+    buf.extend(struct.pack("<H", 16))
+    buf.extend(b"data")
+    buf.extend(struct.pack("<I", data_size))
+    buf.extend(b"\x00" * data_size)
+    return bytes(buf)
+
+
 @pytest.mark.anyio
 async def test_audio_session_lifecycle_push_to_talk() -> None:
-    manager = AudioSessionManager()
+    stt = MockSpeechToTextAdapter(default_transcription="Hello PICO transcribe test")
+    manager = AudioSessionManager(stt_adapter=stt)
 
     # 1. Capture defaults to not active
     status = manager.get_status()
@@ -35,7 +63,7 @@ async def test_audio_session_lifecycle_push_to_talk() -> None:
     assert manager.get_status()["microphone_active"] is False
 
     # 4. Stop session with mock audio payload
-    audio_data = b"TEXT:Hello PICO transcribe test"
+    audio_data = make_valid_wav_bytes(duration_sec=0.2)
     audio_b64 = base64.b64encode(audio_data).decode("ascii")
     stop_res, event = await manager.stop_session(
         session_id=session_id,

@@ -259,10 +259,14 @@ export const api = {
     return request<PerceptionStatus>('/api/perception/status');
   },
 
-  async startAudioSession(userConsent = true): Promise<{ session_id: string; status: string }> {
+  async startAudioSession(userConsent = true, conversationId?: string): Promise<{ session_id: string; status: string }> {
+    const payload: { user_consent: boolean; conversation_id?: string } = { user_consent: userConsent };
+    if (conversationId) {
+      payload.conversation_id = conversationId;
+    }
     return request('/api/perception/audio/session/start', {
       method: 'POST',
-      body: JSON.stringify({ user_consent: userConsent }),
+      body: JSON.stringify(payload),
     });
   },
 
@@ -272,6 +276,21 @@ export const api = {
 
   async cancelAudioSession(sessionId: string): Promise<{ session_id: string; status: string }> {
     return request(`/api/perception/audio/session/${sessionId}/cancel`, { method: 'POST' });
+  },
+
+  async deliverAudioTranscript(sessionId: string, conversationId: string): Promise<{
+    session_id: string;
+    conversation_id: string;
+    message_id: string;
+    transcription: string;
+    data_classification: string;
+    delivered: boolean;
+    created_at: string;
+  }> {
+    return request(`/api/perception/audio/session/${sessionId}/deliver`, {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId }),
+    });
   },
 
   async getAudioSessionStatus(sessionId: string): Promise<{

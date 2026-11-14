@@ -398,13 +398,21 @@ PICO's implementation proceeds through verified, reviewable vertical slices. Eac
 
 - [ ] **P11.3 Local Voice Runtime & Optional Wake-Word**:
   - **Objective**: Extend P6 audio infrastructure with genuine local speech recognition and text-to-speech runtimes, with an optional privacy-safe wake-word detector.
-  - **Scope**:
-    - Local Speech-to-Text (STT): Replace mock STT with an embedded, efficient local Whisper runtime (e.g., `faster-whisper` / `whisper.cpp` int8/fp16 quantized model) running on CPU or dedicated RTX 3050 VRAM without violating single-model residency.
-    - Local Text-to-Speech (TTS): Replace mock TTS with an efficient, natural local TTS engine (e.g., `piper-tts` or Windows native SAPI/Media Foundation) producing low-latency spoken responses without external cloud calls.
-    - Push-to-Talk primary mode: Companion push-to-talk button or configurable global Windows hotkey (e.g., `Win+Alt+P`) initiating explicit audio capture session.
-    - Optional wake-word detection: Highly optimized, local-only wake-word engine (e.g., `openWakeWord`) listening strictly for "Hey PICO" or "PICO". Disabled by default (`WAKE_WORD_ENABLED=False`).
-    - Explicit privacy controls: Prominent microphone-active indicator on companion face and tray; global mic mute toggle; instant capture cancellation (`Esc` or release); zero raw audio persistence on disk; zero raw or base64 audio in generic event ledger (companion speech-capture ledger events record only non-audio metadata and a reference to `perception_events` via `perception_event_id`); zero cloud audio forwarding.
-    - Audio session lifecycle: Integrates with `AudioSessionManager` and typed `AudioCaptureState` (`CAPTURING` -> `PROCESSING` -> `COMPLETED`/`CANCELLED`).
+  - **Staged Implementation Sequence**:
+    1. Local STT/TTS engine selection and hardware qualification gate (RTX 3050 VRAM <1.2GB budget, single-model residency).
+    2. [x] **P11.3.1 Audio Capture & Push-to-Talk Session Lifecycle**: Local audio capture abstraction (`BaseAudioCaptureDevice`), `sounddevice` host driver integration with bounded buffering, deadlock-free stream shutdown outside state locks, deterministic test mocks (`MockAudioCaptureDevice`), single authoritative 16 kHz 16-bit mono signed PCM RIFF/WAVE contract (strict validator rejecting IEEE float, stereo, and non-16k sample rates without synthetic bypasses), best-effort mutable buffer zeroization on all exits, single-session concurrency, session TTL pruning, automatic startup Alembic migrations via `apply_pending_migrations()` in FastAPI lifespan (including `c3d4e5f6a7b8` partial unique index `uq_perception_events_voice_session`), replay-protected transcript delivery to conversation history (`VoiceService`) enforced under restricted Policy A authorization (strictly requiring paired local operator session cookies or native desktop bridge proof `X-Pico-Bridge-Proof: v2`; rejecting generic approval tokens alone), and truthful companion state machine transitions.
+    3. Local Speech-to-Text (STT) runtime integration (embedded Whisper engine running locally on CPU or dedicated GPU VRAM).
+    4. Local Text-to-Speech (TTS) runtime integration (low-latency natural speech synthesis, e.g. Piper ONNX).
+    5. Voice Activity Detection (VAD) & bounded wake-word engine (energy/Silero VAD, optional opt-in wake-word).
+    6. Voice-to-action conversational pipeline (intent classification -> workflow synthesis -> policy approval).
+    7. Companion visual and audio expression integration (reactive eye pulses during listening/speaking).
+    8. Audio privacy, retention, and cryptographic ledger provenance.
+    9. Multi-turn voice dialog and barge-in cancellation.
+  - **Capability Boundaries & Current Status**:
+    - *Hardware Driver Capture*: Implemented via `sounddevice` with lazy stream opening, bounded buffering up to 10 MB, and deadlock-free stream lifecycle management.
+    - *Simulated & Injected Testing*: Tested with mocked streams, bounded buffers, and `MockAudioCaptureDevice`. Physical microphone acoustics and acoustic quality in physical rooms remain unverified on headless runners.
+    - *Speech Recognition*: Local STT is planned for stage 3; production endpoints fail closed with truthful capability reporting, zero fabricated transcripts, and zero synthetic bypasses.
+    - *Transcript Authorization*: Delivery endpoint (`POST /api/perception/audio/session/{session_id}/deliver`) enforces Policy A caller authorization (restricting callers to `operator_session` and `bridge_proof`, disallowing approval tokens alone), operator binding, conversation binding, atomic check-and-set locking, and database-level message persistence deduplication against concurrent races.
   - **Prerequisites**: P6, P10.2.2, P11.2.
   - **Acceptance Criteria**:
     - Push-to-talk transcribes spoken English locally within target latency (<1.5s for 5s utterance on target hardware).
