@@ -75,7 +75,7 @@ jobs:
           node-version: "22"
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
         with:
           version: "10"
           run_install: false
@@ -112,7 +112,7 @@ jobs:
           components: rustfmt
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -128,12 +128,12 @@ jobs:
         run: cargo fmt --check --manifest-path frontend/src-tauri/Cargo.toml
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: "10"
           run_install: false
@@ -183,7 +183,7 @@ jobs:
           components: rustfmt
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -196,12 +196,12 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: "10"
           run_install: false
@@ -273,7 +273,7 @@ jobs:
 
       - name: Upload NSIS installer and qualification artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pico-windows-nsis-installer
           if-no-files-found: warn
