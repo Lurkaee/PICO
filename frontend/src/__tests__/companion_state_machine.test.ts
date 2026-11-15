@@ -223,6 +223,29 @@ describe('P11.2.3 Companion Visual State Machine & Truthfulness Invariants', () 
       expect(sm.getState().state).toBe('idle');
     });
 
+    it('reverts from listening to idle when microphone unexpectedly stops during capture', () => {
+      sm.handleAudioCaptureState('capturing', true, 'Recording', sm.nextSequence());
+      expect(sm.getState().state).toBe('listening');
+
+      // Microphone drops or stops unexpectedly while still in capturing state
+      const ok = sm.handleAudioCaptureState('capturing', false, 'Mic disconnected', sm.nextSequence());
+      expect(ok).toBe(true);
+      expect(sm.getState().state).toBe('idle');
+      expect(sm.getState().reason).toBe('Mic disconnected');
+    });
+
+    it('rejects stale sequence updates for audio capture state', () => {
+      const s1 = sm.nextSequence();
+      const s2 = sm.nextSequence();
+      sm.handleAudioCaptureState('capturing', true, 'Recording 2', s2);
+      expect(sm.getState().state).toBe('listening');
+
+      // Attempting an older sequence update must be rejected
+      const ok = sm.handleAudioCaptureState('capturing', false, 'Old event', s1);
+      expect(ok).toBe(false);
+      expect(sm.getState().state).toBe('listening');
+    });
+
     it('transitions to error when audio capture fails', () => {
       sm.handleAudioCaptureState('capturing', true, 'Recording', sm.nextSequence());
       const ok = sm.handleAudioCaptureState('failed', false, 'Mic error', sm.nextSequence());

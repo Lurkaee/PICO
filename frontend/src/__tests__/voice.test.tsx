@@ -10,6 +10,7 @@ vi.mock('../api/client', () => ({
     stopAudioSession: vi.fn(),
     cancelAudioSession: vi.fn(),
     getAudioSessionStatus: vi.fn(),
+    deliverAudioTranscript: vi.fn(),
   },
 }));
 
@@ -303,5 +304,77 @@ describe('VoiceControl Push-to-Talk Lifecycle', () => {
 
     // Successfully unlocked
     expect(screen.getByLabelText('Start voice capture session')).toBeInTheDocument();
+  });
+
+  it('binds voice session to initial conversation and prevents cross-conversation leakage when conversation switches during capture', async () => {
+    vi.mocked(api.getPerceptionStatus).mockResolvedValueOnce({
+      enabled: true,
+      audio_capture_enabled: true,
+      vision_enabled: false,
+      motion_enabled: false,
+      environmental_enabled: false,
+      adapter_mode: 'mock',
+      active_audio_sessions: 0,
+    });
+
+    vi.mocked(api.startAudioSession).mockResolvedValueOnce({
+      session_id: 'audio_sess_bound_conv',
+      status: 'active',
+    });
+
+    vi.mocked(api.stopAudioSession).mockResolvedValueOnce({
+      session_id: 'audio_sess_bound_conv',
+      transcription: 'Voice command meant for Conv A',
+      status: 'completed',
+    });
+
+    vi.mocked(api.deliverAudioTranscript).mockRejectedValueOnce(
+      new Error('Delivery network error')
+    );
+
+    const onTranscription = vi.fn();
+    const onDelivered = vi.fn();
+
+    // 1. Render on conversation A
+    const { rerender } = render(
+      <VoiceControl
+        conversationId="conv_A"
+        onTranscription={onTranscription}
+        onDelivered={onDelivered}
+      />
+    );
+
+    const micBtn = await screen.findByLabelText('Start voice capture session');
+    fireEvent.click(micBtn);
+
+    await waitFor(() => {
+      expect(api.startAudioSession).toHaveBeenCalledWith(true, 'conv_A');
+    });
+
+    // 2. User switches to conversation B while recording is active
+    rerender(
+      <VoiceControl
+        conversationId="conv_B"
+        onTranscription={onTranscription}
+        onDelivered={onDelivered}
+      />
+    );
+
+    // 3. User stops recording
+    const stopBtn = await screen.findByLabelText('Stop recording and transcribe');
+    fireEvent.click(stopBtn);
+
+    await waitFor(() => {
+      expect(api.stopAudioSession).toHaveBeenCalledWith('audio_sess_bound_conv');
+      // Delivery was attempted to conv_A (the bound conversation), NOT conv_B!
+      expect(api.deliverAudioTranscript).toHaveBeenCalledWith('audio_sess_bound_conv', 'conv_A');
+    });
+
+    // 4. Because direct delivery failed and active conversation is now conv_B,
+    // onTranscription MUST NOT be called (to prevent cross-conversation leak)!
+    expect(onTranscription).not.toHaveBeenCalled();
+
+    // Error notice explaining prevention of cross-conversation leakage
+    await screen.findByTitle(/prevent cross-conversation leakage/i);
   });
 });

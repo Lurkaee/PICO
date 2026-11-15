@@ -1,5 +1,7 @@
 import base64
+
 from fastapi.testclient import TestClient
+
 from tests.test_perception_motion import create_ppm_frame
 from tests.test_perception_vision import make_dummy_png
 
@@ -17,47 +19,60 @@ def test_api_perception_status(client: TestClient) -> None:
 
 
 def test_api_audio_push_to_talk_and_synthesis(client: TestClient) -> None:
-    # 1. Start audio session
-    start_res = client.post(
-        "/api/perception/audio/session/start",
-        json={"user_consent": True, "source_device": "mic:desktop"},
+    from pico.perception.audio.adapter import LocalWhisperSpeechToTextAdapter, MockSpeechToTextAdapter
+    from pico.perception.pipeline import _shared_audio_manager
+    from tests.test_voice_runtime_slice import make_valid_wav_bytes
+
+    _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(
+        default_transcription="Turn off the kitchen lights later."
     )
-    assert start_res.status_code == 201
-    start_data = start_res.json()
-    session_id = start_data["session_id"]
-    assert start_data["microphone_active"] is False
+    try:
+        # 1. Start audio session
+        start_res = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "source_device": "mic:desktop"},
+        )
+        assert start_res.status_code == 201
+        start_data = start_res.json()
+        session_id = start_data["session_id"]
+        assert start_data["microphone_active"] is False
 
-    # 2. Stop audio session with audio payload
-    audio_bytes = b"TEXT:Turn off the kitchen lights later."
-    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-    stop_res = client.post(
-        f"/api/perception/audio/session/{session_id}/stop",
-        json={"audio_base64": audio_b64, "audio_format": "wav"},
-    )
-    assert stop_res.status_code == 200
-    stop_data = stop_res.json()
-    assert stop_data["transcription"] == "Turn off the kitchen lights later."
-    assert stop_data["confidence"] >= 0.9
+        # 2. Stop audio session with valid audio payload
+        audio_bytes = make_valid_wav_bytes(duration_sec=0.2)
+        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+        stop_res = client.post(
+            f"/api/perception/audio/session/{session_id}/stop",
+            json={"audio_base64": audio_b64, "audio_format": "wav"},
+        )
+        assert stop_res.status_code == 200
+        stop_data = stop_res.json()
+        assert stop_data["transcription"] == "Turn off the kitchen lights later."
+        assert stop_data["confidence"] >= 0.9
 
-    # 3. Cancel a new session
-    s2 = client.post("/api/perception/audio/session/start", json={"user_consent": True}).json()
-    cancel_res = client.post(f"/api/perception/audio/session/{s2['session_id']}/cancel")
-    assert cancel_res.status_code == 200
-    assert cancel_res.json()["state"] == "cancelled"
+        # 3. Cancel a new session
+        s2 = client.post("/api/perception/audio/session/start", json={"user_consent": True}).json()
+        cancel_res = client.post(f"/api/perception/audio/session/{s2['session_id']}/cancel")
+        assert cancel_res.status_code == 200
+        assert cancel_res.json()["state"] == "cancelled"
 
-    # 4. Read-only session status queries (Safe reconciliation without audio leakage)
-    # 4a. Check active session status
-    s3 = client.post("/api/perception/audio/session/start", json={"user_consent": True}).json()
-    status_active = client.get(f"/api/perception/audio/session/{s3['session_id']}")
-    assert status_active.status_code == 200
-    active_data = status_active.json()
-    assert active_data["session_id"] == s3["session_id"]
-    assert active_data["state"] == "capturing"
-    assert active_data["microphone_active"] is False
-    # Crucial security assertion: NO audio or transcription leaks!
-    assert "audio_base64" not in active_data
-    assert "audio_bytes" not in active_data
-    assert "transcription" not in active_data
+        # 4. Read-only session status queries (Safe reconciliation without audio leakage)
+        # 4a. Check active session status
+        s3 = client.post("/api/perception/audio/session/start", json={"user_consent": True}).json()
+        status_active = client.get(f"/api/perception/audio/session/{s3['session_id']}")
+        assert status_active.status_code == 200
+        active_data = status_active.json()
+        assert active_data["session_id"] == s3["session_id"]
+        assert active_data["state"] == "capturing"
+        assert active_data["microphone_active"] is False
+        # Crucial security assertion: NO audio or transcription leaks!
+        assert "audio_base64" not in active_data
+        assert "audio_bytes" not in active_data
+        assert "transcription" not in active_data
+        # Cancel active session to leave clean state for subsequent tests
+        canc_res = client.post(f"/api/perception/audio/session/{s3['session_id']}/cancel")
+        assert canc_res.status_code == 200
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
 
     # 4b. Check completed session status
     status_completed = client.get(f"/api/perception/audio/session/{session_id}")
@@ -83,15 +98,21 @@ def test_api_audio_push_to_talk_and_synthesis(client: TestClient) -> None:
     assert missing_res.status_code == 404
     assert "does not exist" in missing_res.json()["detail"].lower()
 
-    # 5. Synthesize speech
-    synth_res = client.post(
-        "/api/perception/audio/synthesize",
-        json={"text": "Acknowledged. Command logged."},
-    )
-    assert synth_res.status_code == 200
-    synth_data = synth_res.json()
-    assert synth_data["audio_base64"] is not None
-    assert synth_data["duration_seconds"] > 0
+    # 5. Synthesize speech using injected test TTS adapter
+    from pico.perception.audio.adapter import LocalTextToSpeechAdapter, MockTextToSpeechAdapter
+
+    _shared_audio_manager.tts_adapter = MockTextToSpeechAdapter()
+    try:
+        synth_res = client.post(
+            "/api/perception/audio/synthesize",
+            json={"text": "Acknowledged. Command logged."},
+        )
+        assert synth_res.status_code == 200
+        synth_data = synth_res.json()
+        assert synth_data["audio_base64"] is not None
+        assert synth_data["duration_seconds"] > 0
+    finally:
+        _shared_audio_manager.tts_adapter = LocalTextToSpeechAdapter()
 
 
 def test_api_vision_capture(client: TestClient) -> None:

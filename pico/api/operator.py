@@ -1,9 +1,10 @@
 """API endpoints for local operator pairing, session lifecycle, and CSRF protection."""
 
-from dataclasses import dataclass
 import secrets
+from dataclasses import dataclass
 from typing import Optional
-from fastapi import APIRouter, Depends, Header, Request, Response, status
+
+from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlalchemy.orm import Session
 
 from pico.core.config import settings
@@ -131,6 +132,16 @@ def get_authorization_context(
     - Remote requests presenting only an operator session cookie are strictly rejected.
     """
     is_loopback = is_loopback_client(request)
+
+    # 0. Native desktop companion bridge proof (ADR 0003 / ADR 0004)
+    if is_loopback and getattr(request.state, "bridge_verified", False):
+        return AuthorizationContext(
+            is_authorized=True,
+            principal="desktop_bridge",
+            method="bridge_proof",
+            session=None,
+            is_loopback=True,
+        )
 
     # 1. Local paired operator session
     if is_loopback and operator_session is not None:

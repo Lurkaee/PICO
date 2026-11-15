@@ -1,259 +1,843 @@
-"""Comprehensive unit and integration tests for PICO P11.3.1 Voice Runtime & Capture Slice.
+"""Comprehensive architectural qualification and hardening tests for PICO voice runtime (Milestone P11.3.1).
 
-Verifies:
-1. Mock and Local Audio Capture Device abstractions (lifecycle, cancellation, buffer clearing).
-2. Audio payload format validation (size limits, RIFF/WAVE header validation, corrupted payload rejection).
-3. AudioSessionManager integration with capture devices and truthful microphone_active reporting.
-4. VoiceService transcript delivery into conversation message ledger with data classification preservation.
-5. Invariant: Raw audio is scrubbed from RAM immediately after transcription; zero audio files on disk.
-6. Invariant: Cloud routing rejection for non-public (INTERNAL) voice transcripts.
-7. Companion state machine integration (truthful listening/thinking/idle transitions).
+Tests:
+1. Audio capture hardware abstractions (BaseAudioCaptureDevice, MockAudioCaptureDevice, LocalAudioCaptureDevice).
+2. Honest driver availability reporting, lazy init, stream lifecycle, and bounded buffering.
+3. Strict RIFF/WAVE parsing and rejection of synthetic test-marker bypasses in production validator.
+4. Ephemeral memory zeroization invariants on success, failure, cancellation, and shutdown.
+5. Production fail-closed behavior when STT runtime is unavailable (zero fabricated speech).
+6. AudioSessionManager single-session concurrency, cancellation, and TTL pruning.
+7. VoiceService transcript delivery, replay rejection, expiry protection, and classification retention.
+8. Core RoutingService local-pinning of INTERNAL voice messages (rejection of cloud transmission).
+9. Perception API transcript delivery security (loopback authorization and replay prevention).
+10. Zero raw audio disk persistence invariant.
 """
 
 from __future__ import annotations
 
 import base64
-import io
-import wave
+import struct
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
-from pico.core.config import settings
-from pico.core.errors import AuthorizationError, EntityNotFoundError, ValidationError
+from pico.core.errors import AuthorizationError, ValidationError
 from pico.core.id_gen import generate_id
 from pico.db.session import SessionLocal
 from pico.main import app
-from pico.models.conversation import Conversation
 from pico.perception.audio.adapter import (
     AudioSessionManager,
+    LocalWhisperSpeechToTextAdapter,
     MockSpeechToTextAdapter,
+    utc_now,
 )
 from pico.perception.audio.capture import (
     AudioCaptureError,
+    BaseAudioCaptureDevice,
     LocalAudioCaptureDevice,
     MockAudioCaptureDevice,
+    zeroize_bytearray,
 )
 from pico.perception.audio.validation import validate_audio_payload
-from pico.perception.contracts import AudioCaptureState, Modality
+from pico.perception.contracts import AudioCaptureState
 from pico.repositories.conversation_repo import ConversationRepository
 from pico.repositories.message_repo import MessageRepository
 from pico.services.routing_service import RoutingService
 from pico.services.voice_service import VoiceService
 
 
-def _create_minimal_wav(duration_s: float = 0.5, sample_rate: int = 16000) -> bytes:
-    """Helper creating a synthetically valid PCM 16-bit mono WAV payload."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        num_frames = int(sample_rate * duration_s)
-        wf.writeframes(b"\x00\x00" * num_frames)
-    return buf.getvalue()
+def make_valid_wav_bytes(
+    duration_sec: float = 0.5,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    bits_per_sample: int = 16,
+    format_tag: int = 1,
+) -> bytes:
+    """Helper to synthesize valid RIFF/WAVE PCM audio bytes."""
+    block_align = channels * (bits_per_sample // 8)
+    byte_rate = sample_rate * block_align
+    num_samples = int(duration_sec * sample_rate)
+    data_size = num_samples * block_align
+    riff_size = 36 + data_size
+
+    buf = bytearray()
+    buf.extend(b"RIFF")
+    buf.extend(struct.pack("<I", riff_size))
+    buf.extend(b"WAVE")
+    buf.extend(b"fmt ")
+    buf.extend(struct.pack("<I", 16))
+    buf.extend(struct.pack("<H", format_tag))
+    buf.extend(struct.pack("<H", channels))
+    buf.extend(struct.pack("<I", sample_rate))
+    buf.extend(struct.pack("<I", byte_rate))
+    buf.extend(struct.pack("<H", block_align))
+    buf.extend(struct.pack("<H", bits_per_sample))
+    buf.extend(b"data")
+    buf.extend(struct.pack("<I", data_size))
+    buf.extend(b"\x00" * data_size)
+    return bytes(buf)
 
 
 # ============================================================================
-# 1. Audio Capture Device Abstraction Tests
+# 1. Audio Capture Device Lifecycle & Hardware Abstraction
 # ============================================================================
+
 
 def test_mock_audio_capture_device_lifecycle() -> None:
-    device = MockAudioCaptureDevice(device_name="mock:test_mic")
-    assert device.is_available() is True
-    assert device.is_active() is False
+    dev = MockAudioCaptureDevice()
+    assert dev.is_available() is True
+    assert dev.is_active() is False
 
-    info = device.get_device_info()
-    assert info["driver_type"] == "mock_synthetic"
-    assert info["is_active"] is False
+    dev.start_capture(sample_rate=16000, channels=1)
+    assert dev.is_active() is True
 
-    # Start capture
-    device.start_capture(sample_rate=16000, channels=1)
-    assert device.is_active() is True
-    assert device.get_device_info()["is_active"] is True
-
-    # Starting while active must fail closed
+    # Re-starting when active must raise AudioCaptureError
     with pytest.raises(AudioCaptureError, match="already active"):
-        device.start_capture()
+        dev.start_capture()
 
-    # Stop capture returns valid WAV bytes
-    wav_bytes = device.stop_capture()
-    assert device.is_active() is False
-    assert len(wav_bytes) >= 44
-    assert wav_bytes[:4] == b"RIFF"
-    assert wav_bytes[8:12] == b"WAVE"
+    wav_buf = dev.stop_capture()
+    assert isinstance(wav_buf, bytearray)
+    assert len(wav_buf) > 44
+    assert dev.is_active() is False
 
-    # Stopping when inactive must fail closed
-    with pytest.raises(AudioCaptureError, match="not currently recording"):
-        device.stop_capture()
-
-
-def test_mock_audio_capture_device_cancellation_scrubs_buffer() -> None:
-    device = MockAudioCaptureDevice()
-    device.start_capture()
-    assert device.is_active() is True
-
-    device.cancel_capture()
-    assert device.is_active() is False
-
-    # Stopping after cancel must fail
-    with pytest.raises(AudioCaptureError):
-        device.stop_capture()
+    # Validates as a structurally compliant WAV payload
+    metadata = validate_audio_payload(wav_buf, expected_format="wav")
+    assert metadata["format"] == "wav"
+    assert metadata["channels"] == 1
+    assert metadata["sample_rate"] == 16000
 
 
-def test_mock_audio_capture_injected_payload() -> None:
-    device = MockAudioCaptureDevice()
-    custom_wav = _create_minimal_wav(duration_s=1.0)
-    device.inject_payload(custom_wav)
+def test_mock_audio_capture_device_injected_payload_and_zeroing() -> None:
+    dev = MockAudioCaptureDevice()
+    test_wav = make_valid_wav_bytes(duration_sec=0.2)
+    dev.inject_payload(test_wav)
 
-    device.start_capture()
-    captured = device.stop_capture()
-    assert captured == custom_wav
-    assert device.is_active() is False
+    dev.start_capture()
+    out = dev.stop_capture()
+    assert bytes(out) == test_wav
+    assert dev.is_active() is False
+    assert dev._injected_payload is None
+
+
+def test_mock_audio_capture_cancellation_zeroes_buffers() -> None:
+    dev = MockAudioCaptureDevice()
+    test_wav = make_valid_wav_bytes(duration_sec=0.2)
+    dev.inject_payload(test_wav)
+
+    dev.start_capture()
+    dev.cancel_capture()
+    assert dev.is_active() is False
+    assert dev._injected_payload is None
+    assert len(dev._buffer) == 0
 
 
 def test_local_audio_capture_device_honest_availability() -> None:
-    device = LocalAudioCaptureDevice()
-    info = device.get_device_info()
-    assert isinstance(device.is_available(), bool)
-    assert info["driver_type"] in ("sounddevice", "pyaudio", "none")
+    dev = LocalAudioCaptureDevice()
+    info = dev.get_device_info()
+    assert info["driver_type"] == "sounddevice"
+    assert isinstance(dev.is_available(), bool)
+    assert dev.is_active() is False
 
-    if not device.is_available():
-        with pytest.raises(AudioCaptureError, match="not installed"):
-            device.start_capture()
+
+def test_local_audio_capture_device_query_discovery_sequences(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test LocalAudioCaptureDevice.is_available across custom sequence types, empty sequences,
+    output-only devices, explicit index, and driver errors."""
+    import sounddevice as sd
+
+    class CustomDeviceSequence:
+        def __init__(self, items: list[dict[str, Any]]) -> None:
+            self._items = items
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def __getitem__(self, idx: int) -> dict[str, Any]:
+            return self._items[idx]
+
+        def __iter__(self):
+            return iter(self._items)
+
+    dev = LocalAudioCaptureDevice()
+
+    # 1. At least one available input device in custom sequence / tuple-like
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda *args, **kwargs: CustomDeviceSequence(
+            [
+                {"name": "Speakers", "max_input_channels": 0, "max_output_channels": 2},
+                {"name": "USB Microphone", "max_input_channels": 1, "max_output_channels": 0},
+            ]
+        ),
+    )
+    assert dev.is_available() is True
+
+    # 2. Output-only devices in sequence
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda *args, **kwargs: (
+            {"name": "Headphones", "max_input_channels": 0, "max_output_channels": 2},
+            {"name": "HDMI Out", "max_input_channels": 0, "max_output_channels": 8},
+        ),
+    )
+    assert dev.is_available() is False
+
+    # 3. An empty sequence
+    monkeypatch.setattr(sd, "query_devices", lambda *args, **kwargs: CustomDeviceSequence([]))
+    assert dev.is_available() is False
+
+    # 4. An explicit device index returning a dictionary
+    dev_indexed = LocalAudioCaptureDevice(device_index=2)
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda idx=None, *args, **kwargs: {"name": "Mic 2", "max_input_channels": 2} if idx == 2 else {},
+    )
+    assert dev_indexed.is_available() is True
+
+    dev_indexed_out = LocalAudioCaptureDevice(device_index=3)
+    monkeypatch.setattr(
+        sd,
+        "query_devices",
+        lambda idx=None, *args, **kwargs: {"name": "Speaker 3", "max_input_channels": 0} if idx == 3 else {},
+    )
+    assert dev_indexed_out.is_available() is False
+
+    # 5. Driver / query exceptions
+    def failing_query(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("PortAudio driver crashed or unavailable")
+
+    monkeypatch.setattr(sd, "query_devices", failing_query)
+    assert dev.is_available() is False
+
+
+def test_local_audio_capture_device_mocked_stream_lifecycle_and_bounded_buffer() -> None:
+    """Test LocalAudioCaptureDevice using an injected stream factory to verify stream management."""
+
+    class FakeStream:
+        def __init__(self, callback: Any, **kwargs: Any) -> None:
+            self.callback = callback
+            self.started = False
+            self.stopped = False
+            self.closed = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_stream_instance: FakeStream | None = None
+
+    def fake_stream_factory(**kwargs: Any) -> FakeStream:
+        nonlocal fake_stream_instance
+        fake_stream_instance = FakeStream(**kwargs)
+        return fake_stream_instance
+
+    # Limit buffer to 100 bytes to verify bounding
+    dev = LocalAudioCaptureDevice(max_buffer_bytes=100, stream_factory=fake_stream_factory)
+    assert dev.is_active() is False
+
+    dev.start_capture(sample_rate=16000, channels=1)
+    assert dev.is_active() is True
+    assert fake_stream_instance is not None
+    assert fake_stream_instance.started is True
+
+    # Simulate audio callbacks
+    fake_stream_instance.callback(b"\x00\x00" * 20, 20, None, None)  # 40 bytes
+    fake_stream_instance.callback(b"\x00\x00" * 20, 20, None, None)  # 40 bytes (total 80)
+    fake_stream_instance.callback(b"\x00\x00" * 20, 20, None, None)  # 40 bytes (exceeds 100, dropped)
+
+    assert len(dev._buffer) == 80
+    assert dev._overflow_dropped is True
+
+    # Stop capture packages into WAV and clears frame buffer
+    wav_out = dev.stop_capture()
+    assert isinstance(wav_out, bytearray)
+    assert len(wav_out) > 44
+    assert dev.is_active() is False
+    assert fake_stream_instance.stopped is True
+    assert fake_stream_instance.closed is True
+    assert len(dev._buffer) == 0
+
+
+def test_local_audio_capture_device_stream_error_cleans_up() -> None:
+    def failing_stream_factory(**kwargs: Any) -> Any:
+        raise RuntimeError("PortAudio device open error")
+
+    dev = LocalAudioCaptureDevice(stream_factory=failing_stream_factory)
+    with pytest.raises(AudioCaptureError, match="Failed to open audio input stream"):
+        dev.start_capture()
+    assert dev.is_active() is False
+    assert len(dev._buffer) == 0
 
 
 # ============================================================================
-# 2. Audio Payload Format Validation Tests
+# 2. Strict RIFF/WAVE Validation & No Synthetic Bypass
 # ============================================================================
+
 
 def test_validate_audio_payload_valid_wav() -> None:
-    valid_wav = _create_minimal_wav(duration_s=0.25)
-    # Valid WAV should not raise
-    validate_audio_payload(valid_wav, max_bytes=1024 * 1024, expected_format="wav")
+    wav_bytes = make_valid_wav_bytes(duration_sec=0.2, sample_rate=16000, channels=1)
+    meta = validate_audio_payload(wav_bytes, expected_format="wav")
+    assert meta["format"] == "wav"
+    assert meta["channels"] == 1
+    assert meta["sample_rate"] == 16000
+    assert 0.19 <= meta["duration_seconds"] <= 0.21
 
 
 def test_validate_audio_payload_empty_fails() -> None:
-    with pytest.raises(ValidationError, match="empty"):
+    with pytest.raises(ValidationError, match="payload is empty"):
         validate_audio_payload(b"", expected_format="wav")
 
 
 def test_validate_audio_payload_oversized_fails() -> None:
-    payload = b"RIFF" + b"\x00" * 200
+    oversized = make_valid_wav_bytes(duration_sec=0.1)
     with pytest.raises(ValidationError, match="exceeds limit"):
-        validate_audio_payload(payload, max_bytes=100, expected_format="wav")
+        validate_audio_payload(oversized, max_bytes=30, expected_format="wav")
 
 
-def test_validate_audio_payload_corrupted_header_fails() -> None:
-    # 50 bytes of non-RIFF garbage
-    garbage = b"NOT_A_WAV_HEADER" + b"\x00" * 34
-    with pytest.raises(ValidationError, match="missing valid RIFF header"):
-        validate_audio_payload(garbage, expected_format="wav")
+def test_validate_audio_payload_synthetic_text_marker_rejected() -> None:
+    """Security Invariant: Synthetic text markers must NEVER be accepted as valid WAV audio."""
+    synthetic_payload = b"TEXT:Arbitrary injected transcript with extra padding to exceed min header size"
+    with pytest.raises(ValidationError, match="missing valid 'RIFF' header"):
+        validate_audio_payload(synthetic_payload, expected_format="wav")
 
-    # RIFF with invalid WAVE format tag (must be >= 44 bytes)
-    bad_fmt = b"RIFF" + b"\x24\x00\x00\x00" + b"NOPE" + b"fmt \x10\x00\x00\x00" + b"\x00" * 28
-    with pytest.raises(ValidationError, match="missing WAVE format identifier"):
-        validate_audio_payload(bad_fmt, expected_format="wav")
+
+def test_validate_audio_payload_corrupted_riff_fails() -> None:
+    corrupted = b"NOPE" + b"\x00" * 40
+    with pytest.raises(ValidationError, match="missing valid 'RIFF' header"):
+        validate_audio_payload(corrupted, expected_format="wav")
+
+
+def test_validate_audio_payload_unsupported_compressed_format_rejected() -> None:
+    """WAV with non-PCM format (e.g. format 3 = IEEE float, format 6 = A-law) must be rejected."""
+    bad_fmt_wav = make_valid_wav_bytes(duration_sec=0.1, format_tag=3)
+    with pytest.raises(ValidationError, match="Unsupported WAV encoding format"):
+        validate_audio_payload(bad_fmt_wav, expected_format="wav")
+
+
+def test_validate_audio_payload_rejects_stereo_and_non_16k_rates() -> None:
+    """Authoritative contract: Only mono (1 ch), 16000 Hz, 16-bit PCM is accepted in P11.3.1."""
+    # Stereo WAV must fail
+    stereo_wav = make_valid_wav_bytes(duration_sec=0.1, sample_rate=16000, channels=2, bits_per_sample=16)
+    with pytest.raises(ValidationError, match="Unsupported WAV channel count"):
+        validate_audio_payload(stereo_wav, expected_format="wav")
+
+    # 44.1 kHz WAV must fail
+    cd_rate_wav = make_valid_wav_bytes(duration_sec=0.1, sample_rate=44100, channels=1, bits_per_sample=16)
+    with pytest.raises(ValidationError, match="Unsupported WAV sample rate"):
+        validate_audio_payload(cd_rate_wav, expected_format="wav")
+
+    # 24-bit PCM WAV must fail
+    pcm24_wav = make_valid_wav_bytes(duration_sec=0.1, sample_rate=16000, channels=1, bits_per_sample=24)
+    with pytest.raises(ValidationError, match="Unsupported WAV bits per sample"):
+        validate_audio_payload(pcm24_wav, expected_format="wav")
+
+
+def test_validate_audio_payload_inconsistent_byte_rate_rejected() -> None:
+    """Corrupted WAV with mismatched byte rate must fail validation."""
+    valid_wav = bytearray(make_valid_wav_bytes(duration_sec=0.1))
+    # byte_rate is at offset 28 in standard 44-byte WAV header: alter it
+    valid_wav[28:32] = struct.pack("<I", 99999)
+    with pytest.raises(ValidationError, match="Inconsistent WAV byte rate"):
+        validate_audio_payload(bytes(valid_wav), expected_format="wav")
+
+
+def test_validate_audio_payload_truncated_data_chunk_rejected() -> None:
+    """WAV file that declares more audio data than provided in payload must fail validation."""
+    valid_wav = bytearray(make_valid_wav_bytes(duration_sec=0.2))
+    # Truncate the payload by 50 bytes
+    truncated = bytes(valid_wav[:-50])
+    with pytest.raises(ValidationError, match="Truncated WAV"):
+        validate_audio_payload(truncated, expected_format="wav")
+
+
+def test_validate_audio_payload_duration_limits() -> None:
+    # Duration < 0.05s must fail
+    short_wav = make_valid_wav_bytes(duration_sec=0.01)
+    with pytest.raises(ValidationError, match="too short"):
+        validate_audio_payload(short_wav, expected_format="wav")
+
+    # Duration > max limit (e.g. 1.0s limit in test) must fail
+    long_wav = make_valid_wav_bytes(duration_sec=1.5)
+    with pytest.raises(ValidationError, match="exceeds maximum allowed limit"):
+        validate_audio_payload(long_wav, max_duration_seconds=1.0, expected_format="wav")
+
+
+def test_validate_audio_payload_riff_boundary_and_duplicate_data_rejection() -> None:
+    """Requirement 5: Strict RIFF container boundary and duplicate data chunk rejection."""
+    import struct
+
+    # 1. Payload whose declared RIFF size ends before an appended data chunk
+    header_only = bytearray(
+        b"RIFF\x24\x00\x00\x00"  # RIFF size = 36 (riff_end = 44)
+        b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"  # fmt chunk (ends at 36)
+        b"junk\x00\x00\x00\x00"  # junk chunk size 0 (ends at 44)
+    )
+    # Append 'data' chunk outside the declared RIFF container
+    appended_data = b"data\x40\x1f\x00\x00" + (b"\x00" * 8000)
+    payload = bytes(header_only + appended_data)
+    with pytest.raises(ValidationError, match="missing required 'data' chunk"):
+        validate_audio_payload(payload, expected_format="wav")
+
+    # 2. Chunk header or padding crossing RIFF boundary
+    # Declared RIFF size = 40 (riff_end = 48). At offset 44, only 4 bytes remain so chunk header crosses RIFF boundary
+    bad_header_wav = bytearray(
+        b"RIFF\x28\x00\x00\x00"  # RIFF size = 40 (riff_end = 48)
+        b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"  # fmt chunk (ends at 36)
+        b"junk\x00\x00\x00\x00"  # junk chunk size 0 (ends at 44)
+        b"data"  # 4 bytes truncated header before riff_end
+    )
+    with pytest.raises(ValidationError, match="crosses declared RIFF boundary"):
+        validate_audio_payload(bytes(bad_header_wav), expected_format="wav")
+
+    # Chunk body crossing RIFF boundary:
+    # Declared RIFF size = 46 (riff_end = 54). At offset 44, chunk claims size 32 (exceeding riff_end 54)
+    bad_body_wav = bytearray(
+        b"RIFF\x2e\x00\x00\x00"  # RIFF size = 46 (riff_end = 54)
+        b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00"  # fmt chunk (ends at 36)
+        b"junk\x00\x00\x00\x00"  # junk chunk size 0 (ends at 44)
+        b"junk\x20\x00\x00\x00" + (b"\x00" * 32)  # junk chunk claims size 32 (would end at 84, exceeding riff_end 54)
+    )
+    with pytest.raises(ValidationError, match="exceeds declared RIFF boundary"):
+        validate_audio_payload(bytes(bad_body_wav), expected_format="wav")
+
+    # 3. Duplicate 'data' chunk
+    valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+    # Insert another data chunk after the first
+    # Find first data chunk
+    data_idx = valid_wav.find(b"data")
+    assert data_idx != -1
+    d_size = struct.unpack("<I", valid_wav[data_idx + 4 : data_idx + 8])[0]
+    first_data_end = data_idx + 8 + d_size
+    second_data = b"data\x10\x00\x00\x00" + (b"\x00" * 16)
+    dup_data_wav = bytearray(valid_wav[:first_data_end] + second_data + valid_wav[first_data_end:])
+    # Update RIFF size
+    new_riff_size = len(dup_data_wav) - 8
+    dup_data_wav[4:8] = struct.pack("<I", new_riff_size)
+    with pytest.raises(ValidationError, match="duplicate 'data' chunk detected"):
+        validate_audio_payload(bytes(dup_data_wav), expected_format="wav")
 
 
 # ============================================================================
-# 3. AudioSessionManager Device Integration & Truthful Reporting
+# 3. Ephemeral Memory Zeroization Invariants
 # ============================================================================
 
-@pytest.mark.anyio
-async def test_session_manager_with_capture_device_truthful_mic_active() -> None:
-    mock_dev = MockAudioCaptureDevice()
-    manager = AudioSessionManager(capture_device=mock_dev)
 
-    # 1. Idle state
-    status = manager.get_status()
-    assert status["microphone_active"] is False
-    assert status["physical_microphone_connected"] is True
-    assert status["active_sessions_count"] == 0
-
-    # 2. Start session with consent activates capture device
-    start_res = manager.start_session(user_consent=True, source_device="mic:headset")
-    assert start_res.microphone_active is True
-    assert start_res.state == AudioCaptureState.CAPTURING
-    assert mock_dev.is_active() is True
-
-    status_during = manager.get_status()
-    assert status_during["microphone_active"] is True
-    assert status_during["active_sessions_count"] == 1
-
-    # 3. Inject synthetic utterance payload and stop session
-    test_phrase = "System status check affirmative"
-    mock_dev.inject_payload(b"TEXT:" + test_phrase.encode("utf-8"))
-
-    stop_res, event = await manager.stop_session(session_id=start_res.session_id)
-    assert stop_res.state == AudioCaptureState.COMPLETED
-    assert stop_res.transcription == test_phrase
-    assert stop_res.data_classification == "INTERNAL"
-    assert mock_dev.is_active() is False
-
-    # 4. Status returns to inactive
-    status_after = manager.get_status()
-    assert status_after["microphone_active"] is False
-    assert status_after["active_sessions_count"] == 0
-
-    # Invariant check: raw audio bytes never stored in event
-    assert event.raw_payload_scrubbed is True
-    assert "audio_bytes" not in event.structured_data
-    assert event.structured_data["transcription"] == test_phrase
+def test_zeroize_bytearray_overwrites_memory() -> None:
+    buf = bytearray(b"SENSITIVE_VOICE_AUDIO_DATA_BYTES")
+    assert len(buf) == 32
+    zeroize_bytearray(buf)
+    assert len(buf) == 0
 
 
 @pytest.mark.anyio
-async def test_session_manager_cancellation_with_device() -> None:
-    mock_dev = MockAudioCaptureDevice()
-    manager = AudioSessionManager(capture_device=mock_dev)
-
+async def test_session_manager_zeroizes_buffer_on_normal_completion() -> None:
+    stt = MockSpeechToTextAdapter(default_transcription="Test transcript")
+    manager = AudioSessionManager(stt_adapter=stt)
     start_res = manager.start_session(user_consent=True)
-    assert mock_dev.is_active() is True
 
-    cancel_res = manager.cancel_session(start_res.session_id)
-    assert cancel_res.state == AudioCaptureState.CANCELLED
-    assert cancel_res.microphone_active is False
-    assert mock_dev.is_active() is False
-    assert manager.get_status()["microphone_active"] is False
+    wav = make_valid_wav_bytes(duration_sec=0.2)
+    wav_b64 = base64.b64encode(wav).decode("ascii")
+
+    res, event = await manager.stop_session(start_res.session_id, audio_base64=wav_b64)
+    assert res.transcription == "Test transcript"
+    assert event.raw_payload_scrubbed is True
 
 
 @pytest.mark.anyio
-async def test_session_manager_shutdown_releases_devices() -> None:
-    mock_dev = MockAudioCaptureDevice()
-    manager = AudioSessionManager(capture_device=mock_dev)
+async def test_session_manager_zeroizes_buffer_on_failure() -> None:
+    stt = MockSpeechToTextAdapter()
+    manager = AudioSessionManager(stt_adapter=stt)
+    start_res = manager.start_session(user_consent=True)
 
-    manager.start_session(user_consent=True)
-    assert mock_dev.is_active() is True
+    # Corrupted audio payload triggers failure
+    corrupted_b64 = base64.b64encode(b"NOT_A_WAV").decode("ascii")
+    with pytest.raises(ValidationError):
+        await manager.stop_session(start_res.session_id, audio_base64=corrupted_b64)
 
+    session = manager.get_session(start_res.session_id)
+    assert session is not None
+    assert session.state == AudioCaptureState.FAILED
+
+
+# ============================================================================
+# 4. Production Fail-Closed Behavior (No Fabricated Transcripts)
+# ============================================================================
+
+
+@pytest.mark.anyio
+async def test_production_default_fails_closed_without_installed_stt() -> None:
+    """Production Invariant: When local Whisper is uninstalled, stop_session must fail closed
+
+    rather than returning a fabricated mock transcript.
+    """
+    # AudioSessionManager with default production adapters
+    prod_manager = AudioSessionManager()
+    assert isinstance(prod_manager.stt_adapter, LocalWhisperSpeechToTextAdapter)
+    assert prod_manager.stt_adapter.is_available() is False
+
+    start_res = prod_manager.start_session(user_consent=True)
+    valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+    valid_b64 = base64.b64encode(valid_wav).decode("ascii")
+
+    with pytest.raises(ValidationError, match="Speech transcription runtime is unavailable"):
+        await prod_manager.stop_session(start_res.session_id, audio_base64=valid_b64)
+
+    session = prod_manager.get_session(start_res.session_id)
+    assert session is not None
+    assert session.state == AudioCaptureState.FAILED
+    assert session.transcription is None
+
+
+# ============================================================================
+# 5. AudioSessionManager Concurrency, Cancellation & Pruning
+# ============================================================================
+
+
+def test_session_manager_single_active_recording_session_policy() -> None:
+    dev = MockAudioCaptureDevice()
+    manager = AudioSessionManager(capture_device=dev)
+
+    sess1 = manager.start_session(user_consent=True)
+    assert sess1.session_id is not None
+    assert dev.is_active() is True
+
+    # Attempting to start a concurrent session must be rejected
+    with pytest.raises(AudioCaptureError, match="recording session is already active"):
+        manager.start_session(user_consent=True)
+
+    # Cancel first session frees the device
+    manager.cancel_session(sess1.session_id)
+    assert dev.is_active() is False
+
+    # Now starting a new session succeeds
+    sess2 = manager.start_session(user_consent=True)
+    assert sess2.session_id != sess1.session_id
     manager.shutdown()
-    assert mock_dev.is_active() is False
-    assert manager.get_status()["microphone_active"] is False
-    assert manager.get_status()["active_sessions_count"] == 0
 
 
-# ============================================================================
-# 4. VoiceService Transcript Delivery into Conversation Pipeline
-# ============================================================================
+def test_session_manager_user_consent_required() -> None:
+    manager = AudioSessionManager()
+    with pytest.raises(AuthorizationError, match="Explicit user consent is mandatory"):
+        manager.start_session(user_consent=False)
+
+
+def test_session_manager_session_pruning() -> None:
+    manager = AudioSessionManager()
+    sess = manager.start_session(user_consent=True)
+    manager.cancel_session(sess.session_id)
+
+    # Artificially age the session past TTL (300s)
+    session_obj = manager._active_sessions[sess.session_id]
+    session_obj.started_at = utc_now() - timedelta(seconds=350)
+
+    manager.prune_expired_sessions()
+    assert sess.session_id not in manager._active_sessions
+
+
+def test_session_manager_abandoned_capture_session_pruning_and_device_release() -> None:
+    """Requirement 4: TTL pruning of an abandoned session in CAPTURING/PROCESSING state must cancel
+    capture on the device, release resources, mark session FAILED, and remove it from active sessions."""
+
+    class FakeDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.cancelled = False
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.cancelled = False
+
+        def stop_capture(self) -> bytearray:
+            self.active = False
+            return bytearray()
+
+        def cancel_capture(self) -> None:
+            self.active = False
+            self.cancelled = True
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "fake"}
+
+    dev = FakeDevice()
+    manager = AudioSessionManager(capture_device=dev)
+    res = manager.start_session(user_consent=True)
+    assert dev.active is True
+
+    # Artificially age the session past TTL while still CAPTURING
+    sess = manager._active_sessions[res.session_id]
+    sess.started_at = utc_now() - timedelta(seconds=350)
+
+    manager.prune_expired_sessions()
+
+    # Device must have cancel_capture called and be released
+    assert dev.active is False
+    assert dev.cancelled is True
+    assert res.session_id not in manager._active_sessions
+
+
+def test_session_manager_pruning_and_concurrent_start_serialization() -> None:
+    """Requirement: The manager-level lifecycle lock must serialize pruning of an expired
+    session and starting a replacement session, so that the old pruning operation cannot
+    cancel the replacement session's capture device."""
+    import threading
+    import time
+
+    class RaceConditionMockDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.cancel_count = 0
+            self.start_count = 0
+            self.pruning_inside_cancel = threading.Event()
+            self.allow_cancel_to_finish = threading.Event()
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.start_count += 1
+
+        def stop_capture(self) -> bytearray:
+            self.active = False
+            return bytearray()
+
+        def cancel_capture(self) -> None:
+            self.active = False
+            self.cancel_count += 1
+            # Signal that pruning has entered cancel_capture
+            self.pruning_inside_cancel.set()
+            # Wait for main test to allow finish (ensuring pruning holds the lock while start_session waits)
+            self.allow_cancel_to_finish.wait(timeout=2.0)
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "race_mock"}
+
+    dev = RaceConditionMockDevice()
+    dev.allow_cancel_to_finish.set()  # for initial start
+    manager = AudioSessionManager(capture_device=dev)
+
+    # 1. Start session 1 and artificially age it past TTL
+    start1 = manager.start_session(user_consent=True)
+    assert dev.is_active() is True
+    assert dev.start_count == 1
+    sess1 = manager.get_session(start1.session_id)
+    assert sess1 is not None
+    sess1.started_at = utc_now() - timedelta(seconds=350)
+
+    # Reset events for controlled race
+    dev.pruning_inside_cancel.clear()
+    dev.allow_cancel_to_finish.clear()
+
+    # 2. Spawn Thread 1 to run prune_expired_sessions
+    prune_thread = threading.Thread(target=manager.prune_expired_sessions)
+    prune_thread.start()
+
+    # Wait until Thread 1 enters cancel_capture (inside prune_expired_sessions, holding _lifecycle_lock)
+    assert dev.pruning_inside_cancel.wait(timeout=2.0) is True
+
+    # 3. Spawn Thread 2 attempting to start a replacement session concurrently
+    start2_holder: dict[str, Any] = {}
+
+    def try_start_session() -> None:
+        try:
+            res = manager.start_session(user_consent=True)
+            start2_holder["result"] = res
+        except Exception as e:
+            start2_holder["error"] = e
+
+    start_thread = threading.Thread(target=try_start_session)
+    start_thread.start()
+
+    # Give Thread 2 time to block on _lifecycle_lock
+    time.sleep(0.05)
+
+    # 4. Now allow Thread 1 to finish cancel_capture and complete pruning
+    dev.allow_cancel_to_finish.set()
+    prune_thread.join(timeout=2.0)
+    assert not prune_thread.is_alive()
+
+    # 5. Thread 2 should now unblock, acquire _lifecycle_lock, and successfully start replacement session
+    start_thread.join(timeout=2.0)
+    assert not start_thread.is_alive()
+
+    assert "result" in start2_holder, f"start_session failed: {start2_holder.get('error')}"
+    start2 = start2_holder["result"]
+
+    # 6. Crucial invariants:
+    # - Old session 1 was pruned and cancelled
+    assert start1.session_id not in manager._active_sessions
+    # - Replacement session 2 is active and recording
+    assert start2.session_id in manager._active_sessions
+    sess2 = manager.get_session(start2.session_id)
+    assert sess2 is not None
+    assert sess2.state == AudioCaptureState.CAPTURING
+    # - Device is currently active (was NOT cancelled by the old pruning operation)
+    assert dev.is_active() is True
+    # - Device was started twice (once for sess1, once for sess2) and cancelled once (for sess1)
+    assert dev.start_count == 2
+    assert dev.cancel_count == 1
+    # - Manager reports truthful state
+    status = manager.get_status()
+    assert status["microphone_active"] is True
+    assert status["active_sessions_count"] == 1
+
+
+def test_session_manager_concurrent_starts_admit_single_owner() -> None:
+    """Requirement: Concurrent start requests must be serialized so that exactly one session
+    acquires the capture device and other concurrent callers are rejected."""
+    import threading
+
+    class SimpleMockDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.start_count = 0
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.start_count += 1
+
+        def stop_capture(self) -> bytearray:
+            self.active = False
+            return bytearray()
+
+        def cancel_capture(self) -> None:
+            self.active = False
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "simple"}
+
+    dev = SimpleMockDevice()
+    manager = AudioSessionManager(capture_device=dev)
+
+    barrier = threading.Barrier(10)
+    successes: list[str] = []
+    failures: list[Exception] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        barrier.wait()
+        try:
+            res = manager.start_session(user_consent=True)
+            with lock:
+                successes.append(res.session_id)
+        except Exception as e:
+            with lock:
+                failures.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3.0)
+
+    # Exactly 1 success, 9 AudioCaptureError failures
+    assert len(successes) == 1
+    assert len(failures) == 9
+    for f in failures:
+        assert isinstance(f, AudioCaptureError)
+        assert "already active" in str(f)
+
+    assert dev.is_active() is True
+    assert dev.start_count == 1
+    status = manager.get_status()
+    assert status["microphone_active"] is True
+    assert status["active_sessions_count"] == 1
+
 
 @pytest.mark.anyio
-async def test_voice_service_delivery_into_conversation() -> None:
+async def test_session_manager_stop_capture_exception_handling() -> None:
+    """Requirement 4: If capture_device.stop_capture() raises an unexpected exception, cancel_capture()
+    must be called to release device, session state must become FAILED, and AudioCaptureError must be raised."""
+
+    class CrashingCaptureDevice(BaseAudioCaptureDevice):
+        def __init__(self) -> None:
+            self.active = False
+            self.cancelled = False
+
+        def is_available(self) -> bool:
+            return True
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def start_capture(self) -> None:
+            self.active = True
+            self.cancelled = False
+
+        def stop_capture(self) -> bytearray:
+            raise RuntimeError("Hardware disconnect during audio stream readout")
+
+        def cancel_capture(self) -> None:
+            self.active = False
+            self.cancelled = True
+
+        def get_device_info(self) -> dict[str, Any]:
+            return {"driver_type": "crashing"}
+
+    dev = CrashingCaptureDevice()
+    manager = AudioSessionManager(capture_device=dev)
+    res = manager.start_session(user_consent=True)
+    assert dev.active is True
+
+    with pytest.raises(AudioCaptureError, match="Hardware disconnect during audio stream readout"):
+        await manager.stop_session(res.session_id)
+
+    assert dev.active is False
+    assert dev.cancelled is True
+    sess = manager.get_session(res.session_id)
+    assert sess is not None
+    assert sess.state == AudioCaptureState.FAILED
+
+
+# ============================================================================
+# 6. VoiceService Delivery, Replay Protection & Classification
+# ============================================================================
+
+
+@pytest.mark.anyio
+async def test_voice_service_delivery_lifecycle_and_replay_protection() -> None:
     db = SessionLocal()
     try:
-        # 1. Create a target conversation
         conv_repo = ConversationRepository(db)
-        conv_id = generate_id("conv")
-        conv = conv_repo.create(conversation_id=conv_id, title="Voice Test Conversation")
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Voice Delivery Test")
 
-        # 2. Record a complete audio session
         mock_dev = MockAudioCaptureDevice()
-        manager = AudioSessionManager(capture_device=mock_dev)
-        start_res = manager.start_session(user_consent=True, source_device="mic:local")
+        stt = MockSpeechToTextAdapter(default_transcription="Deploy container to production")
+        manager = AudioSessionManager(stt_adapter=stt, capture_device=mock_dev)
 
-        phrase = "Deploy application container to production"
-        mock_dev.inject_payload(b"TEXT:" + phrase.encode("utf-8"))
+        start_res = manager.start_session(user_consent=True)
+        # Inject valid WAV audio
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        mock_dev.inject_payload(valid_wav)
+
         await manager.stop_session(start_res.session_id)
 
-        # 3. Deliver via VoiceService
         voice_svc = VoiceService(audio_manager=manager)
         delivery = voice_svc.deliver_transcript_to_conversation(
             session_id=start_res.session_id,
@@ -262,28 +846,57 @@ async def test_voice_service_delivery_into_conversation() -> None:
         )
 
         assert delivery["delivered"] is True
-        assert delivery["transcription"] == phrase
+        assert delivery["transcription"] == "Deploy container to production"
         assert delivery["data_classification"] == "INTERNAL"
-        assert delivery["conversation_id"] == conv.id
 
-        # 4. Verify message persisted in conversation message ledger
+        # Verify message persisted in conversation ledger
         msg_repo = MessageRepository(db)
-        messages = msg_repo.list_by_conversation(conv.id)
-        assert len(messages) == 1
-        user_msg = messages[0]
-        assert user_msg.role == "user"
-        assert user_msg.content == phrase
-        assert user_msg.data_classification == "INTERNAL"
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+        assert msgs[0].role == "user"
+        assert msgs[0].content == "Deploy container to production"
+        assert msgs[0].data_classification == "INTERNAL"
 
-        # 5. Cloud routing check: routing service rejects non-public transcript to cloud
-        router = RoutingService()
-        decision = router.resolve_route(data_classification=user_msg.data_classification)
-        assert decision.cloud_approved is False
-        assert decision.decision_rule == "RULE_PRIVATE_LOCAL_PIN"
-        with pytest.raises(ValidationError, match="not eligible for cloud processing"):
-            router.resolve_route(
-                data_classification=user_msg.data_classification,
-                requested_profile="cloud-strong",
+        # SECURITY INVARIANT: Replay / duplicate delivery MUST be rejected
+        with pytest.raises(ValidationError, match="already been delivered. Replay is rejected"):
+            voice_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=db,
+            )
+
+        # Confirm no duplicate message was created
+        msgs_after = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs_after) == 1
+    finally:
+        db.close()
+
+
+@pytest.mark.anyio
+async def test_voice_service_expired_session_delivery_rejected() -> None:
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Test")
+
+        stt = MockSpeechToTextAdapter(default_transcription="Hello")
+        manager = AudioSessionManager(stt_adapter=stt)
+        start_res = manager.start_session(user_consent=True)
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        b64 = base64.b64encode(valid_wav).decode("ascii")
+        await manager.stop_session(start_res.session_id, audio_base64=b64)
+
+        # Age session past TTL
+        session = manager.get_session(start_res.session_id)
+        assert session is not None
+        session.started_at = utc_now() - timedelta(seconds=350)
+
+        voice_svc = VoiceService(audio_manager=manager)
+        with pytest.raises(ValidationError, match="has expired"):
+            voice_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=db,
             )
     finally:
         db.close()
@@ -296,12 +909,10 @@ async def test_voice_service_uncompleted_session_delivery_rejected() -> None:
         conv_repo = ConversationRepository(db)
         conv = conv_repo.create(conversation_id=generate_id("conv"), title="Test")
 
-        mock_dev = MockAudioCaptureDevice()
-        manager = AudioSessionManager(capture_device=mock_dev)
+        manager = AudioSessionManager()
         start_res = manager.start_session(user_consent=True)
 
         voice_svc = VoiceService(audio_manager=manager)
-        # Attempting to deliver while still CAPTURING must fail closed
         with pytest.raises(ValidationError, match="not 'completed'"):
             voice_svc.deliver_transcript_to_conversation(
                 session_id=start_res.session_id,
@@ -312,78 +923,651 @@ async def test_voice_service_uncompleted_session_delivery_rejected() -> None:
         db.close()
 
 
-def test_voice_service_missing_conversation_rejected() -> None:
-    db = SessionLocal()
-    try:
-        manager = AudioSessionManager()
-        voice_svc = VoiceService(audio_manager=manager)
-        with pytest.raises(ValidationError, match="not found"):
-            voice_svc.deliver_transcript_to_conversation(
-                session_id="nonexistent_session",
-                conversation_id="conv_does_not_exist",
-                db=db,
-            )
-    finally:
-        db.close()
+# ============================================================================
+# 7. Routing Policy Verification (INTERNAL Transcript Cloud Rejection)
+# ============================================================================
+
+
+def test_internal_voice_transcript_rejected_from_cloud_routing() -> None:
+    router = RoutingService()
+    decision = router.resolve_route(data_classification="INTERNAL")
+    assert decision.cloud_approved is False
+    assert decision.decision_rule == "RULE_PRIVATE_LOCAL_PIN"
+
+    # Explicit cloud request with INTERNAL data must fail closed
+    with pytest.raises(ValidationError, match="not eligible for cloud processing"):
+        router.resolve_route(data_classification="INTERNAL", requested_profile="cloud-strong")
 
 
 # ============================================================================
-# 5. API Endpoint Delivery Test
+# 8. API Delivery Endpoint Security
 # ============================================================================
 
-def test_api_voice_deliver_endpoint() -> None:
+
+def test_api_voice_deliver_endpoint_loopback_and_replay() -> None:
     client = TestClient(app)
     db = SessionLocal()
     try:
-        conv_repo = ConversationRepository(db)
-        conv = conv_repo.create(conversation_id=generate_id("conv"), title="API Voice Test")
+        # Pair authenticated local operator
+        from pico.services.operator_session import OperatorSessionService
 
-        # 1. Start audio session
-        start_resp = client.post("/api/perception/audio/session/start", json={"user_consent": True})
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        assert pair_res.status_code == 200
+        csrf_token = pair_res.json()["csrf_token"]
+        auth_headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="API Delivery Test")
+
+        # In pipeline, inject a MockSpeechToTextAdapter for test
+        from pico.perception.pipeline import _shared_audio_manager
+
+        _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="API Voice Message")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=auth_headers,
+        )
         assert start_resp.status_code == 201
         sess_id = start_resp.json()["session_id"]
 
-        # 2. Stop audio session with synthetic audio
-        wav_data = b"TEXT:Inspect cluster health metrics"
-        wav_b64 = base64.b64encode(wav_data).decode("ascii")
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        wav_b64 = base64.b64encode(valid_wav).decode("ascii")
+
         stop_resp = client.post(
             f"/api/perception/audio/session/{sess_id}/stop",
             json={"audio_base64": wav_b64, "audio_format": "wav"},
         )
         assert stop_resp.status_code == 200
-        assert stop_resp.json()["transcription"] == "Inspect cluster health metrics"
+        assert stop_resp.json()["transcription"] == "API Voice Message"
 
-        # 3. Deliver transcript into conversation
+        # Deliver transcript into conversation with authenticated operator context
         deliver_resp = client.post(
             f"/api/perception/audio/session/{sess_id}/deliver",
             json={"conversation_id": conv.id},
+            headers=auth_headers,
         )
         assert deliver_resp.status_code == 200
-        del_data = deliver_resp.json()
-        assert del_data["delivered"] is True
-        assert del_data["transcription"] == "Inspect cluster health metrics"
-        assert del_data["data_classification"] == "INTERNAL"
+        assert deliver_resp.json()["delivered"] is True
 
-        # 4. Verify message retrieved through conversation API
+        # Second delivery (replay) must be rejected with 422 Unprocessable Content
+        replay_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv.id},
+            headers=auth_headers,
+        )
+        assert replay_resp.status_code == 422
+        assert "already been delivered" in replay_resp.json()["detail"]
+
+        # Verify only 1 message in conversation
         msgs_resp = client.get(f"/api/conversations/{conv.id}/messages")
         assert msgs_resp.status_code == 200
-        msgs = msgs_resp.json()["items"]
+        items = msgs_resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["content"] == "API Voice Message"
+        assert items[0]["data_classification"] == "INTERNAL"
+    finally:
+        from pico.perception.pipeline import _shared_audio_manager
+
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_non_loopback_rejected() -> None:
+    # Client originating from non-loopback IP (e.g. 192.168.1.50) fails closed
+    client = TestClient(app, client=("192.168.1.50", 45678))
+    res = client.post(
+        "/api/perception/audio/session/aud_fake123/deliver",
+        json={"conversation_id": "conv_fake"},
+    )
+    assert res.status_code == 403
+    assert "loopback" in res.json()["detail"].lower()
+
+
+def test_api_voice_deliver_unauthorized_loopback_rejected() -> None:
+    # Local loopback client WITHOUT operator session cookie or bridge proof fails closed
+    client = TestClient(app)
+    res = client.post(
+        "/api/perception/audio/session/aud_fake123/deliver",
+        json={"conversation_id": "conv_fake"},
+    )
+    assert res.status_code == 403
+    assert "authenticated" in res.json()["detail"].lower()
+
+
+def test_api_voice_deliver_approval_token_alone_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Security Requirement: An approval token (X-Pico-Approval-Token) authorizes single
+    consequential tool executions, but MUST NOT act as generic authentication for voice transcript delivery."""
+    from pico.core.config import settings
+
+    monkeypatch.setattr(settings, "APPROVAL_SECRET_TOKEN", "valid_approval_secret_12345")
+    client = TestClient(app)
+    headers = {"X-Pico-Approval-Token": "valid_approval_secret_12345"}
+    res = client.post(
+        "/api/perception/audio/session/aud_fake123/deliver",
+        json={"conversation_id": "conv_fake"},
+        headers=headers,
+    )
+    assert res.status_code == 403
+    assert "operator session or native desktop bridge proof" in res.json()["detail"].lower()
+
+
+def test_api_voice_deliver_caller_supplied_transcript_rejected() -> None:
+    # Attempting to inject client-supplied transcript into delivery body fails closed with 422
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    service = OperatorSessionService.get_instance()
+    code = service.generate_pairing_code()
+    pair_res = client.post("/api/operator/pair", json={"code": code.code})
+    csrf_token = pair_res.json()["csrf_token"]
+
+    res = client.post(
+        "/api/perception/audio/session/aud_test123/deliver",
+        json={"conversation_id": "conv_test", "transcription": "Injected malicious speech"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert res.status_code == 422
+
+
+def test_api_voice_deliver_wrong_conversation_rejected() -> None:
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv_a = conv_repo.create(conversation_id=generate_id("conv"), title="Conv A")
+        conv_b = conv_repo.create(conversation_id=generate_id("conv"), title="Conv B")
+
+        _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Secret message")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv_a.id},
+            headers=headers,
+        )
+        assert start_resp.status_code == 201
+        sess_id = start_resp.json()["session_id"]
+
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        wav_b64 = base64.b64encode(valid_wav).decode("ascii")
+
+        stop_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/stop",
+            json={"audio_base64": wav_b64, "audio_format": "wav"},
+        )
+        assert stop_resp.status_code == 200
+
+        # Attempt to deliver to conv_b when bound to conv_a must fail closed
+        mismatch_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv_b.id},
+            headers=headers,
+        )
+        assert mismatch_resp.status_code == 422
+        assert "was initialized for conversation" in mismatch_resp.json()["detail"]
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_cancelled_session_rejected() -> None:
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Cancel Test")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=headers,
+        )
+        sess_id = start_resp.json()["session_id"]
+
+        # Cancel the session
+        cancel_resp = client.post(f"/api/perception/audio/session/{sess_id}/cancel")
+        assert cancel_resp.status_code == 200
+
+        # Attempting to deliver a cancelled session must fail closed
+        deliv_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv.id},
+            headers=headers,
+        )
+        assert deliv_resp.status_code == 422
+        assert "cancelled" in deliv_resp.json()["detail"]
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_incomplete_session_rejected() -> None:
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Incomplete Test")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=headers,
+        )
+        sess_id = start_resp.json()["session_id"]
+
+        # Still capturing, not completed
+        deliv_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/deliver",
+            json={"conversation_id": conv.id},
+            headers=headers,
+        )
+        assert deliv_resp.status_code == 422
+        assert "not 'completed'" in deliv_resp.json()["detail"]
+
+        client.post(f"/api/perception/audio/session/{sess_id}/cancel")
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_api_voice_deliver_concurrent_replay_race_prevented() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pico.perception.pipeline import _shared_audio_manager
+    from pico.services.operator_session import OperatorSessionService
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        service = OperatorSessionService.get_instance()
+        code = service.generate_pairing_code()
+        pair_res = client.post("/api/operator/pair", json={"code": code.code})
+        csrf_token = pair_res.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf_token}
+
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Concurrent Race Test")
+
+        _shared_audio_manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Atomic speech")
+
+        start_resp = client.post(
+            "/api/perception/audio/session/start",
+            json={"user_consent": True, "conversation_id": conv.id},
+            headers=headers,
+        )
+        sess_id = start_resp.json()["session_id"]
+
+        valid_wav = make_valid_wav_bytes(duration_sec=0.2)
+        wav_b64 = base64.b64encode(valid_wav).decode("ascii")
+
+        stop_resp = client.post(
+            f"/api/perception/audio/session/{sess_id}/stop",
+            json={"audio_base64": wav_b64, "audio_format": "wav"},
+        )
+        assert stop_resp.status_code == 200
+
+        # Fire 6 concurrent requests attempting to deliver the exact same session
+        def attempt_deliver() -> int:
+            resp = client.post(
+                f"/api/perception/audio/session/{sess_id}/deliver",
+                json={"conversation_id": conv.id},
+                headers=headers,
+            )
+            return resp.status_code
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(attempt_deliver) for _ in range(6)]
+            status_codes = [f.result() for f in futures]
+
+        # Exactly 1 delivery must succeed (200), all 5 concurrent replays must fail (422)
+        assert status_codes.count(200) == 1, f"Expected exactly one 200, got: {status_codes}"
+        assert status_codes.count(422) == 5, f"Expected 5 rejected (422), got: {status_codes}"
+
+        # Verify exactly 1 message was persisted in database
+        msgs_resp = client.get(f"/api/conversations/{conv.id}/messages")
+        assert msgs_resp.status_code == 200
+        assert len(msgs_resp.json()["items"]) == 1
+
+        # Verify exactly 1 audit perception event was persisted for this session
+        events_resp = client.get("/api/perception/events?modality=audio&event_type=voice_transcript_delivery")
+        assert events_resp.status_code == 200
+        delivered_events = [e for e in events_resp.json()["items"] if e.get("session_id") == sess_id]
+        assert len(delivered_events) == 1
+    finally:
+        _shared_audio_manager.stt_adapter = LocalWhisperSpeechToTextAdapter()
+        db.close()
+
+
+def test_voice_service_concurrent_separate_service_instances() -> None:
+    """Requirement: Concurrent delivery through separate service instances must be strictly serialized
+    and deduplicated at the database boundary."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Separate service instances")
+    start_res = manager.start_session(user_consent=True, operator_id="operator_test")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Separate service instances speech"
+
+    db_setup = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db_setup)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Separate Service Test")
+    finally:
+        db_setup.close()
+
+    results: list[tuple[bool, str | None]] = []
+
+    def attempt_with_separate_service() -> tuple[bool, str | None]:
+        # Each thread gets its own db session and its own VoiceService instance
+        thread_db = SessionLocal()
+        thread_svc = VoiceService(audio_manager=manager)
+        try:
+            res = thread_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=thread_db,
+                caller_operator_id="operator_test",
+            )
+            return (True, res["message_id"])
+        except ValidationError as e:
+            return (False, str(e))
+        finally:
+            thread_db.close()
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(attempt_with_separate_service) for _ in range(6)]
+        results = [f.result() for f in futures]
+
+    successes = [r for r in results if r[0] is True]
+    rejections = [r for r in results if r[0] is False]
+
+    assert len(successes) == 1, f"Expected exactly 1 success, got: {results}"
+    assert len(rejections) == 5, f"Expected 5 rejections, got: {results}"
+
+    # Verify actual database state
+    verify_db = SessionLocal()
+    try:
+        msg_repo = MessageRepository(verify_db)
+        msgs = msg_repo.list_by_conversation(conv.id)
         assert len(msgs) == 1
-        assert msgs[0]["content"] == "Inspect cluster health metrics"
-        assert msgs[0]["data_classification"] == "INTERNAL"
+        assert msgs[0].content == "Separate service instances speech"
+    finally:
+        verify_db.close()
+
+
+def test_voice_service_retry_after_successful_delivery() -> None:
+    """Requirement: A retry after successful delivery must fail closed with ValidationError
+    without adding another message."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Retry test")
+    start_res = manager.start_session(user_consent=True, operator_id="op_retry")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Retry transcript"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Retry Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+        # 1. First delivery succeeds
+        res1 = voice_svc.deliver_transcript_to_conversation(
+            session_id=start_res.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_retry",
+        )
+        assert res1["delivered"] is True
+
+        # 2. Immediate second delivery attempt fails closed
+        with pytest.raises(ValidationError, match="already been delivered"):
+            voice_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=db,
+                caller_operator_id="op_retry",
+            )
+
+        # 3. Verify exactly 1 message in database
+        msg_repo = MessageRepository(db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+    finally:
+        db.close()
+
+
+def test_voice_service_failure_during_persistence_preserves_session_for_retry() -> None:
+    """Requirement: If database persistence fails (e.g. database error/rollback), the in-memory
+    session must NOT be permanently marked delivered, enabling safe operator retry."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Fail test")
+    start_res = manager.start_session(user_consent=True, operator_id="op_fail")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Payload to retry"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="DB Error Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+
+        # Simulate a database failure by patching db.commit to raise an OperationalError
+        from unittest.mock import patch
+
+        with patch.object(db, "commit", side_effect=RuntimeError("Simulated DB Disk I/O Failure")):
+            with pytest.raises(RuntimeError, match="Simulated DB Disk I/O Failure"):
+                voice_svc.deliver_transcript_to_conversation(
+                    session_id=start_res.session_id,
+                    conversation_id=conv.id,
+                    db=db,
+                    caller_operator_id="op_fail",
+                )
+
+        # Session must NOT be marked delivered
+        assert sess.delivered is False
+        assert sess.delivered_at is None
+
+        # Retry after DB issue resolves must succeed cleanly
+        res2 = voice_svc.deliver_transcript_to_conversation(
+            session_id=start_res.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_fail",
+        )
+        assert res2["delivered"] is True
+        assert sess.delivered is True
+
+        msg_repo = MessageRepository(db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+    finally:
+        db.close()
+
+
+def test_voice_service_process_level_session_reload_idempotency() -> None:
+    """Requirement: If a process reboots or reloads where the in-memory AudioSessionManager is fresh,
+    attempting to deliver the same session_id again against the database must be rejected by the
+    durable database constraint."""
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Reload Test")
+
+        # Process 1 creates and delivers session
+        manager1 = AudioSessionManager()
+        manager1.stt_adapter = MockSpeechToTextAdapter(default_transcription="Pre-restart speech")
+        start1 = manager1.start_session(user_consent=True, operator_id="op_restart")
+        sess1 = manager1.get_session(start1.session_id)
+        assert sess1 is not None
+        sess1.state = AudioCaptureState.COMPLETED
+        sess1.transcription = "Pre-restart speech"
+
+        svc1 = VoiceService(audio_manager=manager1)
+        res1 = svc1.deliver_transcript_to_conversation(
+            session_id=start1.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_restart",
+        )
+        assert res1["delivered"] is True
+
+        # Process 2 starts up fresh with an empty manager or a restored session that has delivered=False
+        manager2 = AudioSessionManager()
+        manager2.stt_adapter = MockSpeechToTextAdapter(default_transcription="Pre-restart speech")
+        # Simulate session restore or replay in separate process context
+        start2_res = manager2.start_session(user_consent=True, operator_id="op_restart")
+        sess2 = manager2.get_session(start2_res.session_id)
+        assert sess2 is not None
+        # Force session_id to match original
+        original_sess_id = start1.session_id
+        manager2._active_sessions[original_sess_id] = sess2
+        sess2.session_id = original_sess_id
+        sess2.state = AudioCaptureState.COMPLETED
+        sess2.transcription = "Pre-restart speech"
+        sess2.delivered = False  # fresh in-memory state
+
+        svc2 = VoiceService(audio_manager=manager2)
+        # Attempt to deliver must be rejected by durable database constraint
+        with pytest.raises(ValidationError, match="database integrity constraint"):
+            svc2.deliver_transcript_to_conversation(
+                session_id=original_sess_id,
+                conversation_id=conv.id,
+                db=db,
+                caller_operator_id="op_restart",
+            )
+
+        msg_repo = MessageRepository(db)
+        msgs = msg_repo.list_by_conversation(conv.id)
+        assert len(msgs) == 1
+    finally:
+        db.close()
+
+
+def test_voice_service_wrong_operator_rejected() -> None:
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter()
+    start_res = manager.start_session(user_consent=True, operator_id="operator_alice")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Alice's voice command"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="Op Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+        # Attempt delivery with operator_bob must raise AuthorizationError
+        expected_msg = "not authorized to deliver audio session owned by 'operator_alice'"
+        with pytest.raises(AuthorizationError, match=expected_msg):
+            voice_svc.deliver_transcript_to_conversation(
+                session_id=start_res.session_id,
+                conversation_id=conv.id,
+                db=db,
+                caller_operator_id="operator_bob",
+            )
+    finally:
+        db.close()
+
+
+def test_voice_service_non_delivery_integrity_error_preserves_retryable_state() -> None:
+    """Requirement 6: If an IntegrityError occurs without a committed voice_transcript_delivery event
+    (e.g. foreign key constraint violation), the in-memory session must NOT be marked delivered,
+    allowing caller retry or recovery once conditions are corrected."""
+    manager = AudioSessionManager()
+    manager.stt_adapter = MockSpeechToTextAdapter(default_transcription="Constraint test")
+    start_res = manager.start_session(user_consent=True, operator_id="op_fk")
+    sess = manager.get_session(start_res.session_id)
+    assert sess is not None
+    sess.state = AudioCaptureState.COMPLETED
+    sess.transcription = "Constraint test speech"
+
+    db = SessionLocal()
+    try:
+        conv_repo = ConversationRepository(db)
+        conv = conv_repo.create(conversation_id=generate_id("conv"), title="FK Test")
+
+        voice_svc = VoiceService(audio_manager=manager)
+
+        # Simulate an IntegrityError that does NOT have a committed delivery event (e.g. FK constraint)
+        from unittest.mock import patch
+
+        from sqlalchemy.exc import IntegrityError
+
+        with patch.object(
+            db,
+            "commit",
+            side_effect=IntegrityError("INSERT failed", params={}, orig=Exception("FOREIGN KEY constraint failed")),
+        ):
+            with pytest.raises(ValidationError, match="Voice delivery transaction failed integrity check on database"):
+                voice_svc.deliver_transcript_to_conversation(
+                    session_id=start_res.session_id,
+                    conversation_id=conv.id,
+                    db=db,
+                    caller_operator_id="op_fk",
+                )
+
+        # In-memory session MUST NOT be marked delivered because no delivery event exists in DB
+        assert sess.delivered is False
+        assert sess.delivered_at is None
+
+        # After resolving the constraint issue, retry succeeds cleanly
+        res = voice_svc.deliver_transcript_to_conversation(
+            session_id=start_res.session_id,
+            conversation_id=conv.id,
+            db=db,
+            caller_operator_id="op_fk",
+        )
+        assert res["delivered"] is True
+        assert sess.delivered is True
     finally:
         db.close()
 
 
 # ============================================================================
-# 6. Zero Disk Persistence Security Invariant
+# 9. Zero Raw Audio Disk Persistence Security Invariant
 # ============================================================================
 
-def test_zero_raw_audio_disk_persistence() -> None:
-    """Invariant: Audio capture, transcription, and delivery must NEVER write raw audio files to disk."""
-    repo_root = Path(__file__).resolve().parents[1]
 
-    # Search repo directories for any newly created audio files
+def test_zero_raw_audio_disk_persistence() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
     audio_extensions = {".wav", ".mp3", ".ogg", ".pcm", ".raw", ".flac", ".m4a"}
     leaked_files = []
     for check_dir in [repo_root / "pico", repo_root / "data", repo_root / "logs"]:

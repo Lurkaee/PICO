@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from pico.api.operator import AuthorizationContext, get_authorization_context, is_loopback_client
+from pico.core.errors import AuthorizationError, EntityNotFoundError
 from pico.db.session import get_db
 from pico.perception.contracts import (
     AudioSessionStartRequest,
@@ -26,8 +28,10 @@ from pico.perception.contracts import (
 from pico.perception.pipeline import PerceptionPipeline
 from pico.repositories.perception_event_repo import PerceptionEventRepository
 
+
 class AudioDeliverRequest(BaseModel):
-    conversation_id: str
+    model_config = ConfigDict(extra="forbid")
+    conversation_id: str = Field(min_length=1, max_length=128)
 
 
 class AudioDeliverResponse(BaseModel):
@@ -62,10 +66,34 @@ def get_perception_status(db: Session = Depends(get_db)) -> PerceptionSubsystemS
 )
 def start_audio_session(
     payload: AudioSessionStartRequest,
+    request: Request,
+    auth_ctx: AuthorizationContext = Depends(get_authorization_context),
     db: Session = Depends(get_db),
 ) -> AudioSessionStartResponse:
+    if not is_loopback_client(request):
+        raise AuthorizationError("Audio session start is strictly restricted to local loopback connections.")
+
+    caller_operator_id: str | None = None
+    if auth_ctx.is_authorized:
+        caller_operator_id = (
+            auth_ctx.session.approver if (auth_ctx.session and auth_ctx.session.approver) else auth_ctx.principal
+        )
+    elif is_loopback_client(request):
+        caller_operator_id = "local_operator"
+
+    if payload.conversation_id:
+        from pico.repositories.conversation_repo import ConversationRepository
+
+        conv_repo = ConversationRepository(db)
+        if not conv_repo.get_by_id(payload.conversation_id):
+            raise EntityNotFoundError("Conversation", payload.conversation_id)
+
     pipeline = PerceptionPipeline(db=db)
-    return pipeline.start_audio_session(payload)
+    return pipeline.start_audio_session(
+        payload,
+        operator_id=caller_operator_id,
+        conversation_id=payload.conversation_id,
+    )
 
 
 @router.post(
@@ -116,8 +144,25 @@ def get_audio_session_status(
 def deliver_audio_transcript(
     session_id: str,
     payload: AudioDeliverRequest,
+    request: Request,
+    auth_ctx: AuthorizationContext = Depends(get_authorization_context),
     db: Session = Depends(get_db),
 ) -> AudioDeliverResponse:
+    if not is_loopback_client(request):
+        raise AuthorizationError("Voice transcript delivery is strictly restricted to local loopback connections.")
+
+    # Transcript delivery requires an active paired operator session or native desktop bridge proof.
+    # Generic approval tokens (X-Pico-Approval-Token) authorize single tool/workflow executions,
+    # and MUST NOT act as a generic substitute for operator identity in transcript delivery.
+    if not auth_ctx.is_authorized or auth_ctx.method not in ("operator_session", "bridge_proof"):
+        raise AuthorizationError(
+            "Voice transcript delivery requires an authenticated local operator session or native desktop bridge proof."
+        )
+
+    caller_operator_id = (
+        auth_ctx.session.approver if (auth_ctx.session and auth_ctx.session.approver) else auth_ctx.principal
+    )
+
     from pico.services.voice_service import VoiceService
 
     voice_svc = VoiceService()
@@ -125,6 +170,7 @@ def deliver_audio_transcript(
         session_id=session_id,
         conversation_id=payload.conversation_id,
         db=db,
+        caller_operator_id=caller_operator_id,
     )
     return AudioDeliverResponse(**result)
 

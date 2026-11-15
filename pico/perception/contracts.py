@@ -111,6 +111,7 @@ class PerceptionSubsystemStatus(BaseModel):
 class AudioSessionStartRequest(BaseModel):
     user_consent: bool = Field(description="Explicit user consent required for audio capture (must be explicitly provided)")
     source_device: str = "mic:local"
+    conversation_id: str | None = Field(default=None, description="Optional destination conversation identifier")
     metadata: dict[str, Any] | None = None
 
 
