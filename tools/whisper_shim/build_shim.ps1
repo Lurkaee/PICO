@@ -28,18 +28,25 @@ Write-Host "Pinned upstream: tag $PinnedTag (commit $PinnedCommit)"
 if (-not (Test-Path $SourceDir)) {
     Write-Host "Cloning whisper.cpp from official upstream (ggml-org/whisper.cpp)..."
     git clone --depth 1 --branch $PinnedTag https://github.com/ggml-org/whisper.cpp.git $SourceDir
+    if ($LASTEXITCODE -ne 0) { throw "git clone failed with exit code $LASTEXITCODE." }
 }
 
 Push-Location $SourceDir
 try {
     $currentHead = (git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "git rev-parse HEAD failed with exit code $LASTEXITCODE." }
     if ($currentHead -ne $PinnedCommit) {
         Write-Warning "Source HEAD ($currentHead) differs from expected pinned commit ($PinnedCommit). Checking out $PinnedCommit..."
         git fetch --depth 1 origin $PinnedCommit
+        if ($LASTEXITCODE -ne 0) { throw "git fetch failed with exit code $LASTEXITCODE." }
         git checkout $PinnedCommit
-    } else {
-        Write-Host "Source verified at pinned commit $PinnedCommit." -ForegroundColor Green
+        if ($LASTEXITCODE -ne 0) { throw "git checkout failed with exit code $LASTEXITCODE." }
     }
+    $verifiedHead = (git rev-parse HEAD).Trim()
+    if ($verifiedHead -ne $PinnedCommit) {
+        throw "Failed to verify pinned commit: HEAD is $verifiedHead, expected $PinnedCommit."
+    }
+    Write-Host "Source verified at pinned commit $PinnedCommit." -ForegroundColor Green
 } finally {
     Pop-Location
 }
@@ -56,53 +63,39 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 }
 Write-Host "Using CMake: $cmakePath"
 
-# 3. Configure whisper.cpp with CMake
-Write-Host "Configuring whisper.cpp build..." -ForegroundColor Cyan
-& $cmakePath -B $BuildDir -S $SourceDir `
+# 3. Configure and build pico_whisper_shim via unified CMake project
+Write-Host "Configuring pico_whisper_shim build..." -ForegroundColor Cyan
+& $cmakePath -B $BuildDir -S $PSScriptRoot `
     -G "Visual Studio 17 2022" -A x64 `
-    -DWHISPER_BUILD_EXAMPLES=OFF `
-    -DWHISPER_BUILD_TESTS=OFF `
-    -DWHISPER_BUILD_SERVER=OFF `
-    -DBUILD_SHARED_LIBS=ON `
-    -DGGML_CUDA=OFF `
-    -DGGML_VULKAN=OFF `
-    -DGGML_OPENCL=OFF `
-    -DGGML_AVX2=ON `
-    -DGGML_FMA=ON
-if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed." }
+    -DWHISPER_DIR="$SourceDir"
+if ($LASTEXITCODE -ne 0) { throw "CMake configuration failed with exit code $LASTEXITCODE." }
 
-# 4. Build whisper.dll
-Write-Host "Building whisper.dll (Release)..." -ForegroundColor Cyan
-& $cmakePath --build $BuildDir --config Release --target whisper
-if ($LASTEXITCODE -ne 0) { throw "whisper build failed." }
+# 4. Build pico_whisper_shim (Release) - automatically builds whisper and all ggml dependencies
+Write-Host "Building pico_whisper_shim and upstream runtime (Release)..." -ForegroundColor Cyan
+& $cmakePath --build $BuildDir --config Release --target pico_whisper_shim
+if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE." }
 
-# 5. Build pico_whisper_shim.dll
-Write-Host "Compiling pico_whisper_shim.dll..." -ForegroundColor Cyan
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-$vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-$vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
-
-if (-not (Test-Path $vcvars)) {
-    throw "vcvars64.bat not found at $vcvars"
-}
-
-$shimSource = Join-Path $PSScriptRoot "pico_whisper_shim.cpp"
-$includeWhisper = Join-Path $SourceDir "include"
-$includeGgml = Join-Path $SourceDir "ggml\include"
-$whisperLib = Join-Path $BuildDir "src\Release\whisper.lib"
-$shimDllOut = Join-Path $BuildDir "bin\Release\pico_whisper_shim.dll"
-
-$cmd = "call `"$vcvars`" && cl /O2 /EHsc /MD /DPICO_WHISPER_SHIM_EXPORTS /I `"$includeWhisper`" /I `"$includeGgml`" `"$shimSource`" /LD /Fe:`"$shimDllOut`" /link `"$whisperLib`""
-cmd /c $cmd
-if ($LASTEXITCODE -ne 0) { throw "pico_whisper_shim.dll compilation failed." }
-
-# 6. Stage DLLs into OutputDir
+# 5. Stage DLLs into OutputDir
 Write-Host "Staging runtime binaries into $OutputDir..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-$dlls = Get-ChildItem -Path (Join-Path $BuildDir "bin\Release") -Filter "*.dll"
-foreach ($dll in $dlls) {
-    Copy-Item $dll.FullName -Destination $OutputDir -Force
-    Write-Host "  Staged: $($dll.Name) ($([math]::Round($dll.Length/1KB, 1)) KB)"
+$dllDirs = @(
+    (Join-Path $BuildDir "bin\Release"),
+    (Join-Path $BuildDir "whisper_build\bin\Release")
+)
+$stagedCount = 0
+foreach ($dir in $dllDirs) {
+    if (Test-Path $dir) {
+        $dlls = Get-ChildItem -Path $dir -Filter "*.dll"
+        foreach ($dll in $dlls) {
+            Copy-Item $dll.FullName -Destination $OutputDir -Force
+            Write-Host "  Staged: $($dll.Name) ($([math]::Round($dll.Length/1KB, 1)) KB)"
+            $stagedCount++
+        }
+    }
+}
+
+if ($stagedCount -eq 0) {
+    throw "No runtime DLLs found to stage from $BuildDir."
 }
 
 Write-Host "=== Build and Staging Complete ===" -ForegroundColor Green

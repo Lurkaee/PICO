@@ -35,24 +35,28 @@ PICO_WHISPER_API PicoWhisperStatus pico_whisper_init(
     }
     *out_ctx = nullptr;
 
-    whisper_context_params cparams = whisper_context_default_params();
-    cparams.use_gpu = false;    // Non-negotiable invariant: CPU-only execution
-    cparams.flash_attn = false; // CPU fallback
+    try {
+        whisper_context_params cparams = whisper_context_default_params();
+        cparams.use_gpu = false;    // Non-negotiable invariant: CPU-only execution
+        cparams.flash_attn = false; // CPU fallback
 
-    whisper_context *wctx = whisper_init_from_file_with_params(model_path, cparams);
-    if (!wctx) {
+        whisper_context *wctx = whisper_init_from_file_with_params(model_path, cparams);
+        if (!wctx) {
+            return PICO_WHISPER_ERR_INIT_FAILED;
+        }
+
+        auto *pctx = new (std::nothrow) PicoWhisperContext();
+        if (!pctx) {
+            whisper_free(wctx);
+            return PICO_WHISPER_ERR_INIT_FAILED;
+        }
+
+        pctx->ctx = wctx;
+        *out_ctx = pctx;
+        return PICO_WHISPER_OK;
+    } catch (...) {
         return PICO_WHISPER_ERR_INIT_FAILED;
     }
-
-    auto *pctx = new (std::nothrow) PicoWhisperContext();
-    if (!pctx) {
-        whisper_free(wctx);
-        return PICO_WHISPER_ERR_INIT_FAILED;
-    }
-
-    pctx->ctx = wctx;
-    *out_ctx = pctx;
-    return PICO_WHISPER_OK;
 }
 
 PICO_WHISPER_API PicoWhisperStatus pico_whisper_transcribe(
@@ -70,68 +74,87 @@ PICO_WHISPER_API PicoWhisperStatus pico_whisper_transcribe(
     if (!samples || n_samples <= 0 || !out_text_buffer || buffer_size == 0) {
         return PICO_WHISPER_ERR_INVALID_ARG;
     }
-
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-
-    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.n_threads = n_threads > 0 ? n_threads : 4;
-    wparams.print_progress = false;
-    wparams.print_special = false;
-    wparams.print_realtime = false;
-    wparams.print_timestamps = false;
-    wparams.translate = false;
-    wparams.language = "en";
-    wparams.no_context = true;
-    wparams.single_segment = false;
-
-    int ret = whisper_full(ctx->ctx, wparams, samples, n_samples);
-    if (ret != 0) {
-        return PICO_WHISPER_ERR_INFERENCE_FAILED;
+    // Strictly enforce bounded CPU threads (ADR 0005: 1 <= threads <= 4)
+    if (n_threads < 1 || n_threads > 4) {
+        return PICO_WHISPER_ERR_INVALID_ARG;
     }
 
-    std::string full_text;
-    const int n_segments = whisper_full_n_segments(ctx->ctx);
-    for (int i = 0; i < n_segments; ++i) {
-        const char *seg_text = whisper_full_get_segment_text(ctx->ctx, i);
-        if (seg_text) {
-            full_text += seg_text;
+    try {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        if (!ctx->ctx) {
+            return PICO_WHISPER_ERR_NULL_CONTEXT;
         }
-    }
 
-    // Trim leading whitespace
-    size_t start_pos = full_text.find_first_not_of(" \t\r\n");
-    if (start_pos != std::string::npos && start_pos > 0) {
-        full_text = full_text.substr(start_pos);
-    }
-    // Trim trailing whitespace
-    size_t end_pos = full_text.find_last_not_of(" \t\r\n");
-    if (end_pos != std::string::npos && end_pos + 1 < full_text.size()) {
-        full_text = full_text.substr(0, end_pos + 1);
-    }
+        whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        wparams.n_threads = n_threads;
+        wparams.print_progress = false;
+        wparams.print_special = false;
+        wparams.print_realtime = false;
+        wparams.print_timestamps = false;
+        wparams.translate = false;
+        wparams.language = "en";
+        wparams.no_context = true;
+        wparams.single_segment = false;
 
-    if (full_text.size() + 1 > buffer_size) {
+        int ret = whisper_full(ctx->ctx, wparams, samples, n_samples);
+        if (ret != 0) {
+            return PICO_WHISPER_ERR_INFERENCE_FAILED;
+        }
+
+        std::string full_text;
+        const int n_segments = whisper_full_n_segments(ctx->ctx);
+        for (int i = 0; i < n_segments; ++i) {
+            const char *seg_text = whisper_full_get_segment_text(ctx->ctx, i);
+            if (seg_text) {
+                full_text += seg_text;
+            }
+        }
+
+        // Trim leading whitespace
+        size_t start_pos = full_text.find_first_not_of(" \t\r\n");
+        if (start_pos != std::string::npos && start_pos > 0) {
+            full_text = full_text.substr(start_pos);
+        }
+        // Trim trailing whitespace
+        size_t end_pos = full_text.find_last_not_of(" \t\r\n");
+        if (end_pos != std::string::npos && end_pos + 1 < full_text.size()) {
+            full_text = full_text.substr(0, end_pos + 1);
+        }
+
+        if (full_text.size() + 1 > buffer_size) {
+            if (out_text_len) {
+                *out_text_len = full_text.size();
+            }
+            return PICO_WHISPER_ERR_BUFFER_TOO_SMALL;
+        }
+
+        std::memcpy(out_text_buffer, full_text.c_str(), full_text.size() + 1);
         if (out_text_len) {
             *out_text_len = full_text.size();
         }
-        return PICO_WHISPER_ERR_BUFFER_TOO_SMALL;
-    }
 
-    std::memcpy(out_text_buffer, full_text.c_str(), full_text.size() + 1);
-    if (out_text_len) {
-        *out_text_len = full_text.size();
+        return PICO_WHISPER_OK;
+    } catch (...) {
+        return PICO_WHISPER_ERR_INFERENCE_FAILED;
     }
-
-    return PICO_WHISPER_OK;
 }
 
 PICO_WHISPER_API void pico_whisper_free(PicoWhisperContext *ctx) {
-    if (ctx) {
-        std::lock_guard<std::mutex> lock(ctx->mtx);
-        if (ctx->ctx) {
-            whisper_free(ctx->ctx);
-            ctx->ctx = nullptr;
+    if (!ctx) {
+        return;
+    }
+    try {
+        // Critical: Release mutex lock before deleting ctx structure to avoid undefined behavior
+        {
+            std::lock_guard<std::mutex> lock(ctx->mtx);
+            if (ctx->ctx) {
+                whisper_free(ctx->ctx);
+                ctx->ctx = nullptr;
+            }
         }
         delete ctx;
+    } catch (...) {
+        // Suppress all exceptions across C ABI boundary
     }
 }
 

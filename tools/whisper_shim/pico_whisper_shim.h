@@ -72,7 +72,7 @@ PICO_WHISPER_API PicoWhisperStatus pico_whisper_init(
  * @param ctx Valid opaque context pointer.
  * @param samples Array of normalized 32-bit float audio samples.
  * @param n_samples Number of audio samples in the array.
- * @param n_threads Number of CPU threads to dedicate to inference (bounded to >= 1).
+ * @param n_threads Number of CPU threads to dedicate to inference (strictly bounded: 1 <= n_threads <= 4).
  * @param out_text_buffer Caller-allocated buffer to receive the null-terminated UTF-8 transcript.
  * @param buffer_size Size of out_text_buffer in bytes.
  * @param out_text_len Optional pointer to receive the transcript length in bytes (excluding null terminator).

@@ -85,4 +85,3 @@ frontend/src-tauri/staged/
 *.bin
 *.onnx
 tools/whisper_shim/build/
-

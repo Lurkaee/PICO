@@ -58,7 +58,11 @@ class WhisperRuntimeError(WhisperPrototypeError):
     """Raised when native runtime initialization or inference fails."""
 
 
-def verify_model_artifact(model_path: Path | str) -> dict[str, Any]:
+def verify_model_artifact(
+    model_path: Path | str,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
     """Verify model artifact exists and matches its expected size and SHA-256 digest.
 
     Returns:
@@ -79,16 +83,29 @@ def verify_model_artifact(model_path: Path | str) -> dict[str, Any]:
             h.update(chunk)
     actual_sha = h.hexdigest().lower()
 
-    if filename in CANONICAL_MODELS:
-        expected = CANONICAL_MODELS[filename]
-        if actual_size != expected["size"]:
-            raise WhisperModelVerificationError(
-                f"Model size mismatch for '{filename}': actual {actual_size} != expected {expected['size']} bytes."
-            )
-        if actual_sha != expected["sha256"]:
-            raise WhisperModelVerificationError(
-                f"Cryptographic digest mismatch for '{filename}': actual {actual_sha} != expected {expected['sha256']}."
-            )
+    # Determine trusted metadata
+    target_size: int | None = None
+    target_sha: str | None = None
+
+    if expected_size is not None and expected_sha256 is not None:
+        target_size = expected_size
+        target_sha = expected_sha256.lower().strip()
+    elif filename in CANONICAL_MODELS:
+        target_size = CANONICAL_MODELS[filename]["size"]
+        target_sha = CANONICAL_MODELS[filename]["sha256"]
+    else:
+        raise WhisperModelVerificationError(
+            f"Unknown model artifact '{filename}' cannot be verified without explicit trusted expected size and SHA-256 metadata."
+        )
+
+    if actual_size != target_size:
+        raise WhisperModelVerificationError(
+            f"Model size mismatch for '{filename}': actual {actual_size} != expected {target_size} bytes."
+        )
+    if actual_sha != target_sha:
+        raise WhisperModelVerificationError(
+            f"Cryptographic digest mismatch for '{filename}': actual {actual_sha} != expected {target_sha}."
+        )
 
     return {
         "path": str(p),
@@ -107,12 +124,22 @@ class PicoWhisperEngine:
         model_path: Path | str,
         runtime_dir: Path | str | None = None,
         verify_digest: bool = True,
+        expected_size: int | None = None,
+        expected_sha256: str | None = None,
+        n_threads: int = 4,
     ) -> None:
+        if n_threads < 1 or n_threads > 4:
+            raise ValueError(f"n_threads must be strictly between 1 and 4 (inclusive), got {n_threads}.")
+        self.default_threads = n_threads
         self.model_path = Path(model_path)
         self.runtime_dir = Path(runtime_dir) if runtime_dir else DEFAULT_RUNTIME_DIR
 
         if verify_digest:
-            self.model_meta = verify_model_artifact(self.model_path)
+            self.model_meta = verify_model_artifact(
+                self.model_path,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+            )
         else:
             if not self.model_path.is_file():
                 raise WhisperModelVerificationError(f"Model file not found: {self.model_path}")
@@ -193,6 +220,8 @@ class PicoWhisperEngine:
         """
         if self._ctx is None:
             raise WhisperRuntimeError("Context is closed or uninitialized.")
+        if n_threads < 1 or n_threads > 4:
+            raise ValueError(f"n_threads must be strictly between 1 and 4 (inclusive), got {n_threads}.")
 
         n_samples = len(samples)
         if n_samples == 0:
@@ -222,9 +251,14 @@ class PicoWhisperEngine:
             text = out_buf.value.decode("utf-8", errors="replace")
             return text, elapsed
         finally:
-            # In-place scrub temporary float array in memory
+            # Best-effort memory zeroization for application-owned mutable buffers:
+            # 1. In-place zeroize ctypes C float array
             for i in range(n_samples):
                 c_float_array[i] = 0.0
+            # 2. If caller passed a mutable list, zeroize elements
+            if isinstance(samples, list):
+                for i in range(len(samples)):
+                    samples[i] = 0.0
 
     def transcribe_pcm(
         self,
@@ -244,6 +278,9 @@ class PicoWhisperEngine:
 
         Returns (transcript_text, processing_seconds, audio_duration_seconds).
         """
+        if n_threads < 1 or n_threads > 4:
+            raise ValueError(f"n_threads must be strictly between 1 and 4 (inclusive), got {n_threads}.")
+
         with wave.open(io.BytesIO(bytes(wav_bytes)), "rb") as wf:
             channels = wf.getnchannels()
             sample_rate = wf.getframerate()
@@ -263,9 +300,17 @@ class PicoWhisperEngine:
 
         # Normalize int16 [-32768, 32767] to float32 [-1.0, 1.0]
         float_samples = [s / 32768.0 for s in int16_samples]
-
-        transcript, proc_time = self.transcribe_samples(float_samples, n_threads=n_threads)
-        return transcript, proc_time, duration
+        try:
+            transcript, proc_time = self.transcribe_samples(float_samples, n_threads=n_threads)
+            return transcript, proc_time, duration
+        finally:
+            # Best-effort scrub of intermediate mutable float list
+            for i in range(len(float_samples)):
+                float_samples[i] = 0.0
+            # If caller passed a mutable bytearray, zeroize it
+            if isinstance(wav_bytes, bytearray):
+                for i in range(len(wav_bytes)):
+                    wav_bytes[i] = 0
 
     def close(self) -> None:
         """Deterministic cleanup of native memory."""
