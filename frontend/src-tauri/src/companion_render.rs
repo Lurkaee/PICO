@@ -2264,16 +2264,10 @@ mod win32 {
         }
     }
 
-    fn show_native_context_menu(hwnd: HWND, ctx: &CompanionWindowContext) {
-        let status_text = ctx
-            .status_label
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| "Status: Unknown".to_string());
-
+    fn show_native_context_menu(hwnd: HWND, status_text: &str, app_handle: &tauri::AppHandle) {
         let to_wide =
             |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
-        let status_w = to_wide(&status_text);
+        let status_w = to_wide(status_text);
         let open_w = to_wide("Open PICO");
         let quit_w = to_wide("Quit PICO");
 
@@ -2316,19 +2310,18 @@ mod win32 {
 
         match selected_cmd {
             MENU_CMD_OPEN_PICO => {
-                crate::open_or_focus_command_center(&ctx.app_handle);
+                crate::open_or_focus_command_center(app_handle);
             }
             MENU_CMD_QUIT_PICO => {
-                if let Some(lc) = ctx
-                    .app_handle
-                    .try_state::<crate::window_lifecycle::CommandCenterLifecycle>()
+                if let Some(lc) =
+                    app_handle.try_state::<crate::window_lifecycle::CommandCenterLifecycle>()
                 {
                     lc.mark_shutting_down();
                 }
-                if let Some(state) = ctx.app_handle.try_state::<crate::SupervisorState>() {
+                if let Some(state) = app_handle.try_state::<crate::SupervisorState>() {
                     state.shutdown();
                 }
-                ctx.app_handle.exit(0);
+                app_handle.exit(0);
             }
             _ => {}
         }
@@ -2403,70 +2396,120 @@ mod win32 {
                         ctx.down_x = x;
                         ctx.down_y = y;
                         ctx.animation.set_interactive_reaction(true);
-                        SetCapture(hwnd);
                         invalidate_eyes_only(hwnd, ctx);
                     }
+                    SetCapture(hwnd);
                     UpdateWindow(hwnd);
                     0
                 }
                 WM_MOUSEMOVE => {
-                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
-                    if ctx.pressing {
-                        let (x, y) = client_coords(lparam);
-                        let dx = (x - ctx.down_x).abs();
-                        let dy = (y - ctx.down_y).abs();
-                        let drag_cx = GetSystemMetrics(SM_CXDRAG).max(4);
-                        let drag_cy = GetSystemMetrics(SM_CYDRAG).max(4);
-                        if dx >= drag_cx || dy >= drag_cy {
-                            ctx.pressing = false;
-                            ctx.animation.set_interactive_reaction(false);
-                            ctx.reconcile_timers(hwnd);
-                            ReleaseCapture();
-                            let mut screen_pt = POINT::default();
-                            let _ = GetCursorPos(&mut screen_pt);
-                            let nc_lparam = ((screen_pt.y as i16 as u16 as isize) << 16)
-                                | (screen_pt.x as i16 as u16 as isize);
-                            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, nc_lparam);
-                            return 0;
+                    let drag_breakout = {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        if ctx.pressing {
+                            let (x, y) = client_coords(lparam);
+                            let dx = (x - ctx.down_x).abs();
+                            let dy = (y - ctx.down_y).abs();
+                            let drag_cx = GetSystemMetrics(SM_CXDRAG).max(4);
+                            let drag_cy = GetSystemMetrics(SM_CYDRAG).max(4);
+                            if dx >= drag_cx || dy >= drag_cy {
+                                ctx.pressing = false;
+                                ctx.animation.set_interactive_reaction(false);
+                                ctx.reconcile_timers(hwnd);
+                                invalidate_eyes_only(hwnd, ctx);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
                         }
+                    };
+
+                    if drag_breakout {
+                        // Scope has closed: all mutable borrows of CompanionWindowContext have ended.
+                        // ReleaseCapture() will synchronously dispatch WM_CAPTURECHANGED, which can
+                        // re-enter companion_subclass_proc and safely borrow its own mutable context.
+                        ReleaseCapture();
+                        let mut screen_pt = POINT::default();
+                        let _ = GetCursorPos(&mut screen_pt);
+                        let nc_lparam = ((screen_pt.y as i16 as u16 as isize) << 16)
+                            | (screen_pt.x as i16 as u16 as isize);
+                        SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, nc_lparam);
+                        return 0;
                     }
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_LBUTTONUP => {
-                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
-                    if ctx.pressing {
-                        let (x, y) = client_coords(lparam);
-                        ctx.pressing = false;
-                        ctx.animation.set_interactive_reaction(false);
-                        ctx.reconcile_timers(hwnd);
+                    let action = {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        if ctx.pressing {
+                            let (x, y) = client_coords(lparam);
+                            ctx.pressing = false;
+                            ctx.animation.set_interactive_reaction(false);
+                            ctx.reconcile_timers(hwnd);
+                            invalidate_eyes_only(hwnd, ctx);
+
+                            let mut rc = RECT::default();
+                            let is_click_zone = if GetClientRect(hwnd, &mut rc) != 0 {
+                                let geom = EyeGeometry::compute(
+                                    rc.right - rc.left,
+                                    rc.bottom - rc.top,
+                                    ctx.dpi,
+                                );
+                                geom.is_in_eye_click_zone(x, y)
+                            } else {
+                                false
+                            };
+
+                            let handle = if is_click_zone {
+                                Some(ctx.app_handle.clone())
+                            } else {
+                                None
+                            };
+                            Some(handle)
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(maybe_handle) = action {
+                        // Scope has closed: all mutable borrows of CompanionWindowContext have ended.
+                        // ReleaseCapture() synchronously triggers WM_CAPTURECHANGED to hwnd.
+                        // Re-entrant invocation of companion_subclass_proc acquires its own mutable
+                        // context with zero aliasing or undefined behavior.
                         ReleaseCapture();
-                        invalidate_eyes_only(hwnd, ctx);
-                        let mut rc = RECT::default();
-                        if GetClientRect(hwnd, &mut rc) != 0 {
-                            let geom = EyeGeometry::compute(
-                                rc.right - rc.left,
-                                rc.bottom - rc.top,
-                                ctx.dpi,
-                            );
-                            if geom.is_in_eye_click_zone(x, y) {
-                                crate::open_or_focus_command_center(&ctx.app_handle);
-                            }
+
+                        if let Some(app_handle) = maybe_handle {
+                            crate::open_or_focus_command_center(&app_handle);
                         }
                         return 0;
                     }
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_RBUTTONUP => {
-                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
-                    show_native_context_menu(hwnd, ctx);
+                    let (status_text, app_handle) = {
+                        let ctx = &*(dw_ref_data as *const CompanionWindowContext);
+                        let text = ctx
+                            .status_label
+                            .lock()
+                            .map(|g| g.clone())
+                            .unwrap_or_else(|_| "Status: Unknown".to_string());
+                        (text, ctx.app_handle.clone())
+                    };
+                    show_native_context_menu(hwnd, &status_text, &app_handle);
                     0
                 }
                 WM_CAPTURECHANGED => {
-                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
-                    ctx.pressing = false;
-                    ctx.animation.set_interactive_reaction(false);
-                    ctx.reconcile_timers(hwnd);
-                    invalidate_eyes_only(hwnd, ctx);
+                    {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        let was_active = ctx.pressing || ctx.animation.interactive_reaction;
+                        ctx.pressing = false;
+                        ctx.animation.set_interactive_reaction(false);
+                        ctx.reconcile_timers(hwnd);
+                        if was_active {
+                            invalidate_eyes_only(hwnd, ctx);
+                        }
+                    }
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_TIMER => {
@@ -3038,5 +3081,58 @@ mod tests {
         anim.set_interactive_reaction(false);
         assert_eq!(anim.expression, CompanionExpression::Error);
         assert_eq!(anim.effective_expression(), CompanionExpression::Concerned);
+    }
+
+    #[test]
+    fn test_capture_release_reentrancy_state_and_timer_invariants() {
+        // 1. Initial Online idle state
+        let mut anim = AnimationState::new(CompanionExpression::Online);
+        assert_eq!(anim.expression, CompanionExpression::Online);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        let initial_sched = anim.timer_schedule();
+        assert!(initial_sched.want_blink_schedule);
+        assert!(!initial_sched.want_blink_frames);
+
+        // 2. Mouse down: tactile Happy reaction triggers and clears active blink frame
+        anim.start_blink();
+        assert!(anim.blink_frame_idx.is_some());
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        assert_eq!(
+            anim.blink_frame_idx, None,
+            "Happy reaction must clear in-progress blink"
+        );
+        let pressing_sched = anim.timer_schedule();
+        assert!(!pressing_sched.want_blink_schedule);
+        assert!(!pressing_sched.want_blink_frames);
+
+        // 3. Normal mouse up: reaction cleared, timers reconciled
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        let released_sched = anim.timer_schedule();
+        assert!(released_sched.want_blink_schedule);
+        assert!(!released_sched.want_blink_frames);
+
+        // 4. Re-entrant WM_CAPTURECHANGED arrival:
+        // Calling set_interactive_reaction(false) a second time simulates re-entrant
+        // WM_CAPTURECHANGED dispatch after ReleaseCapture(). Must be strictly idempotent.
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        let reentrant_sched = anim.timer_schedule();
+        assert_eq!(released_sched, reentrant_sched);
+        assert_eq!(
+            anim.expression,
+            CompanionExpression::Online,
+            "Authoritative state must not change"
+        );
+
+        // 5. Unexpected capture loss (e.g. Alt+Tab or system dialog during click)
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        // Direct WM_CAPTURECHANGED clears reaction without WM_LBUTTONUP
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        assert!(anim.timer_schedule().want_blink_schedule);
+        assert_eq!(anim.expression, CompanionExpression::Online);
     }
 }
