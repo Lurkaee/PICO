@@ -1,0 +1,286 @@
+"""PICO Whisper Qualification Prototype (Milestone P11.3.2 Stage 2).
+
+Provides a self-contained Python wrapper for the native C-ABI whisper.cpp shim.
+This is a benchmark and qualification prototype ONLY. It does NOT alter or
+activate the production LocalWhisperSpeechToTextAdapter.
+
+Invariants:
+1. Validates model file size and cryptographic SHA-256 digest before initialization.
+2. In-memory PCM float conversion with best-effort buffer zeroization.
+3. Zero raw-audio disk persistence.
+4. Fail-closed error handling without synthetic production fallback.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import hashlib
+import io
+import logging
+import os
+import struct
+import time
+import wave
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Known canonical model registry (ADR 0005)
+CANONICAL_MODELS: dict[str, dict[str, Any]] = {
+    "ggml-base.en-q8_0.bin": {
+        "size": 81781811,
+        "sha256": "a4d4a0768075e13cfd7e19df3ae2dbc4a68d37d36a7dad45e8410c9a34f8c87e",
+    },
+    "ggml-tiny.en-q5_1.bin": {
+        "size": 32166155,
+        "sha256": "c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b",
+    },
+    "ggml-base.en.bin": {
+        "size": 147964211,
+        "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+    },
+}
+
+DEFAULT_RUNTIME_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\PICO\runtime\bin"))
+DEFAULT_MODEL_DIR = Path(os.path.expandvars(r"%LOCALAPPDATA%\PICO\models\whisper"))
+
+
+class WhisperPrototypeError(Exception):
+    """Base exception for native whisper prototype operations."""
+
+
+class WhisperModelVerificationError(WhisperPrototypeError):
+    """Raised when model weight file is missing, truncated, or fails SHA-256 validation."""
+
+
+class WhisperRuntimeError(WhisperPrototypeError):
+    """Raised when native runtime initialization or inference fails."""
+
+
+def verify_model_artifact(model_path: Path | str) -> dict[str, Any]:
+    """Verify model artifact exists and matches its expected size and SHA-256 digest.
+
+    Returns:
+        dict with verification metadata.
+    Raises:
+        WhisperModelVerificationError if file is missing, corrupted, or unrecognized.
+    """
+    p = Path(model_path)
+    if not p.is_file():
+        raise WhisperModelVerificationError(f"Model file not found: {p}")
+
+    actual_size = p.stat().st_size
+    filename = p.name
+
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+    actual_sha = h.hexdigest().lower()
+
+    if filename in CANONICAL_MODELS:
+        expected = CANONICAL_MODELS[filename]
+        if actual_size != expected["size"]:
+            raise WhisperModelVerificationError(
+                f"Model size mismatch for '{filename}': actual {actual_size} != expected {expected['size']} bytes."
+            )
+        if actual_sha != expected["sha256"]:
+            raise WhisperModelVerificationError(
+                f"Cryptographic digest mismatch for '{filename}': actual {actual_sha} != expected {expected['sha256']}."
+            )
+
+    return {
+        "path": str(p),
+        "filename": filename,
+        "size_bytes": actual_size,
+        "sha256": actual_sha,
+        "is_canonical": filename in CANONICAL_MODELS,
+    }
+
+
+class PicoWhisperEngine:
+    """Opaque native C-ABI wrapper for whisper.cpp."""
+
+    def __init__(
+        self,
+        model_path: Path | str,
+        runtime_dir: Path | str | None = None,
+        verify_digest: bool = True,
+    ) -> None:
+        self.model_path = Path(model_path)
+        self.runtime_dir = Path(runtime_dir) if runtime_dir else DEFAULT_RUNTIME_DIR
+
+        if verify_digest:
+            self.model_meta = verify_model_artifact(self.model_path)
+        else:
+            if not self.model_path.is_file():
+                raise WhisperModelVerificationError(f"Model file not found: {self.model_path}")
+            self.model_meta = {"path": str(self.model_path)}
+
+        self._ctx: ctypes.c_void_p | None = None
+        self._lib = self._load_library()
+        self._init_context()
+
+    def _load_library(self) -> ctypes.CDLL:
+        shim_dll = self.runtime_dir / "pico_whisper_shim.dll"
+        if not shim_dll.is_file():
+            raise WhisperRuntimeError(
+                f"Native whisper shim DLL not found at: {shim_dll}. "
+                "Build and stage the runtime using tools/whisper_shim/build_shim.ps1."
+            )
+
+        if hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(str(self.runtime_dir))
+
+        try:
+            lib = ctypes.CDLL(str(shim_dll))
+        except Exception as exc:
+            raise WhisperRuntimeError(f"Failed to load native DLL '{shim_dll}': {exc}") from exc
+
+        # Set up C signatures
+        lib.pico_whisper_version.argtypes = []
+        lib.pico_whisper_version.restype = ctypes.c_char_p
+
+        lib.pico_whisper_system_info.argtypes = []
+        lib.pico_whisper_system_info.restype = ctypes.c_char_p
+
+        lib.pico_whisper_init.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+        lib.pico_whisper_init.restype = ctypes.c_int
+
+        lib.pico_whisper_transcribe.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        lib.pico_whisper_transcribe.restype = ctypes.c_int
+
+        lib.pico_whisper_free.argtypes = [ctypes.c_void_p]
+        lib.pico_whisper_free.restype = None
+
+        return lib
+
+    def _init_context(self) -> None:
+        ctx = ctypes.c_void_p()
+        path_bytes = str(self.model_path).encode("utf-8")
+        status = self._lib.pico_whisper_init(path_bytes, ctypes.byref(ctx))
+        if status != 0 or not ctx.value:
+            raise WhisperRuntimeError(f"Failed to initialize native whisper context (error code {status}).")
+        self._ctx = ctx
+
+    @property
+    def version(self) -> str:
+        ver = self._lib.pico_whisper_version()
+        return ver.decode("utf-8") if ver else "unknown"
+
+    @property
+    def system_info(self) -> str:
+        info = self._lib.pico_whisper_system_info()
+        return info.decode("utf-8") if info else ""
+
+    def transcribe_samples(
+        self,
+        samples: list[float] | tuple[float, ...] | Any,
+        n_threads: int = 4,
+    ) -> tuple[str, float]:
+        """Transcribe normalized float32 samples in RAM.
+
+        Returns (transcript_text, wall_clock_seconds).
+        """
+        if self._ctx is None:
+            raise WhisperRuntimeError("Context is closed or uninitialized.")
+
+        n_samples = len(samples)
+        if n_samples == 0:
+            return "", 0.0
+
+        c_float_array = (ctypes.c_float * n_samples)(*samples)
+        buf_size = 16384
+        out_buf = ctypes.create_string_buffer(buf_size)
+        out_len = ctypes.c_size_t()
+
+        t0 = time.perf_counter()
+        try:
+            status = self._lib.pico_whisper_transcribe(
+                self._ctx,
+                c_float_array,
+                n_samples,
+                n_threads,
+                out_buf,
+                buf_size,
+                ctypes.byref(out_len),
+            )
+            elapsed = time.perf_counter() - t0
+
+            if status != 0:
+                raise WhisperRuntimeError(f"Native transcription failed with error code {status}.")
+
+            text = out_buf.value.decode("utf-8", errors="replace")
+            return text, elapsed
+        finally:
+            # In-place scrub temporary float array in memory
+            for i in range(n_samples):
+                c_float_array[i] = 0.0
+
+    def transcribe_pcm(
+        self,
+        samples: list[float] | tuple[float, ...] | Any,
+        n_threads: int = 4,
+    ) -> str:
+        """Convenience method returning transcript text for normalized PCM float samples."""
+        text, _ = self.transcribe_samples(samples, n_threads=n_threads)
+        return text
+
+    def transcribe_wav_bytes(
+        self,
+        wav_bytes: bytes | bytearray,
+        n_threads: int = 4,
+    ) -> tuple[str, float, float]:
+        """Extract and transcribe 16 kHz 16-bit mono PCM from a WAV byte buffer.
+
+        Returns (transcript_text, processing_seconds, audio_duration_seconds).
+        """
+        with wave.open(io.BytesIO(bytes(wav_bytes)), "rb") as wf:
+            channels = wf.getnchannels()
+            sample_rate = wf.getframerate()
+            sampwidth = wf.getsampwidth()
+            n_frames = wf.getnframes()
+            raw_pcm = wf.readframes(n_frames)
+
+        if channels != 1 or sample_rate != 16000 or sampwidth != 2:
+            raise WhisperRuntimeError(
+                f"WAV payload non-compliant: channels={channels} (req 1), "
+                f"rate={sample_rate} (req 16000), width={sampwidth} (req 2)."
+            )
+
+        duration = n_frames / sample_rate
+        num_samples = n_frames
+        int16_samples = struct.unpack(f"<{num_samples}h", raw_pcm)
+
+        # Normalize int16 [-32768, 32767] to float32 [-1.0, 1.0]
+        float_samples = [s / 32768.0 for s in int16_samples]
+
+        transcript, proc_time = self.transcribe_samples(float_samples, n_threads=n_threads)
+        return transcript, proc_time, duration
+
+    def close(self) -> None:
+        """Deterministic cleanup of native memory."""
+        if self._ctx is not None:
+            self._lib.pico_whisper_free(self._ctx)
+            self._ctx = None
+
+    def __enter__(self) -> PicoWhisperEngine:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
