@@ -1,9 +1,9 @@
 # PICO — Native Expressive Eyes: Phase 1 Implementation Audit
 
-**Milestone:** P11.2.4.3 Native Expressive Companion Eyes  
-**Target:** Win32 GDI+ Subclass Companion Surface (`companion_render.rs`)  
-**Reference Model:** EMO Robot Eye Animation (Satya Badiger / LivingAI Emo)  
-**Date:** 2026-11-17  
+**Milestone:** P11.2.4.3 Native Expressive Companion Eyes
+**Target:** Win32 GDI+ Subclass Companion Surface (`companion_render.rs`)
+**Reference Model:** EMO Robot Eye Animation (Satya Badiger / LivingAI Emo)
+**Date:** 2026-11-17
 
 ---
 
@@ -11,7 +11,7 @@
 
 An independent audit of `origin/main` (`35fb574044146a81b7e0892224b89e6727282cb2`) and `frontend/src-tauri/src/companion_render.rs` was conducted to establish baseline capabilities, architectural constraints, and implementation boundaries before evolving PICO's companion eyes into an EMO-inspired character system.
 
-The audit confirms that the existing Win32 GDI+ subclassing architecture on the native HWND (`SetWindowSubclass` with ID `0x5049_434F_4559`) is solid, leak-free, zero-Chromium at idle, and meets the <100 MB idle memory budget (measured 32.52 MiB Working Set). 
+The audit confirms that the existing Win32 GDI+ subclassing architecture on the native HWND (`SetWindowSubclass` with ID `0x5049_434F_4559`) is solid, leak-free, zero-Chromium at idle, and meets the <100 MB idle memory budget (measured 32.52 MiB Working Set).
 
 However, current eye geometry is constrained to rigid pill capsules (`create_rounded_rect_path`), lacking the organic eyelid curvature, dynamic aperture, Bézier contours, expressive saccades, smiling cheek cuts, and micro-expressions that give EMO its lifelike character presence.
 

@@ -168,7 +168,7 @@ In Milestone P11.2.4.3, the native GDI+ renderer (`companion_render.rs`) was evo
 - **Tactile Interaction**: Integrated instant click feedback (`WM_LBUTTONDOWN` triggers joyful crescent `Happy` response before launching Command Center on `WM_LBUTTONUP`).
 - **Authoritative State Truthfulness**: Backend supervisor states (`Unmanaged`, `Starting`, `Verifying`, `Online`, `Offline`) remain strictly authoritative; mood variations (`Neutral`, `Attentive`, `Focused`, `Thinking`, `Curious`, `Happy`, `Confused`, `Concerned`, `Resting`, `WakingUp`) are purely presentation-layer mappings (`effective_expression()`).
 - **Resource Footprint Preservation**: Zero continuous 60 FPS polling loops (discrete one-shot timers only); timers suspended when minimized/hidden; idle memory footprint maintained at `~32.5 MiB` Working Set (`< 100 MB` budget).
-- **Verification Evidence**: All 13 unit tests passed (`companion_render::tests`); high-resolution visual evidence for all 10 expressions recorded in `docs/evaluation/screenshots/` and documented in `docs/evaluation/native-expressive-eyes-evolution.md`.
+- **Verification Evidence**: All 14 unit tests passed (`companion_render::tests`); high-resolution visual evidence for all 10 character expressions (`Neutral`, `Attentive`, `Focused`, `Thinking`, `Curious`, `Happy`, `Confused`, `Concerned`, `Resting`, `WakingUp`) plus dynamic blink transition recorded in `docs/evaluation/screenshots/` (11 PNG previews) and documented in `docs/evaluation/native-expressive-eyes-evolution.md`.
 
 ---
 

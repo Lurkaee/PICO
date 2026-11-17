@@ -90,14 +90,14 @@ pub const BLINK_SECONDARY_FRAMES: [f32; 4] = [0.50, 0.92, 0.30, 0.0];
 /// Calm and expressive gaze micro-offsets in normalized iris units.
 /// Cycled every 2.4s during Online state to create natural character saccades.
 pub const CALM_GAZE_OFFSETS: [(f32, f32); 8] = [
-    (0.0, 0.0),      // Step 0: Neutral center
-    (0.12, -0.02),   // Step 1: Gentle glance right
-    (0.0, 0.0),      // Step 2: Attentive center
-    (-0.14, -0.10),  // Step 3: Thoughtful glance up-left
-    (0.0, -0.03),    // Step 4: Alert forward
-    (-0.12, 0.02),   // Step 5: Gentle glance left
-    (0.0, 0.0),      // Step 6: Thinking center
-    (0.15, -0.08),   // Step 7: Curious glance up-right
+    (0.0, 0.0),     // Step 0: Neutral center
+    (0.12, -0.02),  // Step 1: Gentle glance right
+    (0.0, 0.0),     // Step 2: Attentive center
+    (-0.14, -0.10), // Step 3: Thoughtful glance up-left
+    (0.0, -0.03),   // Step 4: Alert forward
+    (-0.12, 0.02),  // Step 5: Gentle glance left
+    (0.0, 0.0),     // Step 6: Thinking center
+    (0.15, -0.08),  // Step 7: Curious glance up-right
 ];
 
 /// Computes deterministic non-identical blink intervals strictly within [3500, 6500] ms.
@@ -214,6 +214,9 @@ impl AnimationState {
     /// Sets or clears tactile interactive reaction (e.g. on mouse down/up).
     pub fn set_interactive_reaction(&mut self, active: bool) {
         self.interactive_reaction = active;
+        if active {
+            self.blink_frame_idx = None;
+        }
     }
 
     /// Resolves the effective presentation mood taking into account interactive reactions
@@ -1040,6 +1043,7 @@ mod win32 {
         fn IsWindowVisible(hwnd: HWND) -> BOOL;
         fn IsIconic(hwnd: HWND) -> BOOL;
         fn InvalidateRect(hwnd: HWND, lp_rect: *const RECT, b_erase: BOOL) -> BOOL;
+        fn UpdateWindow(hwnd: HWND) -> BOOL;
         fn PostMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> BOOL;
         fn SendMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
         fn SetTimer(
@@ -1171,13 +1175,7 @@ mod win32 {
             x4: f32,
             y4: f32,
         ) -> i32;
-        fn GdipAddPathLine(
-            path: *mut c_void,
-            x1: f32,
-            y1: f32,
-            x2: f32,
-            y2: f32,
-        ) -> i32;
+        fn GdipAddPathLine(path: *mut c_void, x1: f32, y1: f32, x2: f32, y2: f32) -> i32;
         fn GdipClosePathFigure(path: *mut c_void) -> i32;
         fn GdipFillPath(graphics: *mut c_void, brush: *mut c_void, path: *mut c_void) -> i32;
         fn GdipDrawPath(graphics: *mut c_void, pen: *mut c_void, path: *mut c_void) -> i32;
@@ -1619,8 +1617,6 @@ mod win32 {
         let half_h = h * 0.5;
         let eye_cy = cy + params.vertical_offset * base_h;
 
-        let cr = (w * params.corner_factor).min(half_h * 0.88).max(2.0);
-
         let slant_mag = params.brow_slant * half_h * 0.40;
         let (slant_left, slant_right) = if is_right_eye {
             (slant_mag, -slant_mag)
@@ -1631,6 +1627,13 @@ mod win32 {
         let upper_dome = params.upper_arch * half_h * 0.55;
         let cheek_lift = params.cheek_lift * half_h * 0.95;
         let cheek_arch = params.cheek_lift * half_h * 0.65;
+
+        let cheek_drop = cheek_lift;
+        let side_span = (2.0 * half_h - cheek_drop - slant_mag.abs()).max(4.0);
+        let cr = (w * params.corner_factor)
+            .min(half_h * 0.88)
+            .min(side_span * 0.44)
+            .max(2.0);
 
         let p_tl_x = cx - half_w;
         let p_tl_y = eye_cy - half_h + slant_left;
@@ -2004,10 +2007,8 @@ mod win32 {
                     }
 
                     let eff_expr = ctx.animation.effective_expression();
-                    let palette = palette_for_expression(
-                        eff_expr,
-                        ctx.animation.verifying_pulse_phase,
-                    );
+                    let palette =
+                        palette_for_expression(eff_expr, ctx.animation.verifying_pulse_phase);
                     let openness = ctx.animation.eye_openness();
                     let gaze = ctx.animation.gaze_offset();
 
@@ -2044,7 +2045,7 @@ mod win32 {
                     let dot_r = (2.4 * geom.dpi_scale).max(2.0);
                     let dot_x = geom.visor_x + geom.visor_w - (11.0 * geom.dpi_scale);
                     let dot_y = geom.visor_y + geom.visor_h - (10.0 * geom.dpi_scale);
-                    let dot_color = match eff_expr {
+                    let dot_color = match ctx.animation.expression {
                         CompanionExpression::Online
                         | CompanionExpression::Neutral
                         | CompanionExpression::Attentive
@@ -2129,14 +2130,7 @@ mod win32 {
             };
 
             let mut bits_ptr: *mut c_void = ptr::null_mut();
-            let hbm = CreateDIBSection(
-                mem_dc,
-                &bmi,
-                0,
-                &mut bits_ptr,
-                ptr::null_mut(),
-                0,
-            );
+            let hbm = CreateDIBSection(mem_dc, &bmi, 0, &mut bits_ptr, ptr::null_mut(), 0);
             if hbm.is_null() || bits_ptr.is_null() {
                 DeleteDC(mem_dc);
                 return Err("Failed to create DIB section".to_string());
@@ -2352,21 +2346,23 @@ mod win32 {
             if dw_ref_data == 0 {
                 return DefSubclassProc(hwnd, msg, wparam, lparam);
             }
-            let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
 
             match msg {
                 WM_ERASEBKGND => 1,
                 WM_PAINT => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     paint_companion(hwnd, ctx);
                     0
                 }
                 WM_APP_PICO_STATUS => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.sync_status();
                     ctx.reconcile_timers(hwnd);
                     InvalidateRect(hwnd, ptr::null(), 0);
                     0
                 }
                 WM_SHOWWINDOW => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.animation.visible = wparam != 0;
                     ctx.reconcile_timers(hwnd);
                     if ctx.animation.visible {
@@ -2375,6 +2371,7 @@ mod win32 {
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_SIZE => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.animation.minimized = wparam == SIZE_MINIMIZED;
                     ctx.dpi = GetDpiForWindow(hwnd);
                     ctx.reconcile_timers(hwnd);
@@ -2382,6 +2379,7 @@ mod win32 {
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_DPICHANGED => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.dpi = GetDpiForWindow(hwnd);
                     ctx.backbuffer = None;
                     InvalidateRect(hwnd, ptr::null(), 0);
@@ -2399,15 +2397,20 @@ mod win32 {
                 }
                 WM_LBUTTONDOWN => {
                     let (x, y) = client_coords(lparam);
-                    ctx.pressing = true;
-                    ctx.down_x = x;
-                    ctx.down_y = y;
-                    ctx.animation.set_interactive_reaction(true);
-                    SetCapture(hwnd);
-                    invalidate_eyes_only(hwnd, ctx);
+                    {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        ctx.pressing = true;
+                        ctx.down_x = x;
+                        ctx.down_y = y;
+                        ctx.animation.set_interactive_reaction(true);
+                        SetCapture(hwnd);
+                        invalidate_eyes_only(hwnd, ctx);
+                    }
+                    UpdateWindow(hwnd);
                     0
                 }
                 WM_MOUSEMOVE => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     if ctx.pressing {
                         let (x, y) = client_coords(lparam);
                         let dx = (x - ctx.down_x).abs();
@@ -2417,6 +2420,7 @@ mod win32 {
                         if dx >= drag_cx || dy >= drag_cy {
                             ctx.pressing = false;
                             ctx.animation.set_interactive_reaction(false);
+                            ctx.reconcile_timers(hwnd);
                             ReleaseCapture();
                             let mut screen_pt = POINT::default();
                             let _ = GetCursorPos(&mut screen_pt);
@@ -2429,10 +2433,12 @@ mod win32 {
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_LBUTTONUP => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     if ctx.pressing {
                         let (x, y) = client_coords(lparam);
                         ctx.pressing = false;
                         ctx.animation.set_interactive_reaction(false);
+                        ctx.reconcile_timers(hwnd);
                         ReleaseCapture();
                         invalidate_eyes_only(hwnd, ctx);
                         let mut rc = RECT::default();
@@ -2451,16 +2457,20 @@ mod win32 {
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_RBUTTONUP => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     show_native_context_menu(hwnd, ctx);
                     0
                 }
                 WM_CAPTURECHANGED => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.pressing = false;
                     ctx.animation.set_interactive_reaction(false);
+                    ctx.reconcile_timers(hwnd);
                     invalidate_eyes_only(hwnd, ctx);
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_TIMER => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     match wparam {
                         TIMER_BLINK_SCHEDULE_ID => {
                             KillTimer(hwnd, TIMER_BLINK_SCHEDULE_ID);
@@ -2489,10 +2499,15 @@ mod win32 {
                     0
                 }
                 WM_NCDESTROY => {
-                    ctx.kill_all_timers(hwnd);
-                    RemoveWindowSubclass(hwnd, companion_subclass_proc, u_id_subclass);
-                    if let Some(coord) = ctx.app_handle.try_state::<CompanionRenderCoordinator>() {
-                        coord.clear_hwnd();
+                    {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        ctx.kill_all_timers(hwnd);
+                        RemoveWindowSubclass(hwnd, companion_subclass_proc, u_id_subclass);
+                        if let Some(coord) =
+                            ctx.app_handle.try_state::<CompanionRenderCoordinator>()
+                        {
+                            coord.clear_hwnd();
+                        }
                     }
                     let boxed = Box::from_raw(dw_ref_data as *mut CompanionWindowContext);
                     drop(boxed);
@@ -2779,8 +2794,7 @@ mod tests {
         assert!(happy.cheek_lift >= 0.50);
 
         // Focused mood has inward brow slant and narrowed aperture
-        let focused_l =
-            contour_params_for_expression(CompanionExpression::Focused, 1.0, 3, false);
+        let focused_l = contour_params_for_expression(CompanionExpression::Focused, 1.0, 3, false);
         assert!(focused_l.brow_slant > 0.10);
         assert!(focused_l.height_scale < 1.0);
 
@@ -2790,18 +2804,15 @@ mod tests {
         assert!(concerned.brow_slant < -0.10);
 
         // Curious mood has subtle asymmetry between left and right eyes
-        let curious_l =
-            contour_params_for_expression(CompanionExpression::Curious, 1.0, 3, false);
-        let curious_r =
-            contour_params_for_expression(CompanionExpression::Curious, 1.0, 3, true);
+        let curious_l = contour_params_for_expression(CompanionExpression::Curious, 1.0, 3, false);
+        let curious_r = contour_params_for_expression(CompanionExpression::Curious, 1.0, 3, true);
         assert!(curious_l.width_scale > curious_r.width_scale);
         assert!(curious_l.upper_arch > curious_r.upper_arch);
 
         // Confused mood has opposite brow angles between left and right eyes
         let confused_l =
             contour_params_for_expression(CompanionExpression::Confused, 1.0, 3, false);
-        let confused_r =
-            contour_params_for_expression(CompanionExpression::Confused, 1.0, 3, true);
+        let confused_r = contour_params_for_expression(CompanionExpression::Confused, 1.0, 3, true);
         assert!(confused_l.brow_slant < 0.0);
         assert!(confused_r.brow_slant > 0.0);
     }
@@ -2810,16 +2821,8 @@ mod tests {
     fn test_gaze_saccade_bounds_and_coverage() {
         assert_eq!(CALM_GAZE_OFFSETS.len(), 8);
         for &(gx, gy) in &CALM_GAZE_OFFSETS {
-            assert!(
-                gx.abs() <= 0.25,
-                "Gaze X {} exceeds restrained bounds",
-                gx
-            );
-            assert!(
-                gy.abs() <= 0.20,
-                "Gaze Y {} exceeds restrained bounds",
-                gy
-            );
+            assert!(gx.abs() <= 0.25, "Gaze X {} exceeds restrained bounds", gx);
+            assert!(gy.abs() <= 0.20, "Gaze Y {} exceeds restrained bounds", gy);
         }
     }
 
@@ -2854,7 +2857,10 @@ mod tests {
             );
 
             // Error and Concerned use warm amber warning colors
-            if matches!(expr, CompanionExpression::Error | CompanionExpression::Concerned) {
+            if matches!(
+                expr,
+                CompanionExpression::Error | CompanionExpression::Concerned
+            ) {
                 assert_eq!(
                     p.rim_argb & 0x00FF_0000,
                     0x00F5_0000,
@@ -2888,35 +2894,149 @@ mod tests {
             .find(|p| p.exists())
             .unwrap_or_else(|| PathBuf::from("docs/evaluation/screenshots"));
 
-        let _ = fs::create_dir_all(&target_dir);
+        let export_files = std::env::var("PICO_EXPORT_SCREENSHOTS").is_ok();
+        if export_files {
+            fs::create_dir_all(&target_dir).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to create screenshot export directory {}: {}",
+                    target_dir.display(),
+                    e
+                )
+            });
+        }
 
         let cases = [
-            ("01_neutral", CompanionExpression::Neutral, false, 1.0, (0.0, 0.0), 3),
-            ("02_blink", CompanionExpression::Online, false, 0.35, (0.0, 0.0), 3),
-            ("03_focused_verifying", CompanionExpression::Focused, true, 0.86, (0.0, 0.0), 3),
-            ("04_waking_up_starting", CompanionExpression::WakingUp, false, 0.52, (0.0, 0.0), 1),
-            ("05_curious", CompanionExpression::Curious, false, 1.02, (0.16, -0.08), 3),
-            ("06_attentive", CompanionExpression::Attentive, false, 1.08, (0.0, -0.03), 3),
-            ("07_happy", CompanionExpression::Happy, false, 0.80, (0.0, -0.04), 3),
-            ("08_confused", CompanionExpression::Confused, false, 0.94, (-0.08, 0.04), 3),
-            ("09_concerned_error", CompanionExpression::Concerned, false, 0.68, (0.0, 0.0), 3),
-            ("10_resting", CompanionExpression::Resting, false, 0.0, (0.0, 0.0), 3),
+            (
+                "01_neutral",
+                CompanionExpression::Neutral,
+                false,
+                1.0,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "02_blink",
+                CompanionExpression::Online,
+                false,
+                0.35,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "03_focused_verifying",
+                CompanionExpression::Focused,
+                true,
+                0.86,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "04_waking_up_starting",
+                CompanionExpression::WakingUp,
+                false,
+                0.52,
+                (0.0, 0.0),
+                1,
+            ),
+            (
+                "05_curious",
+                CompanionExpression::Curious,
+                false,
+                1.02,
+                (0.16, -0.08),
+                3,
+            ),
+            (
+                "06_attentive",
+                CompanionExpression::Attentive,
+                false,
+                1.08,
+                (0.0, -0.03),
+                3,
+            ),
+            (
+                "07_happy",
+                CompanionExpression::Happy,
+                false,
+                0.80,
+                (0.0, -0.04),
+                3,
+            ),
+            (
+                "08_confused",
+                CompanionExpression::Confused,
+                false,
+                0.94,
+                (-0.08, 0.04),
+                3,
+            ),
+            (
+                "09_concerned_error",
+                CompanionExpression::Concerned,
+                false,
+                0.68,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "10_resting",
+                CompanionExpression::Resting,
+                false,
+                0.0,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "11_thinking",
+                CompanionExpression::Thinking,
+                false,
+                0.88,
+                (-0.14, -0.10),
+                3,
+            ),
         ];
 
-        let export_files = std::env::var("PICO_EXPORT_SCREENSHOTS").is_ok();
         for (name, expr, pulse, openness, gaze, step) in cases {
-            let bmp_bytes = win32::render_companion_to_bmp(
-                240, 120, 96, expr, pulse, openness, gaze, step,
-            )
-            .expect("Render to BMP must succeed");
+            let bmp_bytes =
+                win32::render_companion_to_bmp(240, 120, 96, expr, pulse, openness, gaze, step)
+                    .expect("Render to BMP must succeed");
 
             assert!(!bmp_bytes.is_empty());
             assert_eq!(&bmp_bytes[0..2], b"BM");
 
             if export_files {
                 let out_file = target_dir.join(format!("{}.bmp", name));
-                let _ = fs::write(&out_file, &bmp_bytes);
+                fs::write(&out_file, &bmp_bytes).unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to write screenshot export file {}: {}",
+                        out_file.display(),
+                        e
+                    )
+                });
+                assert!(
+                    out_file.exists(),
+                    "Exported screenshot file {} does not exist after writing",
+                    out_file.display()
+                );
             }
         }
+    }
+
+    #[test]
+    fn test_status_dot_reflects_authoritative_state_not_interactive_reaction() {
+        let mut anim = AnimationState::new(CompanionExpression::Error);
+        assert_eq!(anim.expression, CompanionExpression::Error);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Concerned);
+
+        // Click-induced Happy reaction
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        // Authoritative expression remains unchanged
+        assert_eq!(anim.expression, CompanionExpression::Error);
+
+        // Clear interaction
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.expression, CompanionExpression::Error);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Concerned);
     }
 }
