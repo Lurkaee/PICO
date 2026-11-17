@@ -17,6 +17,7 @@ import asyncio
 import ctypes
 import os
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -28,7 +29,11 @@ from tools.bench.voice_bench import (
     calculate_cer,
     calculate_wer,
     compute_levenshtein_ops,
+    evaluate_gate_04,
+    evaluate_gate_05,
+    format_metric_pct,
     normalize_text,
+    render_markdown_report,
     verify_fail_closed_behavior,
 )
 from tools.bench.whisper_prototype import (
@@ -146,6 +151,8 @@ class TestMemoryZeroizationMocked:
         """Verifies that both the passed float list and C float array are zeroed on success."""
         engine = PicoWhisperEngine.__new__(PicoWhisperEngine)
         engine._ctx = ctypes.c_void_p(9999)
+        engine._lock = threading.RLock()
+        engine.default_threads = 4
 
         retained_c_array = None
 
@@ -178,6 +185,8 @@ class TestMemoryZeroizationMocked:
         """Verifies that buffers are zeroized even when native inference returns an error."""
         engine = PicoWhisperEngine.__new__(PicoWhisperEngine)
         engine._ctx = ctypes.c_void_p(9999)
+        engine._lock = threading.RLock()
+        engine.default_threads = 4
 
         retained_c_array = None
 
@@ -336,3 +345,332 @@ class TestNativeEngineIntegration:
             assert isinstance(text, str)
 
         assert engine._ctx is None
+
+
+class TestGate04Evaluation:
+    """Verifies GATE-VOICE-04 (Single-Model GPU VRAM & Ollama Residency)."""
+
+    def test_gate_04_pass_with_resident_llm(self):
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_readings_valid=True,
+            ollama_resident=True,
+            ollama_info="running qwen3.5:2b",
+            vram_initial_mb=1000,
+            max_vram_observed_mb=1000,
+            vram_final_mb=1000,
+            vram_observations_count=10,
+        )
+        assert status == "PASS"
+        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident" in text
+
+    def test_gate_04_not_run_without_resident_llm(self):
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_readings_valid=True,
+            ollama_resident=False,
+            ollama_info="Ollama offline",
+            vram_initial_mb=1000,
+            max_vram_observed_mb=1000,
+            vram_final_mb=1000,
+            vram_observations_count=10,
+        )
+        assert status == "NOT RUN"
+        assert "CPU isolation component PASS" in text
+        assert "Single-model residency qualification NOT RUN" in text
+
+    def test_gate_04_fail_on_max_vram_increase_returning_to_baseline(self):
+        # Initial 1000, peak 1025, final 1000 (final delta is 0, but max delta is 25 > 0)
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=25,
+            vram_readings_valid=True,
+            ollama_resident=True,
+            ollama_info="running qwen3.5:2b",
+            vram_initial_mb=1000,
+            max_vram_observed_mb=1025,
+            vram_final_mb=1000,
+            vram_observations_count=10,
+        )
+        assert status == "FAIL"
+        assert "Maximum observed VRAM Delta = 25 MiB (exceeds 0 MiB budget" in text
+
+    def test_gate_04_not_run_on_missing_telemetry(self):
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=None,
+            vram_readings_valid=False,
+            ollama_resident=True,
+            ollama_info="running qwen3.5:2b",
+        )
+        assert status == "NOT RUN"
+        assert "GPU VRAM telemetry unavailable" in text
+
+
+class TestGate05Evaluation:
+    """Verifies GATE-VOICE-05 (System RAM Ceiling & Available RAM) boundary thresholds."""
+
+    def test_both_thresholds_met_passes(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=2000.0,
+            private_usage_mb=700.0,
+        )
+        assert status == "PASS"
+        assert "Peak Working Set: 300.0 MB (< 450.0 MB)" in text
+
+    def test_working_set_boundary_below_passes(self):
+        status, _ = evaluate_gate_05(
+            peak_working_set_mb=449.9,
+            min_available_ram_mb=2000.0,
+        )
+        assert status == "PASS"
+
+    def test_working_set_boundary_exact_fails(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=450.0,
+            min_available_ram_mb=2000.0,
+        )
+        assert status == "FAIL"
+        assert "Peak Working Set 450.0 MB >= 450.0 MB" in text
+
+    def test_working_set_boundary_above_fails(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=450.1,
+            min_available_ram_mb=2000.0,
+        )
+        assert status == "FAIL"
+        assert "Peak Working Set 450.1 MB >= 450.0 MB" in text
+
+    def test_available_ram_boundary_below_fails(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=1535.9,
+        )
+        assert status == "FAIL"
+        assert "Min Available System RAM 1535.9 MB <= 1536.0 MB" in text
+
+    def test_available_ram_boundary_exact_fails(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=1536.0,
+        )
+        assert status == "FAIL"
+        assert "Min Available System RAM 1536.0 MB <= 1536.0 MB" in text
+
+    def test_available_ram_boundary_above_passes(self):
+        status, _ = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=1536.1,
+        )
+        assert status == "PASS"
+
+    def test_both_violated_fails_with_both_reasons(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=500.0,
+            min_available_ram_mb=1000.0,
+        )
+        assert status == "FAIL"
+        assert "Peak Working Set 500.0 MB >= 450.0 MB" in text
+        assert "Min Available System RAM 1000.0 MB <= 1536.0 MB" in text
+
+    def test_missing_telemetry_not_run(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=None,
+            min_available_ram_mb=None,
+        )
+        assert status == "NOT RUN"
+        assert "Required process or system RAM monitoring could not be completed" in text
+
+
+class TestThreadDefaultsAndResolution:
+    """Verifies that omitted n_threads parameter resolves to engine.default_threads."""
+
+    def test_default_thread_resolution(self):
+        mock_lib = MagicMock()
+        mock_lib.pico_whisper_init.return_value = 0
+        mock_lib.pico_whisper_transcribe.return_value = 0
+
+        engine = PicoWhisperEngine.__new__(PicoWhisperEngine)
+        engine.default_threads = 1
+        engine._lock = threading.RLock()
+        engine._lib = mock_lib
+        engine._ctx = ctypes.c_void_p(0x1234)
+
+        # Call transcribe_samples without n_threads (should resolve to 1)
+        engine.transcribe_samples([0.0] * 10)
+        assert mock_lib.pico_whisper_transcribe.call_count == 1
+        call_args = mock_lib.pico_whisper_transcribe.call_args[0]
+        # Signature: (ctx, samples, n_samples, n_threads, out_buf, buf_size, out_len)
+        assert call_args[3] == 1
+
+        # Call with explicit override
+        engine.transcribe_samples([0.0] * 10, n_threads=3)
+        call_args_override = mock_lib.pico_whisper_transcribe.call_args[0]
+        assert call_args_override[3] == 3
+
+        # Invalid overrides
+        with pytest.raises(ValueError, match="strictly between 1 and 4"):
+            engine.transcribe_samples([0.0] * 10, n_threads=0)
+        with pytest.raises(ValueError, match="strictly between 1 and 4"):
+            engine.transcribe_samples([0.0] * 10, n_threads=5)
+
+
+class TestContextLifetimeConcurrency:
+    """Verifies that native context lifetime is serialized against concurrent execution and close()."""
+
+    def test_transcription_blocked_in_native_call_blocks_close(self):
+        import time
+
+        mock_lib = MagicMock()
+        mock_lib.pico_whisper_init.return_value = 0
+
+        in_native = threading.Event()
+        can_finish = threading.Event()
+        close_completed = threading.Event()
+
+        def slow_transcribe(ctx, c_samples, n_samples, threads, out_buf, buf_size, out_len):
+            in_native.set()
+            can_finish.wait(timeout=5.0)
+            return 0
+
+        mock_lib.pico_whisper_transcribe.side_effect = slow_transcribe
+
+        engine = PicoWhisperEngine.__new__(PicoWhisperEngine)
+        engine.default_threads = 2
+        engine._lock = threading.RLock()
+        engine._lib = mock_lib
+        engine._ctx = ctypes.c_void_p(0xABCD)
+
+        # Thread 1: Transcribes
+        def worker_transcribe():
+            engine.transcribe_samples([0.0] * 10)
+
+        t1 = threading.Thread(target=worker_transcribe)
+        t1.start()
+
+        # Wait until thread 1 is actively inside the native call
+        assert in_native.wait(timeout=2.0) is True
+
+        # Thread 2: Attempts close() while transcription is in-flight
+        def worker_close():
+            engine.close()
+            close_completed.set()
+
+        t2 = threading.Thread(target=worker_close)
+        t2.start()
+
+        # close() should NOT complete yet because thread 1 holds engine._lock
+        time.sleep(0.1)
+        assert close_completed.is_set() is False
+
+        # Release thread 1
+        can_finish.set()
+        t1.join(timeout=2.0)
+        t2.join(timeout=2.0)
+
+        assert close_completed.is_set() is True
+        assert engine._ctx is None
+        assert mock_lib.pico_whisper_free.call_count == 1
+        assert mock_lib.pico_whisper_free.call_args[0][0].value == 0xABCD
+
+    def test_transcription_after_close_raises_runtime_error(self):
+        mock_lib = MagicMock()
+        engine = PicoWhisperEngine.__new__(PicoWhisperEngine)
+        engine.default_threads = 2
+        engine._lock = threading.RLock()
+        engine._lib = mock_lib
+        engine._ctx = None
+
+        with pytest.raises(WhisperRuntimeError, match="Context is closed or uninitialized"):
+            engine.transcribe_samples([0.0] * 10)
+
+    def test_repeated_close_is_safe_and_idempotent(self):
+        mock_lib = MagicMock()
+        engine = PicoWhisperEngine.__new__(PicoWhisperEngine)
+        engine.default_threads = 2
+        engine._lock = threading.RLock()
+        engine._lib = mock_lib
+        engine._ctx = ctypes.c_void_p(0x5678)
+
+        engine.close()
+        assert engine._ctx is None
+        assert mock_lib.pico_whisper_free.call_count == 1
+
+        # Second close should be a no-op
+        engine.close()
+        assert mock_lib.pico_whisper_free.call_count == 1
+
+
+class TestReportRobustness:
+    """Verifies that benchmark reporting does not crash under missing or partial corpus conditions."""
+
+    def test_format_metric_pct(self):
+        assert format_metric_pct(None) == "N/A"
+        assert format_metric_pct(0.0) == "0.0%"
+        assert format_metric_pct(0.12345) == "12.35%"
+
+    def test_render_report_with_real_speech_only_corpus(self):
+        report = {
+            "timestamp": "2026-11-18T00:00:00Z",
+            "host": {
+                "processor": "Intel x64",
+                "cpu_topology": "8 cores",
+                "cpu_threads_dedicated": 4,
+            },
+            "runtime": {"version": "v1.9.5"},
+            "model": {"filename": "model.bin", "size_bytes": 1000, "sha256": "abcdef"},
+            "gates": {
+                "GATE-VOICE-01": {"name": "STT Latency", "threshold": "<= 1.5s", "measured": "P50=1.1s", "status": "PASS"},
+            },
+            "results": [
+                {
+                    "filename": "real1.wav",
+                    "type": "real_speech",
+                    "audio_duration_seconds": 5.0,
+                    "p50_latency_seconds": 1.1,
+                    "p90_latency_seconds": 1.2,
+                    "p95_latency_seconds": 1.2,
+                    "max_latency_seconds": 1.3,
+                    "rtf_p50": 0.22,
+                    "wer": 0.05,
+                    "cer": 0.02,
+                    "emitted_transcript": "hello world",
+                }
+            ],
+            "summary": {
+                "real_speech_aggregate_wer": 0.05,
+                "real_speech_macro_wer": 0.05,
+                "real_speech_macro_cer": 0.02,
+                "smoke_commands_aggregate_wer": None,  # Absent smoke commands!
+                "smoke_commands_macro_wer": None,
+                "cold_init_seconds": 0.2,
+                "peak_working_set_mb": 300.0,
+                "avg_rtf_p50": 0.22,
+            },
+        }
+        md = render_markdown_report(report)
+        assert "Synthetic Commands Smoke WER**: N/A" in md
+        assert "Real Speech Aggregate WER**: 5.0%" in md
+
+    def test_render_report_with_synthetic_only_corpus(self):
+        report = {
+            "timestamp": "2026-11-18T00:00:00Z",
+            "host": {
+                "processor": "Intel x64",
+                "cpu_topology": "8 cores",
+                "cpu_threads_dedicated": 4,
+            },
+            "runtime": {"version": "v1.9.5"},
+            "model": {"filename": "model.bin", "size_bytes": 1000, "sha256": "abcdef"},
+            "gates": {},
+            "results": [],
+            "summary": {
+                "real_speech_aggregate_wer": None,  # Absent real speech!
+                "real_speech_macro_wer": None,
+                "real_speech_macro_cer": None,
+                "smoke_commands_aggregate_wer": 0.0,
+                "smoke_commands_macro_wer": 0.0,
+            },
+        }
+        md = render_markdown_report(report)
+        assert "Real Speech Aggregate WER**: N/A" in md
+        assert "Synthetic Commands Smoke WER**: 0.0%" in md

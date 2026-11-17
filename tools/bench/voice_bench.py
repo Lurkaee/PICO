@@ -393,6 +393,119 @@ def verify_fail_closed_behavior(runtime_dir: Path) -> dict[str, Any]:
     }
 
 
+def format_metric_pct(value: float | None, precision: int = 2) -> str:
+    """Format numeric float as percentage string or 'N/A' if None."""
+    if value is None:
+        return "N/A"
+    return f"{round(value * 100, precision)}%"
+
+
+def evaluate_gate_04(
+    vram_max_delta_mb: float | None,
+    vram_readings_valid: bool,
+    ollama_resident: bool,
+    ollama_info: str,
+    vram_initial_mb: float | None = None,
+    max_vram_observed_mb: float | None = None,
+    vram_final_mb: float | None = None,
+    vram_observations_count: int = 0,
+) -> tuple[str, str]:
+    """Evaluate GATE-VOICE-04: Single-Model GPU VRAM.
+
+    Requirements:
+    - Dedicated VRAM delta must be <= 0 MiB (zero additional VRAM consumed by STT).
+    - Uses maximum observed VRAM consumption over the entire interval, not just final - initial.
+    - Requires positive verification that target model 'qwen3.5:2b' is running in Ollama.
+    - When Ollama is not resident, records CPU isolation component PASS but marks GATE-VOICE-04 NOT RUN.
+    - Missing telemetry marks NOT RUN.
+
+    Returns (status, measured_text).
+    """
+    if vram_max_delta_mb is None or not vram_readings_valid or vram_initial_mb is None:
+        return (
+            "NOT RUN",
+            "GPU VRAM telemetry unavailable via nvidia-smi",
+        )
+
+    if vram_max_delta_mb > 0:
+        return (
+            "FAIL",
+            f"Maximum observed VRAM Delta = {vram_max_delta_mb} MiB (exceeds 0 MiB budget; "
+            f"initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
+            f"final={vram_final_mb} MiB across {vram_observations_count} observations)",
+        )
+
+    # vram_max_delta_mb <= 0 (zero additional VRAM consumed)
+    if ollama_resident:
+        return (
+            "PASS",
+            f"VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in Ollama ({ollama_info}). "
+            f"CPU-only isolation verified (initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
+            f"final={vram_final_mb} MiB across {vram_observations_count} observations).",
+        )
+    else:
+        return (
+            "NOT RUN",
+            f"CPU isolation component PASS (0 MiB additional VRAM; initial={vram_initial_mb} MiB, "
+            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+            f"Single-model residency qualification NOT RUN because target model 'qwen3.5:2b' was not resident ({ollama_info}).",
+        )
+
+
+def evaluate_gate_05(
+    peak_working_set_mb: float | None,
+    min_available_ram_mb: float | None,
+    private_usage_mb: float | None = None,
+    ws_threshold_mb: float = 450.0,
+    avail_threshold_mb: float = 1536.0,  # 1.5 GB
+) -> tuple[str, str]:
+    """Evaluate GATE-VOICE-05: System RAM Ceiling.
+
+    Requires BOTH:
+      1. Peak voice Working Set < 450.0 MB
+      2. Minimum Available System RAM > 1536.0 MB (1.5 GB)
+
+    Returns (status, measured_text).
+    """
+    if peak_working_set_mb is None or min_available_ram_mb is None:
+        if peak_working_set_mb is not None and peak_working_set_mb >= ws_threshold_mb:
+            return (
+                "FAIL",
+                f"Peak Working Set: {peak_working_set_mb} MB exceeds {ws_threshold_mb} MB ceiling "
+                "(system available RAM telemetry unavailable)",
+            )
+        if min_available_ram_mb is not None and min_available_ram_mb <= avail_threshold_mb:
+            return (
+                "FAIL",
+                f"Minimum Available RAM: {min_available_ram_mb} MB <= {avail_threshold_mb} MB (1.5 GB) threshold "
+                "(process memory telemetry unavailable)",
+            )
+        return "NOT RUN", "Required process or system RAM monitoring could not be completed"
+
+    ws_pass = peak_working_set_mb < ws_threshold_mb
+    avail_pass = min_available_ram_mb > avail_threshold_mb
+
+    priv_str = f", Private Bytes: {private_usage_mb} MB" if private_usage_mb is not None else ""
+    if ws_pass and avail_pass:
+        return (
+            "PASS",
+            f"Peak Working Set: {peak_working_set_mb} MB (< {ws_threshold_mb} MB), "
+            f"Min Available System RAM: {min_available_ram_mb} MB (> 1.5 GB){priv_str}",
+        )
+    else:
+        fail_reasons: list[str] = []
+        if not ws_pass:
+            fail_reasons.append(f"Peak Working Set {peak_working_set_mb} MB >= {ws_threshold_mb} MB")
+        if not avail_pass:
+            fail_reasons.append(
+                f"Min Available System RAM {min_available_ram_mb} MB <= {avail_threshold_mb} MB (1.5 GB threshold)"
+            )
+        return (
+            "FAIL",
+            "; ".join(fail_reasons) + priv_str,
+        )
+
+
 def run_benchmark(
     model_path: Path,
     runtime_dir: Path,
@@ -457,6 +570,10 @@ def run_benchmark(
     max_vram_observed = vram_initial if vram_initial is not None else 0
     min_vram_observed = vram_initial if vram_initial is not None else 999999
     vram_readings_valid = vram_initial is not None
+    vram_observations_count = 1 if vram_initial is not None else 0
+
+    min_avail_ram_observed = avail_sys_ram_init if avail_sys_ram_init is not None else 999999.0
+    avail_ram_readings_valid = avail_sys_ram_init is not None
 
     try:
         # 4. Iterate through Corpus
@@ -478,31 +595,67 @@ def run_benchmark(
             engine.transcribe_wav_bytes(wav_bytes, n_threads=n_threads)
 
             # Iteration timings
-            latencies: list[float] = []
+            e2e_latencies: list[float] = []
+            native_latencies: list[float] = []
+            wav_parse_latencies: list[float] = []
+            pcm_norm_latencies: list[float] = []
+            c_buf_latencies: list[float] = []
             durations: list[float] = []
             hypotheses: list[str] = []
 
             for _ in range(iterations):
+                # Continuous physical RAM sampling
+                _, avail_now = query_system_memory_mb()
+                if avail_now is not None:
+                    min_avail_ram_observed = min(min_avail_ram_observed, avail_now)
+                else:
+                    avail_ram_readings_valid = False
+
+                # Continuous GPU VRAM sampling
                 vram_now = query_gpu_vram_mb()
                 if vram_now is not None:
                     max_vram_observed = max(max_vram_observed, vram_now)
                     min_vram_observed = min(min_vram_observed, vram_now)
+                    vram_observations_count += 1
                 else:
                     vram_readings_valid = False
 
-                transcript, proc_time, audio_dur = engine.transcribe_wav_bytes(
-                    wav_bytes, n_threads=n_threads
+                transcript, e2e_proc_time, audio_dur, b_down = engine.transcribe_wav_bytes(
+                    wav_bytes, n_threads=n_threads, return_breakdown=True
                 )
-                latencies.append(proc_time)
+                e2e_latencies.append(e2e_proc_time)
+                native_latencies.append(b_down["native_inference_seconds"])
+                wav_parse_latencies.append(b_down["wav_parse_seconds"])
+                pcm_norm_latencies.append(b_down["pcm_norm_seconds"])
+                c_buf_latencies.append(b_down["c_buf_prep_seconds"])
                 durations.append(audio_dur)
                 hypotheses.append(transcript)
 
             audio_dur = durations[0]
-            latencies.sort()
-            p50 = latencies[len(latencies) // 2]
-            p90 = latencies[int(len(latencies) * 0.9)]
-            p95 = latencies[min(int(len(latencies) * 0.95), len(latencies) - 1)]
-            rtf_p50 = round(p50 / audio_dur, 4) if audio_dur > 0 else 0.0
+
+            # End-to-end percentiles
+            e2e_latencies.sort()
+            e2e_p50 = e2e_latencies[len(e2e_latencies) // 2]
+            e2e_p90 = e2e_latencies[int(len(e2e_latencies) * 0.9)]
+            e2e_p95 = e2e_latencies[min(int(len(e2e_latencies) * 0.95), len(e2e_latencies) - 1)]
+            e2e_max = e2e_latencies[-1]
+            e2e_min = e2e_latencies[0]
+            rtf_e2e_p50 = round(e2e_p50 / audio_dur, 4) if audio_dur > 0 else 0.0
+
+            # Native-only percentiles
+            native_latencies.sort()
+            native_p50 = native_latencies[len(native_latencies) // 2]
+            native_p90 = native_latencies[int(len(native_latencies) * 0.9)]
+            native_p95 = native_latencies[min(int(len(native_latencies) * 0.95), len(native_latencies) - 1)]
+            native_max = native_latencies[-1]
+            native_min = native_latencies[0]
+            rtf_native_p50 = round(native_p50 / audio_dur, 4) if audio_dur > 0 else 0.0
+
+            # Average breakdown components
+            avg_wav_parse_ms = round(sum(wav_parse_latencies) / len(wav_parse_latencies) * 1000, 2)
+            avg_pcm_norm_ms = round(sum(pcm_norm_latencies) / len(pcm_norm_latencies) * 1000, 2)
+            avg_c_buf_ms = round(sum(c_buf_latencies) / len(c_buf_latencies) * 1000, 2)
+            avg_native_ms = round(sum(native_latencies) / len(native_latencies) * 1000, 2)
 
             best_hypothesis = hypotheses[0]
 
@@ -529,12 +682,26 @@ def run_benchmark(
                 "description": sample_desc,
                 "audio_duration_seconds": round(audio_dur, 3),
                 "iterations": iterations,
-                "p50_latency_seconds": round(p50, 4),
-                "p90_latency_seconds": round(p90, 4),
-                "p95_latency_seconds": round(p95, 4),
-                "min_latency_seconds": round(latencies[0], 4),
-                "max_latency_seconds": round(latencies[-1], 4),
-                "rtf_p50": rtf_p50,
+                # End-to-end latency metrics (primary qualification criteria)
+                "p50_latency_seconds": round(e2e_p50, 4),
+                "p90_latency_seconds": round(e2e_p90, 4),
+                "p95_latency_seconds": round(e2e_p95, 4),
+                "min_latency_seconds": round(e2e_min, 4),
+                "max_latency_seconds": round(e2e_max, 4),
+                "rtf_p50": rtf_e2e_p50,
+                # Native inference latency metrics (separately preserved)
+                "native_p50_latency_seconds": round(native_p50, 4),
+                "native_p90_latency_seconds": round(native_p90, 4),
+                "native_p95_latency_seconds": round(native_p95, 4),
+                "native_min_latency_seconds": round(native_min, 4),
+                "native_max_latency_seconds": round(native_max, 4),
+                "native_rtf_p50": rtf_native_p50,
+                "breakdown_ms": {
+                    "wav_parse": avg_wav_parse_ms,
+                    "pcm_norm": avg_pcm_norm_ms,
+                    "c_buf_prep": avg_c_buf_ms,
+                    "native_inference": avg_native_ms,
+                },
                 "reference_transcript": ref_text,
                 "emitted_transcript": best_hypothesis,
                 "wer": wer,
@@ -547,19 +714,30 @@ def run_benchmark(
             }
             sample_results.append(sample_entry)
             logger.info(
-                "Sample %s (%ss): P50=%ss (RTF=%.3f), WER=%.2f%%",
+                "Sample %s (%ss): E2E P50=%ss (RTF=%.3f), Native P50=%ss (RTF=%.3f), WER=%s",
                 filename,
                 round(audio_dur, 2),
-                round(p50, 3),
-                rtf_p50,
-                (wer or 0.0) * 100,
+                round(e2e_p50, 3),
+                rtf_e2e_p50,
+                round(native_p50, 3),
+                rtf_native_p50,
+                format_metric_pct(wer),
             )
 
         # 5. Final Telemetry
         peak_ws_final, cur_ws_final, priv_final = query_process_memory_mb()
         _, avail_sys_ram_final = query_system_memory_mb()
+        if avail_sys_ram_final is not None:
+            min_avail_ram_observed = min(min_avail_ram_observed, avail_sys_ram_final)
+        else:
+            avail_ram_readings_valid = False
+
         vram_final = query_gpu_vram_mb()
-        if vram_final is None:
+        if vram_final is not None:
+            max_vram_observed = max(max_vram_observed, vram_final)
+            min_vram_observed = min(min_vram_observed, vram_final)
+            vram_observations_count += 1
+        else:
             vram_readings_valid = False
 
         sockets_final = audit_active_process_sockets(current_pid)
@@ -568,7 +746,11 @@ def run_benchmark(
         report["host"]["final_working_set_mb"] = cur_ws_final
         report["host"]["final_private_usage_mb"] = priv_final
         report["host"]["final_available_ram_mb"] = avail_sys_ram_final
+        report["host"]["min_available_ram_mb"] = round(min_avail_ram_observed, 1) if avail_ram_readings_valid else None
         report["host"]["final_vram_used_mb"] = vram_final
+        report["host"]["peak_vram_used_mb"] = max_vram_observed if vram_readings_valid else None
+        report["host"]["vram_observations_count"] = vram_observations_count
+        report["host"]["vram_cadence"] = "sampled per iteration (~every 1s)"
 
         if vram_readings_valid and vram_initial is not None and vram_final is not None:
             report["host"]["vram_delta_mb"] = vram_final - vram_initial
@@ -620,22 +802,31 @@ def run_benchmark(
         "smoke_commands_macro_wer": macro_smoke_wer,
         "cold_init_seconds": report["runtime"]["cold_init_seconds"],
         "peak_working_set_mb": peak_ws_final,
+        "min_available_ram_mb": report["host"]["min_available_ram_mb"],
         "vram_delta_mb": report["host"]["vram_delta_mb"],
+        "vram_max_delta_mb": report["host"]["vram_max_delta_mb"],
     }
 
     # 7. GATE Evaluation Matrix
     # GATE-VOICE-01: STT Latency
-    # Strict requirement: 5-second sample MUST exist and satisfy P50 latency <= 1.5s (RTF <= 0.30)
+    # Strict requirement: 5-second sample MUST exist and satisfy End-to-End P50 latency <= 1.5s (RTF <= 0.30)
     five_sec_sample = next((s for s in sample_results if 4.5 <= s["audio_duration_seconds"] <= 5.5), None)
     if five_sec_sample is not None:
         p50_5s = five_sec_sample["p50_latency_seconds"]
         rtf_5s = five_sec_sample["rtf_p50"]
+        nat_p50_5s = five_sec_sample["native_p50_latency_seconds"]
+        nat_rtf_5s = five_sec_sample["native_rtf_p50"]
+        bk = five_sec_sample["breakdown_ms"]
+
         gate_01_pass = (p50_5s <= 1.5) and (rtf_5s <= 0.30)
         gate_01_status = "PASS" if gate_01_pass else "FAIL"
         gate_01_measured = (
-            f"5s sample '{five_sec_sample['filename']}': P50={p50_5s}s (RTF={rtf_5s}), "
-            f"P90={five_sec_sample['p90_latency_seconds']}s, P95={five_sec_sample['p95_latency_seconds']}s, "
-            f"Max={five_sec_sample['max_latency_seconds']}s"
+            f"5s sample '{five_sec_sample['filename']}': "
+            f"End-to-End P50={p50_5s}s (RTF={rtf_5s}), P90={five_sec_sample['p90_latency_seconds']}s, "
+            f"P95={five_sec_sample['p95_latency_seconds']}s, Max={five_sec_sample['max_latency_seconds']}s; "
+            f"Native-only P50={nat_p50_5s}s (RTF={nat_rtf_5s}), P90={five_sec_sample['native_p90_latency_seconds']}s, "
+            f"P95={five_sec_sample['native_p95_latency_seconds']}s, Max={five_sec_sample['native_max_latency_seconds']}s "
+            f"[Breakdown: WAV parse={bk['wav_parse']}ms, PCM norm={bk['pcm_norm']}ms, C buf={bk['c_buf_prep']}ms, Native={bk['native_inference']}ms]"
         )
     else:
         gate_01_status = "NOT RUN"
@@ -647,9 +838,9 @@ def run_benchmark(
     if aggregate_real_wer is not None:
         gate_02_status = "NOT RUN"
         gate_02_measured = (
-            f"Preliminary real-speech aggregate WER={round(aggregate_real_wer * 100, 2)}% "
-            f"(Macro WER={round(macro_real_wer * 100, 2)}%, CER={round(macro_real_cer * 100, 2)}%). "
-            f"Smoke command WER={round(aggregate_smoke_wer * 100, 2)}%. "
+            f"Preliminary real-speech aggregate WER={format_metric_pct(aggregate_real_wer)} "
+            f"(Macro WER={format_metric_pct(macro_real_wer)}, CER={format_metric_pct(macro_real_cer)}). "
+            f"Smoke command WER={format_metric_pct(aggregate_smoke_wer)}. "
             "Qualification marked NOT RUN pending multi-speaker conversational corpus per manifest."
         )
     else:
@@ -661,33 +852,25 @@ def run_benchmark(
     gate_03_measured = "Deferred to Milestone P11.3.4 (Piper/sherpa-onnx qualification)"
 
     # GATE-VOICE-04: Single-Model GPU VRAM
-    vram_delta = report["host"]["vram_delta_mb"]
-    if vram_delta is not None and vram_delta == 0:
-        if ollama_resident:
-            gate_04_status = "PASS"
-            gate_04_measured = f"VRAM Delta = 0 MiB with LLM verified resident ({ollama_info})"
-        else:
-            gate_04_status = "PASS"
-            gate_04_measured = (
-                f"VRAM Delta = 0 MiB (CPU isolation verified). "
-                f"LLM concurrent residency NOT RUN ({ollama_info})"
-            )
-    elif vram_delta is not None:
-        gate_04_status = "FAIL"
-        gate_04_measured = f"VRAM Delta = {vram_delta} MiB (exceeds 0 MiB budget)"
-    else:
-        gate_04_status = "NOT RUN"
-        gate_04_measured = "GPU VRAM telemetry unavailable via nvidia-smi"
+    gate_04_status, gate_04_measured = evaluate_gate_04(
+        vram_max_delta_mb=report["host"]["vram_max_delta_mb"],
+        vram_readings_valid=vram_readings_valid,
+        ollama_resident=ollama_resident,
+        ollama_info=ollama_info,
+        vram_initial_mb=vram_initial,
+        max_vram_observed_mb=max_vram_observed,
+        vram_final_mb=vram_final,
+        vram_observations_count=vram_observations_count,
+    )
 
     # GATE-VOICE-05: System RAM Ceiling
-    if peak_ws_final is not None:
-        gate_05_pass = peak_ws_final < 450.0
-        gate_05_status = "PASS" if gate_05_pass else "FAIL"
-        avail_str = f", System Avail RAM: {avail_sys_ram_final} MB" if avail_sys_ram_final is not None else ""
-        gate_05_measured = f"Peak Working Set: {peak_ws_final} MB (Private: {priv_final} MB{avail_str})"
-    else:
-        gate_05_status = "ERROR"
-        gate_05_measured = "Failed to query process memory counters"
+    gate_05_status, gate_05_measured = evaluate_gate_05(
+        peak_working_set_mb=peak_ws_final,
+        min_available_ram_mb=report["host"]["min_available_ram_mb"],
+        private_usage_mb=priv_final,
+        ws_threshold_mb=450.0,
+        avail_threshold_mb=1536.0,
+    )
 
     # GATE-VOICE-06: Disk Retention
     gate_06_status = "NOT RUN"
@@ -724,10 +907,10 @@ def run_benchmark(
     )
 
     # GATE-VOICE-10: License Review
-    gate_10_status = "PASS"
+    gate_10_status = "NOT RUN"
     gate_10_measured = (
-        "STT Prototype: whisper.cpp engine (MIT), OpenAI Whisper weights (MIT). "
-        "TTS licensing and voice model lineage deferred to Stage 4."
+        "STT Prototype Component License Assessment: PASS (whisper.cpp engine MIT, OpenAI Whisper weights MIT). "
+        "Overall GATE-VOICE-10 NOT RUN pending Milestone P11.3.4 TTS engine and voice-model licensing qualification."
     )
 
     report["gates"] = {
@@ -761,10 +944,10 @@ def run_benchmark(
         },
         "GATE-VOICE-05": {
             "name": "System RAM Ceiling",
-            "threshold": "Peak Working Set < 450 MB",
+            "threshold": "Peak Working Set < 450 MB and Available System RAM > 1.5 GB",
             "measured": gate_05_measured,
             "status": gate_05_status,
-            "method": "Win32 GetProcessMemoryInfo (PeakWorkingSetSize)",
+            "method": "Win32 GetProcessMemoryInfo (PeakWorkingSetSize) and GlobalMemoryStatusEx (ullAvailPhys)",
         },
         "GATE-VOICE-06": {
             "name": "Disk Retention",
@@ -796,7 +979,7 @@ def run_benchmark(
         },
         "GATE-VOICE-10": {
             "name": "License Review",
-            "threshold": "Permissive MIT license without copyleft risk",
+            "threshold": "Permissive MIT license without copyleft risk (voice subsystem full qualification)",
             "measured": gate_10_measured,
             "status": gate_10_status,
             "method": "Upstream source and repository license verification",
@@ -841,17 +1024,20 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## 2. Benchmark Results Across Test Corpus",
         "",
-        "| Audio Sample | Type | Duration | P50 Latency | P90 Latency | P95 Latency | Max Latency | RTF (P50) | WER (%) | CER (%) | Emitted Transcript |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Audio Sample | Type | Duration | E2E P50 | Native P50 | E2E P90 | E2E P95 | E2E Max | E2E RTF | Native RTF | WER (%) | CER (%) | Emitted Transcript |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ])
 
     for r in report.get("results", []):
-        wer_str = f"{round(r['wer'] * 100, 1)}%" if r["wer"] is not None else "N/A"
-        cer_str = f"{round(r['cer'] * 100, 1)}%" if r["cer"] is not None else "N/A"
+        wer_str = format_metric_pct(r.get("wer"), 1)
+        cer_str = format_metric_pct(r.get("cer"), 1)
+        native_p50 = r.get("native_p50_latency_seconds", r["p50_latency_seconds"])
+        native_rtf = r.get("native_rtf_p50", r["rtf_p50"])
         lines.append(
             f"| `{r['filename']}` | {r['type']} | {r['audio_duration_seconds']}s | "
-            f"{r['p50_latency_seconds']}s | {r['p90_latency_seconds']}s | {r['p95_latency_seconds']}s | "
-            f"{r['max_latency_seconds']}s | **{r['rtf_p50']}** | {wer_str} | {cer_str} | \"{r['emitted_transcript']}\" |"
+            f"{r['p50_latency_seconds']}s | {native_p50}s | "
+            f"{r['p90_latency_seconds']}s | {r['p95_latency_seconds']}s | {r['max_latency_seconds']}s | "
+            f"**{r['rtf_p50']}** | {native_rtf} | {wer_str} | {cer_str} | \"{r['emitted_transcript']}\" |"
         )
 
     summary = report.get("summary", {})
@@ -866,10 +1052,10 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## 3. Accuracy Metrics Breakdown",
         "",
-        f"- **Real Speech Aggregate WER**: {round(real_wer * 100, 2) if real_wer is not None else 'N/A'}% (total edits / total reference words)",
-        f"- **Real Speech Macro-Average WER**: {round(real_macro_wer * 100, 2) if real_macro_wer is not None else 'N/A'}% (unweighted mean across clips)",
-        f"- **Real Speech Macro-Average CER**: {round(real_macro_cer * 100, 2) if real_macro_cer is not None else 'N/A'}%",
-        f"- **Synthetic Commands Smoke WER**: {round(smoke_wer * 100, 2) if smoke_wer is not None else 'N/A'}% (reported separately from real speech)",
+        f"- **Real Speech Aggregate WER**: {format_metric_pct(real_wer)} (total edits / total reference words)",
+        f"- **Real Speech Macro-Average WER**: {format_metric_pct(real_macro_wer)} (unweighted mean across clips)",
+        f"- **Real Speech Macro-Average CER**: {format_metric_pct(real_macro_cer)}",
+        f"- **Synthetic Commands Smoke WER**: {format_metric_pct(smoke_wer)} (reported separately from real speech)",
         "",
         "---",
         "",
@@ -877,9 +1063,13 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         f"- **Cold Start Initialization Time**: {summary.get('cold_init_seconds')}s (model mmap and tensor allocation)",
         f"- **Peak Working Set Memory**: {summary.get('peak_working_set_mb')} MB",
-        f"- **GPU Dedicated VRAM Delta**: {summary.get('vram_delta_mb')} MiB",
+        f"- **Minimum Available System RAM**: {summary.get('min_available_ram_mb')} MB (threshold > 1.5 GB)",
+        f"- **Initial GPU VRAM**: {report['host'].get('initial_vram_used_mb')} MiB",
+        f"- **Peak GPU VRAM Observed**: {report['host'].get('peak_vram_used_mb')} MiB ({report['host'].get('vram_observations_count', 0)} observations, {report['host'].get('vram_cadence')})",
+        f"- **Final GPU VRAM**: {report['host'].get('final_vram_used_mb')} MiB",
+        f"- **Maximum GPU VRAM Delta**: {report['host'].get('vram_max_delta_mb')} MiB",
         f"- **Ollama LLM Co-Residency**: {report['host'].get('ollama_llm_details')}",
-        f"- **Average Real-Time Factor (RTF)**: **{summary.get('avg_rtf_p50')}**",
+        f"- **Average Real-Time Factor (E2E RTF)**: **{summary.get('avg_rtf_p50')}**",
         "",
         "---",
         "",
