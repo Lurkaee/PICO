@@ -18,6 +18,7 @@ import ctypes
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -26,6 +27,7 @@ import pytest
 from pico.core.errors import ValidationError
 from pico.perception.audio.adapter import LocalWhisperSpeechToTextAdapter
 from tools.bench.voice_bench import (
+    ContinuousMemorySampler,
     calculate_cer,
     calculate_wer,
     compute_levenshtein_ops,
@@ -35,6 +37,7 @@ from tools.bench.voice_bench import (
     normalize_text,
     render_markdown_report,
     verify_fail_closed_behavior,
+    verify_ollama_model_residency,
 )
 from tools.bench.whisper_prototype import (
     CANONICAL_MODELS,
@@ -362,7 +365,46 @@ class TestGate04Evaluation:
             vram_observations_count=10,
         )
         assert status == "PASS"
-        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident" in text
+        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM" in text
+
+    def test_gate_04_pass_with_multi_checkpoint_resident_llm(self):
+        checkpoints = [
+            ("pre_init", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("post_init", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("sample_1", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("post_final", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_readings_valid=True,
+            ollama_checkpoints=checkpoints,
+            vram_initial_mb=1000,
+            max_vram_observed_mb=1000,
+            vram_final_mb=1000,
+            vram_observations_count=10,
+        )
+        assert status == "PASS"
+        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across entire benchmark interval" in text
+
+    def test_gate_04_fail_on_model_eviction_during_inference(self):
+        checkpoints = [
+            ("pre_init", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("post_init", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("sample_jfk.wav", False, "No models currently resident in Ollama memory"),
+            ("post_final", False, "No models currently resident in Ollama memory"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_readings_valid=True,
+            ollama_checkpoints=checkpoints,
+            vram_initial_mb=1000,
+            max_vram_observed_mb=1000,
+            vram_final_mb=1000,
+            vram_observations_count=10,
+        )
+        assert status == "FAIL"
+        assert "Target model 'qwen3.5:2b' was evicted from GPU during STT execution" in text
+        assert "sample_jfk.wav" in text
 
     def test_gate_04_not_run_without_resident_llm(self):
         status, text = evaluate_gate_04(
@@ -403,6 +445,179 @@ class TestGate04Evaluation:
         )
         assert status == "NOT RUN"
         assert "GPU VRAM telemetry unavailable" in text
+
+
+class TestOllamaResidencyVerification:
+    """Verifies positive GPU residency checking in verify_ollama_model_residency()."""
+
+    def test_verify_ollama_gpu_resident_success(self, monkeypatch):
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b-instruct",
+                    "size_vram": 1500000000,
+                }
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=2.0: MockResponse(),
+        )
+
+        resident, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert resident is True
+        assert "Model 'qwen3.5:2b-instruct' resident in GPU VRAM (1430.5 MiB)" in info
+
+    def test_verify_ollama_cpu_only_rejected(self, monkeypatch):
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b-instruct",
+                    "size_vram": 0,  # Loaded on CPU only!
+                }
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=2.0: MockResponse(),
+        )
+
+        resident, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert resident is False
+        assert "loaded on CPU only (size_vram=0), not GPU-resident" in info
+
+    def test_verify_ollama_different_model(self, monkeypatch):
+        fake_response = {
+            "models": [
+                {
+                    "name": "llama3:8b",
+                    "size_vram": 5000000000,
+                }
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=2.0: MockResponse(),
+        )
+
+        resident, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert resident is False
+        assert "Different model(s) resident: llama3:8b (expected qwen3.5:2b)" in info
+
+    def test_verify_ollama_no_models(self, monkeypatch):
+        fake_response = {"models": []}
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=2.0: MockResponse(),
+        )
+
+        resident, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert resident is False
+        assert "No models currently resident in Ollama memory" in info
+
+    def test_verify_ollama_api_unreachable(self, monkeypatch):
+        def mock_err(req, timeout=2.0):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr("urllib.request.urlopen", mock_err)
+
+        resident, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert resident is False
+        assert "Ollama local API unreachable" in info
+
+
+class TestContinuousMemorySampler:
+    """Verifies ContinuousMemorySampler background sampling thread and error handling."""
+
+    def test_sampler_lifecycle_and_sampling(self):
+        sampler = ContinuousMemorySampler(sample_interval_seconds=0.02)
+        sampler.start()
+        time.sleep(0.06)
+        sampler.stop()
+
+        peak_ws, min_avail, is_valid, count = sampler.get_results()
+        assert not sampler._thread.is_alive()
+        assert count >= 1
+        assert min_avail is not None and min_avail > 0
+        assert is_valid is True
+
+    def test_sampler_context_manager_cleanup(self):
+        with ContinuousMemorySampler(sample_interval_seconds=0.02) as sampler:
+            assert sampler._thread is not None
+            assert sampler._thread.is_alive()
+            time.sleep(0.04)
+
+        assert not sampler._thread.is_alive()
+
+    def test_sampler_cleanup_on_exception(self):
+        sampler = ContinuousMemorySampler(sample_interval_seconds=0.02)
+        sampler.start()
+        try:
+            raise RuntimeError("Inference pipeline simulated failure")
+        except RuntimeError:
+            pass
+        finally:
+            sampler.stop()
+
+        assert not sampler._thread.is_alive()
+
+    def test_sampler_preserves_telemetry_errors(self, monkeypatch):
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (None, None))
+        sampler = ContinuousMemorySampler(sample_interval_seconds=0.02)
+        sampler.sample_once()
+
+        assert sampler.has_telemetry_error is True
+        peak_ws, min_avail, is_valid, count = sampler.get_results()
+        assert min_avail is None
+        assert is_valid is False
 
 
 class TestGate05Evaluation:
@@ -479,6 +694,24 @@ class TestGate05Evaluation:
         )
         assert status == "NOT RUN"
         assert "Required process or system RAM monitoring could not be completed" in text
+
+    def test_invalid_telemetry_flag_not_run(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=2000.0,
+            ram_telemetry_valid=False,
+        )
+        assert status == "NOT RUN"
+        assert "Required process or system RAM monitoring could not be completed" in text
+
+    def test_invalid_telemetry_fails_if_ws_exceeded(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=500.0,
+            min_available_ram_mb=2000.0,
+            ram_telemetry_valid=False,
+        )
+        assert status == "FAIL"
+        assert "Peak Working Set: 500.0 MB exceeds 450.0 MB ceiling" in text
 
 
 class TestThreadDefaultsAndResolution:

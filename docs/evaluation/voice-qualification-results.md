@@ -2,7 +2,7 @@
 
 - **Date**: 2026-11-17T18:41:05.170216+00:00
 - **Milestone**: P11.3.2 Stage 2 Native Whisper Qualification Prototype
-- **Status**: Stage 2 Prototype — Partial Qualification (Core Latency & VRAM Met; Accuracy, Egress & Disk Retention NOT RUN)
+- **Status**: Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency, Accuracy, Egress & Disk Retention NOT RUN)
 - **Host Hardware**: Intel64 Family 6 Model 186 Stepping 2, GenuineIntel
 - **CPU Topology**: Intel Core i5-13420H (8 physical cores: 4P + 4E, 12 logical processors)
 - **Execution Target**: CPU-only (4 threads, AVX2 enabled, GPU disabled)

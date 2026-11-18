@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -219,11 +220,104 @@ def query_gpu_vram_mb() -> int | None:
         return None
 
 
-def verify_ollama_model_residency(expected_model_prefix: str = "qwen3.5:2b") -> tuple[bool, str | None]:
+class ContinuousMemorySampler:
+    """Bounded background sampler thread that monitors system available RAM and process Working Set.
+
+    Runs continuously across:
+    - Native initialization
+    - Warm-up
+    - Benchmark inference
+    - Context cleanup
+
+    Uses threading.Event for stop signal and is joined in finally blocks.
+    Preserves telemetry errors as unavailable values (never turns missing samples into zero).
+    """
+
+    def __init__(self, sample_interval_seconds: float = 0.05, pid: int | None = None) -> None:
+        self.sample_interval = sample_interval_seconds
+        self.pid = pid or os.getpid()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+        self.min_available_ram_mb: float | None = None
+        self.peak_working_set_mb: float | None = None
+        self.samples_count: int = 0
+        self.has_telemetry_error: bool = False
+        self.exceptions: list[Exception] = []
+
+    def start(self) -> None:
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="PicoMemorySampler")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=3.0)
+
+    def sample_once(self) -> None:
+        """Collect a single synchronous sample of available system RAM and process working set."""
+        try:
+            _, avail_mb = query_system_memory_mb()
+            peak_ws, cur_ws, _ = query_process_memory_mb()
+
+            with self._lock:
+                self.samples_count += 1
+                if avail_mb is not None:
+                    if self.min_available_ram_mb is None or avail_mb < self.min_available_ram_mb:
+                        self.min_available_ram_mb = avail_mb
+                else:
+                    self.has_telemetry_error = True
+
+                if peak_ws is not None:
+                    if self.peak_working_set_mb is None or peak_ws > self.peak_working_set_mb:
+                        self.peak_working_set_mb = peak_ws
+                elif cur_ws is not None:
+                    if self.peak_working_set_mb is None or cur_ws > self.peak_working_set_mb:
+                        self.peak_working_set_mb = cur_ws
+                else:
+                    self.has_telemetry_error = True
+        except Exception as exc:
+            with self._lock:
+                self.has_telemetry_error = True
+                self.exceptions.append(exc)
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            self.sample_once()
+            self._stop_event.wait(self.sample_interval)
+
+    def get_results(self) -> tuple[float | None, float | None, bool, int]:
+        """Return (peak_working_set_mb, min_available_ram_mb, is_valid, samples_count)."""
+        with self._lock:
+            is_valid = (
+                not self.has_telemetry_error
+                and self.min_available_ram_mb is not None
+                and self.samples_count > 0
+            )
+            return (
+                self.peak_working_set_mb,
+                self.min_available_ram_mb,
+                is_valid,
+                self.samples_count,
+            )
+
+    def __enter__(self) -> "ContinuousMemorySampler":
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.stop()
+
+
+def verify_ollama_model_residency(expected_model_prefix: str = "qwen3.5:2b") -> tuple[bool, str]:
     """Inspect local Ollama running model state to verify single-model GPU residency.
 
+    Requires positive GPU residency evidence, such as size_vram > 0 for the intended model.
+
     Returns:
-        (is_resident, model_info_or_error_string)
+        (is_resident_on_gpu, model_info_or_error_string)
     """
     try:
         req = urllib.request.Request("http://127.0.0.1:11434/api/ps")
@@ -233,8 +327,11 @@ def verify_ollama_model_residency(expected_model_prefix: str = "qwen3.5:2b") -> 
             for m in models:
                 m_name = m.get("name", "")
                 if expected_model_prefix.lower() in m_name.lower():
-                    vram_mb = round(m.get("size_vram", 0) / (1024 * 1024), 1)
-                    return True, f"Model '{m_name}' resident in VRAM ({vram_mb} MiB)"
+                    size_vram = m.get("size_vram", 0)
+                    if size_vram is not None and size_vram > 0:
+                        vram_mb = round(size_vram / (1024 * 1024), 1)
+                        return True, f"Model '{m_name}' resident in GPU VRAM ({vram_mb} MiB)"
+                    return False, f"Model '{m_name}' is loaded on CPU only (size_vram={size_vram}), not GPU-resident"
             if models:
                 resident_names = [m.get("name", "unknown") for m in models]
                 return False, f"Different model(s) resident: {', '.join(resident_names)} (expected {expected_model_prefix})"
@@ -403,8 +500,9 @@ def format_metric_pct(value: float | None, precision: int = 2) -> str:
 def evaluate_gate_04(
     vram_max_delta_mb: float | None,
     vram_readings_valid: bool,
-    ollama_resident: bool,
-    ollama_info: str,
+    ollama_checkpoints: list[tuple[str, bool, str]] | None = None,
+    ollama_resident: bool | None = None,
+    ollama_info: str | None = None,
     vram_initial_mb: float | None = None,
     max_vram_observed_mb: float | None = None,
     vram_final_mb: float | None = None,
@@ -415,8 +513,11 @@ def evaluate_gate_04(
     Requirements:
     - Dedicated VRAM delta must be <= 0 MiB (zero additional VRAM consumed by STT).
     - Uses maximum observed VRAM consumption over the entire interval, not just final - initial.
-    - Requires positive verification that target model 'qwen3.5:2b' is running in Ollama.
-    - When Ollama is not resident, records CPU isolation component PASS but marks GATE-VOICE-04 NOT RUN.
+    - Requires positive verification that target model 'qwen3.5:2b' is running in Ollama on GPU (size_vram > 0).
+    - Checkpoints across pre-init, during workload, and post-final inference:
+      * When Ollama is not resident initially or unreachable: records CPU isolation component PASS (if vram_max_delta_mb <= 0) but marks GATE-VOICE-04 NOT RUN.
+      * When Ollama is resident initially but evicted/lost during STT execution: marks GATE-VOICE-04 FAIL.
+      * When Ollama model remains GPU-resident across all checkpoints AND vram_max_delta_mb <= 0: marks GATE-VOICE-04 PASS.
     - Missing telemetry marks NOT RUN.
 
     Returns (status, measured_text).
@@ -435,21 +536,46 @@ def evaluate_gate_04(
             f"final={vram_final_mb} MiB across {vram_observations_count} observations)",
         )
 
-    # vram_max_delta_mb <= 0 (zero additional VRAM consumed)
-    if ollama_resident:
-        return (
-            "PASS",
-            f"VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in Ollama ({ollama_info}). "
-            f"CPU-only isolation verified (initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
-            f"final={vram_final_mb} MiB across {vram_observations_count} observations).",
-        )
-    else:
+    # vram_max_delta_mb <= 0 (CPU isolation verified: 0 MiB additional VRAM consumed by STT)
+    checkpoints = ollama_checkpoints
+    if checkpoints is None:
+        checkpoints = [("initial", ollama_resident if ollama_resident is not None else False, ollama_info or "")]
+
+    if not checkpoints:
         return (
             "NOT RUN",
             f"CPU isolation component PASS (0 MiB additional VRAM; initial={vram_initial_mb} MiB, "
             f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
-            f"Single-model residency qualification NOT RUN because target model 'qwen3.5:2b' was not resident ({ollama_info}).",
+            "Single-model residency qualification NOT RUN because no Ollama residency checkpoints were recorded.",
         )
+
+    init_name, init_resident, init_info = checkpoints[0]
+    if not init_resident:
+        return (
+            "NOT RUN",
+            f"CPU isolation component PASS (0 MiB additional VRAM; initial={vram_initial_mb} MiB, "
+            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+            f"Single-model residency qualification NOT RUN because target model 'qwen3.5:2b' was not resident on GPU before benchmark ({init_info}).",
+        )
+
+    # Ollama was resident on GPU at start! Verify that it remained resident at every subsequent checkpoint
+    evictions = [ckpt for ckpt in checkpoints[1:] if not ckpt[1]]
+    if evictions:
+        evict_name, _, evict_info = evictions[0]
+        return (
+            "FAIL",
+            f"Target model 'qwen3.5:2b' was evicted from GPU during STT execution (residency lost at checkpoint '{evict_name}': {evict_info}). "
+            f"CPU isolation observed 0 MiB VRAM delta, but co-residency was violated.",
+        )
+
+    # All checkpoints resident on GPU!
+    final_info = checkpoints[-1][2]
+    return (
+        "PASS",
+        f"VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across entire benchmark interval ({final_info}). "
+        f"CPU-only isolation verified (initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
+        f"final={vram_final_mb} MiB across {vram_observations_count} observations).",
+    )
 
 
 def evaluate_gate_05(
@@ -458,16 +584,18 @@ def evaluate_gate_05(
     private_usage_mb: float | None = None,
     ws_threshold_mb: float = 450.0,
     avail_threshold_mb: float = 1536.0,  # 1.5 GB
+    ram_telemetry_valid: bool = True,
+    samples_count: int = 0,
 ) -> tuple[str, str]:
     """Evaluate GATE-VOICE-05: System RAM Ceiling.
 
     Requires BOTH:
       1. Peak voice Working Set < 450.0 MB
-      2. Minimum Available System RAM > 1536.0 MB (1.5 GB)
+      2. Minimum Available System RAM > 1536.0 MB (1.5 GB) continuously sampled across run.
 
     Returns (status, measured_text).
     """
-    if peak_working_set_mb is None or min_available_ram_mb is None:
+    if not ram_telemetry_valid or peak_working_set_mb is None or min_available_ram_mb is None:
         if peak_working_set_mb is not None and peak_working_set_mb >= ws_threshold_mb:
             return (
                 "FAIL",
@@ -486,11 +614,13 @@ def evaluate_gate_05(
     avail_pass = min_available_ram_mb > avail_threshold_mb
 
     priv_str = f", Private Bytes: {private_usage_mb} MB" if private_usage_mb is not None else ""
+    samples_str = f" across {samples_count} continuous samples" if samples_count > 0 else ""
+
     if ws_pass and avail_pass:
         return (
             "PASS",
             f"Peak Working Set: {peak_working_set_mb} MB (< {ws_threshold_mb} MB), "
-            f"Min Available System RAM: {min_available_ram_mb} MB (> 1.5 GB){priv_str}",
+            f"Min Available System RAM: {min_available_ram_mb} MB (> 1.5 GB){priv_str}{samples_str}",
         )
     else:
         fail_reasons: list[str] = []
@@ -502,7 +632,7 @@ def evaluate_gate_05(
             )
         return (
             "FAIL",
-            "; ".join(fail_reasons) + priv_str,
+            "; ".join(fail_reasons) + priv_str + samples_str,
         )
 
 
@@ -543,39 +673,48 @@ def run_benchmark(
         "gates": {},
     }
 
-    # 1. Model Verification
-    logger.info("Verifying model artifact: %s", model_path)
-    model_meta = verify_model_artifact(model_path)
-    report["model"] = model_meta
-
-    # 2. Engine Initialization (Cold Start)
-    t_init_start = time.perf_counter()
-    engine = PicoWhisperEngine(
-        model_path=model_path,
-        runtime_dir=runtime_dir,
-        verify_digest=True,
-        n_threads=n_threads,
-    )
-    t_init_cold = time.perf_counter() - t_init_start
-    report["runtime"]["version"] = engine.version
-    report["runtime"]["system_info"] = engine.system_info
-    report["runtime"]["cold_init_seconds"] = round(t_init_cold, 4)
-
-    # 3. Check LLM residency in Ollama
-    ollama_resident, ollama_info = verify_ollama_model_residency("qwen3.5:2b")
-    report["host"]["ollama_llm_resident"] = ollama_resident
-    report["host"]["ollama_llm_details"] = ollama_info
-
-    sample_results: list[dict[str, Any]] = []
-    max_vram_observed = vram_initial if vram_initial is not None else 0
-    min_vram_observed = vram_initial if vram_initial is not None else 999999
-    vram_readings_valid = vram_initial is not None
-    vram_observations_count = 1 if vram_initial is not None else 0
-
-    min_avail_ram_observed = avail_sys_ram_init if avail_sys_ram_init is not None else 999999.0
-    avail_ram_readings_valid = avail_sys_ram_init is not None
+    # Start continuous background physical RAM and process Working Set sampler
+    sampler = ContinuousMemorySampler(sample_interval_seconds=0.05, pid=current_pid)
+    sampler.start()
+    ollama_checkpoints: list[tuple[str, bool, str]] = []
 
     try:
+        # Checkpoint 1: Check LLM residency in Ollama before STT initialization
+        ollama_pre_res, ollama_pre_info = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("pre_init", ollama_pre_res, ollama_pre_info))
+        report["host"]["ollama_llm_resident"] = ollama_pre_res
+        report["host"]["ollama_llm_details"] = ollama_pre_info
+
+        # 1. Model Verification
+        logger.info("Verifying model artifact: %s", model_path)
+        model_meta = verify_model_artifact(model_path)
+        report["model"] = model_meta
+
+        # 2. Engine Initialization (Cold Start)
+        t_init_start = time.perf_counter()
+        engine = PicoWhisperEngine(
+            model_path=model_path,
+            runtime_dir=runtime_dir,
+            verify_digest=True,
+            n_threads=n_threads,
+        )
+        t_init_cold = time.perf_counter() - t_init_start
+        report["runtime"]["version"] = engine.version
+        report["runtime"]["system_info"] = engine.system_info
+        report["runtime"]["cold_init_seconds"] = round(t_init_cold, 4)
+
+        # Checkpoint 2: Check LLM residency in Ollama post-initialization
+        ollama_post_init_res, ollama_post_init_info = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("post_init", ollama_post_init_res, ollama_post_init_info))
+
+        sample_results: list[dict[str, Any]] = []
+        max_vram_observed = vram_initial if vram_initial is not None else 0
+        min_vram_observed = vram_initial if vram_initial is not None else 999999
+        vram_readings_valid = vram_initial is not None
+        vram_observations_count = 1 if vram_initial is not None else 0
+
+        min_avail_ram_observed = avail_sys_ram_init if avail_sys_ram_init is not None else 999999.0
+        avail_ram_readings_valid = avail_sys_ram_init is not None
         # 4. Iterate through Corpus
         audio_files = sorted(corpus_dir.glob("*.wav"))
         if not audio_files:
@@ -724,6 +863,14 @@ def run_benchmark(
                 format_metric_pct(wer),
             )
 
+            # Checkpoint: Check Ollama residency during workload after each audio file
+            res_ckpt, info_ckpt = verify_ollama_model_residency("qwen3.5:2b")
+            ollama_checkpoints.append((f"sample_{filename}", res_ckpt, info_ckpt))
+
+        # Checkpoint: Check Ollama residency post-final inference iteration
+        res_post_final, info_post_final = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("post_final", res_post_final, info_post_final))
+
         # 5. Final Telemetry
         peak_ws_final, cur_ws_final, priv_final = query_process_memory_mb()
         _, avail_sys_ram_final = query_system_memory_mb()
@@ -742,25 +889,40 @@ def run_benchmark(
 
         sockets_final = audit_active_process_sockets(current_pid)
 
-        report["host"]["peak_working_set_mb"] = peak_ws_final
-        report["host"]["final_working_set_mb"] = cur_ws_final
-        report["host"]["final_private_usage_mb"] = priv_final
-        report["host"]["final_available_ram_mb"] = avail_sys_ram_final
-        report["host"]["min_available_ram_mb"] = round(min_avail_ram_observed, 1) if avail_ram_readings_valid else None
-        report["host"]["final_vram_used_mb"] = vram_final
-        report["host"]["peak_vram_used_mb"] = max_vram_observed if vram_readings_valid else None
-        report["host"]["vram_observations_count"] = vram_observations_count
-        report["host"]["vram_cadence"] = "sampled per iteration (~every 1s)"
-
-        if vram_readings_valid and vram_initial is not None and vram_final is not None:
-            report["host"]["vram_delta_mb"] = vram_final - vram_initial
-            report["host"]["vram_max_delta_mb"] = max_vram_observed - vram_initial
-        else:
-            report["host"]["vram_delta_mb"] = None
-            report["host"]["vram_max_delta_mb"] = None
-
     finally:
-        engine.close()
+        try:
+            engine.close()
+        finally:
+            sampler.stop()
+
+    sampler_peak_ws, sampler_min_avail_ram, ram_valid, ram_samples_count = sampler.get_results()
+    overall_peak_ws = peak_ws_final
+    if sampler_peak_ws is not None:
+        overall_peak_ws = max(overall_peak_ws or 0.0, sampler_peak_ws)
+
+    overall_min_avail_ram = sampler_min_avail_ram
+    if overall_min_avail_ram is None and avail_ram_readings_valid:
+        overall_min_avail_ram = min_avail_ram_observed
+
+    report["host"]["peak_working_set_mb"] = overall_peak_ws
+    report["host"]["final_working_set_mb"] = cur_ws_final
+    report["host"]["final_private_usage_mb"] = priv_final
+    report["host"]["final_available_ram_mb"] = avail_sys_ram_final
+    report["host"]["min_available_ram_mb"] = round(overall_min_avail_ram, 1) if overall_min_avail_ram is not None else None
+    report["host"]["continuous_ram_samples_count"] = ram_samples_count
+    report["host"]["continuous_ram_telemetry_valid"] = ram_valid
+    report["host"]["ollama_checkpoints"] = ollama_checkpoints
+    report["host"]["final_vram_used_mb"] = vram_final
+    report["host"]["peak_vram_used_mb"] = max_vram_observed if vram_readings_valid else None
+    report["host"]["vram_observations_count"] = vram_observations_count
+    report["host"]["vram_cadence"] = "sampled per iteration (~every 1s)"
+
+    if vram_readings_valid and vram_initial is not None and vram_final is not None:
+        report["host"]["vram_delta_mb"] = vram_final - vram_initial
+        report["host"]["vram_max_delta_mb"] = max_vram_observed - vram_initial
+    else:
+        report["host"]["vram_delta_mb"] = None
+        report["host"]["vram_max_delta_mb"] = None
 
     report["results"] = sample_results
 
@@ -801,7 +963,7 @@ def run_benchmark(
         "smoke_commands_aggregate_wer": aggregate_smoke_wer,
         "smoke_commands_macro_wer": macro_smoke_wer,
         "cold_init_seconds": report["runtime"]["cold_init_seconds"],
-        "peak_working_set_mb": peak_ws_final,
+        "peak_working_set_mb": overall_peak_ws,
         "min_available_ram_mb": report["host"]["min_available_ram_mb"],
         "vram_delta_mb": report["host"]["vram_delta_mb"],
         "vram_max_delta_mb": report["host"]["vram_max_delta_mb"],
@@ -855,8 +1017,7 @@ def run_benchmark(
     gate_04_status, gate_04_measured = evaluate_gate_04(
         vram_max_delta_mb=report["host"]["vram_max_delta_mb"],
         vram_readings_valid=vram_readings_valid,
-        ollama_resident=ollama_resident,
-        ollama_info=ollama_info,
+        ollama_checkpoints=ollama_checkpoints,
         vram_initial_mb=vram_initial,
         max_vram_observed_mb=max_vram_observed,
         vram_final_mb=vram_final,
@@ -865,11 +1026,13 @@ def run_benchmark(
 
     # GATE-VOICE-05: System RAM Ceiling
     gate_05_status, gate_05_measured = evaluate_gate_05(
-        peak_working_set_mb=peak_ws_final,
+        peak_working_set_mb=report["host"]["peak_working_set_mb"],
         min_available_ram_mb=report["host"]["min_available_ram_mb"],
         private_usage_mb=priv_final,
         ws_threshold_mb=450.0,
         avail_threshold_mb=1536.0,
+        ram_telemetry_valid=ram_valid,
+        samples_count=ram_samples_count,
     )
 
     # GATE-VOICE-06: Disk Retention
@@ -991,12 +1154,23 @@ def run_benchmark(
 
 def render_markdown_report(report: dict[str, Any]) -> str:
     """Format benchmark report dictionary into clean, truthful Markdown."""
+    gate_01_status = report.get("gates", {}).get("GATE-VOICE-01", {}).get("status", "NOT RUN")
+    gate_04_status = report.get("gates", {}).get("GATE-VOICE-04", {}).get("status", "NOT RUN")
+    gate_05_status = report.get("gates", {}).get("GATE-VOICE-05", {}).get("status", "NOT RUN")
+
+    if gate_01_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
+        status_line = "Stage 2 Prototype — Core Latency, VRAM & RAM Qualified; Accuracy, Egress & Disk Retention NOT RUN"
+    elif gate_01_status == "PASS" and gate_05_status == "PASS" and gate_04_status == "NOT RUN":
+        status_line = "Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency, Accuracy, Egress & Disk Retention NOT RUN)"
+    else:
+        status_line = "Stage 2 Prototype — Incomplete / Partial Qualification"
+
     lines: list[str] = [
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
         "",
         f"- **Date**: {report['timestamp']}",
         "- **Milestone**: P11.3.2 Stage 2 Native Whisper Qualification Prototype",
-        "- **Status**: Stage 2 Prototype — Partial Qualification (Core Latency & VRAM Met; Accuracy, Egress & Disk Retention NOT RUN)",
+        f"- **Status**: {status_line}",
         f"- **Host Hardware**: {report['host']['processor']}",
         f"- **CPU Topology**: {report['host']['cpu_topology']}",
         f"- **Execution Target**: CPU-only ({report['host']['cpu_threads_dedicated']} threads, AVX2 enabled, GPU disabled)",
@@ -1063,7 +1237,12 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         f"- **Cold Start Initialization Time**: {summary.get('cold_init_seconds')}s (model mmap and tensor allocation)",
         f"- **Peak Working Set Memory**: {summary.get('peak_working_set_mb')} MB",
-        f"- **Minimum Available System RAM**: {summary.get('min_available_ram_mb')} MB (threshold > 1.5 GB)",
+        f"- **Minimum Available System RAM**: {summary.get('min_available_ram_mb')} MB"
+        + (
+            f" (threshold > 1.5 GB, continuously sampled across {report['host'].get('continuous_ram_samples_count')} intervals)"
+            if report['host'].get('continuous_ram_samples_count')
+            else " (threshold > 1.5 GB)"
+        ),
         f"- **Initial GPU VRAM**: {report['host'].get('initial_vram_used_mb')} MiB",
         f"- **Peak GPU VRAM Observed**: {report['host'].get('peak_vram_used_mb')} MiB ({report['host'].get('vram_observations_count', 0)} observations, {report['host'].get('vram_cadence')})",
         f"- **Final GPU VRAM**: {report['host'].get('final_vram_used_mb')} MiB",

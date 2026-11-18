@@ -284,11 +284,32 @@ jobs:
 
   whisper-shim:
     name: Native Whisper Shim (Windows MSVC)
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Toolchain Preflight (VS 2022 & CMake)
+        shell: powershell
+        run: |
+          Write-Host "Runner OS: $((Get-CimInstance Win32_OperatingSystem).Caption) ($((Get-CimInstance Win32_OperatingSystem).Version))"
+          $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+          if (-not $cmake) {
+            throw "Preflight Failure: CMake was not found in PATH."
+          }
+          Write-Host "CMake Version: $(cmake --version | Select-Object -First 1)"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "Preflight Failure: vswhere.exe not found at '$vswhere'."
+          }
+          $vsPath = & $vswhere -version "[17.0,18.0)" -latest -property installationPath
+          $vsVersion = & $vswhere -version "[17.0,18.0)" -latest -property installationVersion
+          if (-not $vsPath) {
+            throw "Preflight Failure: Visual Studio 17 2022 toolchain is required for native MSVC build but was not found. Current runner must be windows-2022."
+          }
+          Write-Host "Detected Visual Studio 2022: $vsPath (Version: $vsVersion)"
 
       - name: Build Native Whisper Shim
         shell: powershell
