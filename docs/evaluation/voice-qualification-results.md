@@ -28,7 +28,7 @@
 | `GATE-VOICE-07` | **Network Egress** | 0 outbound socket connections & 0 DNS queries | 0 active socket connections detected for PID 32972; kernel ETW DNS-client activity tracing unavailable without elevation | NOT RUN |
 | `GATE-VOICE-08` | **Packaging Bounds** | Combined voice subsystem footprint < 350 MB | STT Prototype: 80.92 MB (Binaries: 2.92 MB, Model: 77.99 MB). Combined STT+TTS voice subsystem gate deferred to Milestone P11.3.4. | NOT RUN |
 | `GATE-VOICE-09` | **Fail-Closed Safety** | Deterministic typed exception on missing or corrupted artifact | Verified: missing model, truncated header, cryptographic SHA-256 digest mismatch, and missing runtime fail closed in isolated prototype fixtures (does not imply production adapter qualification). | **PASS** |
-| `GATE-VOICE-10` | **License Review** | Permissive MIT license without copyleft risk (voice subsystem full qualification) | STT prototype components pass MIT review (whisper.cpp engine MIT, OpenAI Whisper weights MIT). Overall GATE-VOICE-10 marked NOT RUN pending resolution of Piper TTS licensing (GPL-3.0 in active fork vs. MIT / Apache-2.0 fallback). | NOT RUN |
+| `GATE-VOICE-10` | **License Review** | Resolution of Piper GPL-3.0 redistribution compatibility or adoption of sherpa-onnx (Apache 2.0) | STT prototype components pass MIT review (whisper.cpp engine MIT, OpenAI Whisper weights MIT). Overall GATE-VOICE-10 marked NOT RUN pending resolution of Piper TTS licensing (GPL-3.0 in active fork vs. MIT / Apache-2.0 fallback). | NOT RUN |
 
 ---
 
