@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import io
+import json
 import os
 import tempfile
 import threading
 import time
+import wave
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -41,6 +44,7 @@ from tools.bench.voice_bench import (
     query_git_commit,
     render_markdown_report,
     run_benchmark,
+    validate_designated_wav,
     verify_fail_closed_behavior,
     verify_ollama_model_residency,
 )
@@ -53,6 +57,19 @@ from tools.bench.whisper_prototype import (
     WhisperRuntimeError,
     verify_model_artifact,
 )
+
+
+def create_valid_test_wav(duration_s: float = 4.92, sample_rate: int = 16000) -> bytes:
+    """Helper to create a strictly compliant in-memory 16kHz mono 16-bit PCM WAV byte stream."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        n_frames = int(duration_s * sample_rate)
+        wf.writeframes(b"\x00\x00" * n_frames)
+    return buf.getvalue()
+
 
 LOCALAPPDATA = os.environ.get("LOCALAPPDATA", "")
 DEFAULT_MODEL_PATH = Path(LOCALAPPDATA) / "PICO" / "models" / "whisper" / "ggml-base.en-q8_0.bin"
@@ -946,7 +963,7 @@ class TestGate05Evaluation:
             min_available_ram_mb=1535.99,
         )
         assert status == "FAIL"
-        assert "Min Available System RAM 1536.0 MB <= 1536.0 MB" in text
+        assert "Min Available System RAM 1535.99 MB <= 1536.0 MB" in text
 
     def test_available_ram_boundary_exact_fails(self):
         status, text = evaluate_gate_05(
@@ -957,13 +974,13 @@ class TestGate05Evaluation:
         assert "Min Available System RAM 1536.0 MB <= 1536.0 MB" in text
 
     def test_available_ram_boundary_1536_04_passes(self):
-        # 1536.04 MB is strictly > 1536.0 MB threshold and must pass, even if display rounding shows 1536.0 MB
+        # 1536.04 MB is strictly > 1536.0 MB threshold and must pass, displaying high precision 1536.04 MB
         status, text = evaluate_gate_05(
             peak_working_set_mb=300.0,
             min_available_ram_mb=1536.04,
         )
         assert status == "PASS"
-        assert "Min Available System RAM: 1536.0 MB (> 1.5 GB)" in text
+        assert "Min Available System RAM: 1536.04 MB (> 1.5 GB)" in text
 
     def test_available_ram_boundary_above_passes(self):
         status, _ = evaluate_gate_05(
@@ -1613,7 +1630,7 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
         # Create corpus with designated file
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()
-        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"RIFFdummyWAVE")
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(create_valid_test_wav(4.92))
 
         report = run_benchmark(
             model_path=fake_model,
@@ -1623,20 +1640,18 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
         )
 
         checkpoints = report["host"]["ollama_checkpoints"]
-        assert len(checkpoints) >= 3  # pre_init, sample_..., post_final
+        assert len(checkpoints) >= 4  # pre_init, pre_init_stability_check, sample_..., post_final
         for name, state, info, digest in checkpoints:
             assert digest == "sha256:verified_target_digest_12345", f"Checkpoint {name} missing verified digest!"
 
         assert report["gates"]["GATE-VOICE-04"]["status"] == "PASS"
 
     def test_run_benchmark_digest_change_fails_gate_04(self, monkeypatch, tmp_path):
-        import json
-
-        # Simulate digest mutating on third call
+        # Simulate digest mutating after baseline establishment (calls 1 and 2 = baseline, call 3 = workload)
         call_count = [0]
         def mock_urlopen(req, timeout=2.0):
             call_count[0] += 1
-            digest = "sha256:orig" if call_count[0] <= 1 else "sha256:tampered_digest"
+            digest = "sha256:orig" if call_count[0] <= 2 else "sha256:tampered_digest"
             fake_response = {
                 "models": [
                     {
@@ -1695,7 +1710,7 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
 
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()
-        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"RIFFdummyWAVE")
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(create_valid_test_wav(4.92))
 
         report = run_benchmark(
             model_path=fake_model,
@@ -1706,6 +1721,75 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
 
         assert report["gates"]["GATE-VOICE-04"]["status"] == "FAIL"
         assert "digest changed during STT execution" in report["gates"]["GATE-VOICE-04"]["measured"]
+
+    def test_run_benchmark_unstable_baseline_returns_not_run(self, monkeypatch, tmp_path):
+        # Simulate baseline unstable before benchmark: call 1 and call 2 have different digests
+        call_count = [0]
+        def mock_urlopen(req, timeout=2.0):
+            call_count[0] += 1
+            digest = "sha256:baseline_call1" if call_count[0] == 1 else "sha256:baseline_call2"
+            fake_response = {
+                "models": [
+                    {
+                        "name": "qwen3.5:2b",
+                        "size_vram": 1024 * 1024 * 1500,
+                        "digest": digest,
+                    }
+                ]
+            }
+            class MockResponse:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self): return json.dumps(fake_response).encode("utf-8")
+            return MockResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                rdir = kwargs.get("runtime_dir") or (args[1] if len(args) > 1 else None)
+                if rdir and not Path(rdir).exists():
+                    raise WhisperRuntimeError("Missing runtime directory")
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, **kwargs):
+                return ("dummy", 0.1, 5.0, {"wav_parse_seconds": 0.001, "pcm_norm_seconds": 0.001, "c_buf_prep_seconds": 0.001, "native_inference_seconds": 0.097})
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(create_valid_test_wav(4.92))
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        assert report["gates"]["GATE-VOICE-04"]["status"] == "NOT RUN"
+        assert "baseline model artifact digest was unstable before benchmark" in report["gates"]["GATE-VOICE-04"]["measured"]
 
     def test_run_benchmark_designated_fixture_selection(self, monkeypatch, tmp_path):
         fake_response = {
@@ -1771,8 +1855,8 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()
         # aaa_other_5s.wav sorts before audio_cmd_workflow_5s.wav
-        (corpus_dir / "aaa_other_5s.wav").write_bytes(b"RIFF_AAA_5s_WAVE")
-        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"RIFF_CMD_5s_WAVE")
+        (corpus_dir / "aaa_other_5s.wav").write_bytes(create_valid_test_wav(5.0))
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(create_valid_test_wav(4.92))
 
         report = run_benchmark(
             model_path=fake_model,
@@ -1845,7 +1929,7 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()
         # Only an undesignated file is present
-        (corpus_dir / "aaa_other_5s.wav").write_bytes(b"RIFF_AAA_5s_WAVE")
+        (corpus_dir / "aaa_other_5s.wav").write_bytes(create_valid_test_wav(5.0))
 
         report = run_benchmark(
             model_path=fake_model,
@@ -1857,3 +1941,299 @@ class TestBenchmarkEndToEndDigestAndDesignatedFixture:
         gate_01 = report["gates"]["GATE-VOICE-01"]
         assert gate_01["status"] == "NOT RUN"
         assert "audio_cmd_workflow_5s.wav' missing" in gate_01["measured"]
+
+
+class TestOllamaDigestSanitization:
+    """Verifies that empty, whitespace-only, missing, or non-string digests are treated as missing identity evidence."""
+
+    @pytest.mark.parametrize("invalid_digest", ["", "   ", None, 12345, ["digest"], {"k": "v"}])
+    def test_verify_ollama_sanitizes_invalid_digest_to_none(self, monkeypatch, invalid_digest):
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": 1024 * 1024 * 1500,
+                    "digest": invalid_digest,
+                }
+            ]
+        }
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        res = verify_ollama_model_residency("qwen3.5:2b")
+        assert res.state == OllamaResidencyState.GPU_RESIDENT
+        assert res.digest is None
+
+    @pytest.mark.parametrize("whitespace_digest", ["", "   ", None])
+    def test_gate_04_returns_not_run_when_checkpoint_digest_is_whitespace_or_none(self, whitespace_digest):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "info", "sha256:valid_baseline"),
+            ("pre_init_stability_check", OllamaResidencyState.GPU_RESIDENT, "info", "sha256:valid_baseline"),
+            ("workload_sample_1", OllamaResidencyState.GPU_RESIDENT, "info", whitespace_digest),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "info", "sha256:valid_baseline"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0.0,
+            vram_readings_valid=True,
+            ollama_checkpoints=ckpts,
+            vram_initial_mb=1000.0,
+            max_vram_observed_mb=1000.0,
+            vram_final_mb=1000.0,
+            vram_observations_count=3,
+        )
+        assert status == "NOT RUN"
+        assert "model artifact digest was missing at checkpoint 'workload_sample_1'" in text
+
+
+class TestQueryGitCommitTristate:
+    """Verifies that Git working-tree cleanliness is tri-state (Clean, Modified, Unknown)."""
+
+    def test_git_clean_true_when_porcelain_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "subprocess.check_output",
+            lambda cmd, **kwargs: "abc1234" if "rev-parse" in cmd else "",
+        )
+        commit, is_clean = query_git_commit()
+        assert commit == "abc1234"
+        assert is_clean is True
+
+    def test_git_clean_false_when_porcelain_has_entries(self, monkeypatch):
+        monkeypatch.setattr(
+            "subprocess.check_output",
+            lambda cmd, **kwargs: "abc1234" if "rev-parse" in cmd else " M foo.py\n",
+        )
+        commit, is_clean = query_git_commit()
+        assert commit == "abc1234"
+        assert is_clean is False
+
+    def test_git_clean_none_when_status_fails(self, monkeypatch):
+        def mock_cmd(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return "abc1234"
+            raise subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr("subprocess.check_output", mock_cmd)
+        commit, is_clean = query_git_commit()
+        assert commit == "abc1234"
+        assert is_clean is None
+
+
+class TestVerifyFailClosedFixtureWriteHandling:
+    """Verifies that temporary fixture write failures are handled gracefully without aborting benchmark."""
+
+    def test_verify_fail_closed_handles_fixture_write_failure_gracefully(self, monkeypatch, tmp_path):
+        real_write_bytes = Path.write_bytes
+
+        def failing_write_bytes(self, data):
+            if "ggml-base.en-q8_0.bin" in self.name or "custom.bin" in self.name:
+                raise OSError("Simulated disk full or permission denied")
+            return real_write_bytes(self, data)
+
+        monkeypatch.setattr(Path, "write_bytes", failing_write_bytes)
+        results = verify_fail_closed_behavior(runtime_dir=tmp_path)
+        assert isinstance(results, dict)
+        assert results["passed"] is False
+        assert results["subtests"]["missing_model_fails_closed"] is True
+        assert results["subtests"]["truncated_model_header_fails_closed"] is False
+        assert results["subtests"]["digest_mismatch_fails_closed"] is False
+
+
+class TestDesignatedWavValidation:
+    """Verifies designated 5-second WAV validation for format, frame count, and duration."""
+
+    def test_nonexistent_file(self, tmp_path):
+        valid, msg = validate_designated_wav(tmp_path / "nonexistent.wav")
+        assert valid is False
+        assert "File does not exist" in msg
+
+    def test_invalid_header(self, tmp_path):
+        f = tmp_path / "invalid.wav"
+        f.write_bytes(b"not a wav file")
+        valid, msg = validate_designated_wav(f)
+        assert valid is False
+        assert "Invalid WAV file format or header" in msg
+
+    def test_stereo_rejected(self, tmp_path):
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(2)  # stereo
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 32000)
+        f = tmp_path / "stereo.wav"
+        f.write_bytes(buf.getvalue())
+        valid, msg = validate_designated_wav(f)
+        assert valid is False
+        assert "expected mono, channels=1" in msg
+
+    def test_wrong_sample_rate_rejected(self, tmp_path):
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(8000)  # 8 kHz
+            wf.writeframes(b"\x00\x00" * 8000)
+        f = tmp_path / "8k.wav"
+        f.write_bytes(buf.getvalue())
+        valid, msg = validate_designated_wav(f)
+        assert valid is False
+        assert "expected 16000 Hz" in msg
+
+    def test_zero_frames_rejected(self, tmp_path):
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"")  # 0 frames
+        f = tmp_path / "empty.wav"
+        f.write_bytes(buf.getvalue())
+        valid, msg = validate_designated_wav(f)
+        assert valid is False
+        assert "non-positive frame count" in msg
+
+    def test_duration_out_of_manifest_range_rejected(self, tmp_path):
+        f = tmp_path / "short.wav"
+        f.write_bytes(create_valid_test_wav(1.0))
+        valid, msg = validate_designated_wav(f)
+        assert valid is False
+        assert "deviates from manifest expected duration 4.92s" in msg
+
+    def test_valid_designated_wav_accepted(self, tmp_path):
+        f = tmp_path / "valid_5s.wav"
+        f.write_bytes(create_valid_test_wav(4.92))
+        valid, msg = validate_designated_wav(f)
+        assert valid is True
+        assert "Valid 16kHz mono 16-bit PCM" in msg
+
+    def test_run_benchmark_fails_gate_01_if_designated_wav_invalid(self, monkeypatch, tmp_path):
+        fake_response = {"models": [{"name": "qwen3.5:2b", "size_vram": 1024 * 1024 * 1500, "digest": "sha256:abc"}]}
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        real_verify = voice_bench.verify_model_artifact
+        def mock_verify(p, **kwargs):
+            if str(p).endswith("fake_model.bin"):
+                return {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"}
+            return real_verify(p, **kwargs)
+        monkeypatch.setattr("tools.bench.voice_bench.verify_model_artifact", mock_verify)
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                rdir = kwargs.get("runtime_dir") or (args[1] if len(args) > 1 else None)
+                if rdir and not Path(rdir).exists():
+                    raise WhisperRuntimeError("Missing runtime directory")
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, **kwargs):
+                return ("dummy", 0.1, 5.0, {"wav_parse_seconds": 0.001, "pcm_norm_seconds": 0.001, "c_buf_prep_seconds": 0.001, "native_inference_seconds": 0.097})
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        # Create an INVALID WAV for audio_cmd_workflow_5s.wav (corrupted header)
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"corrupted not wav bytes")
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        gate_01 = report["gates"]["GATE-VOICE-01"]
+        assert gate_01["status"] == "FAIL"
+        assert "failed audio validation" in gate_01["measured"]
+
+
+class TestGate09AndFailClosedMarkdownDerivation:
+    """Verifies that GATE-VOICE-09 and Markdown report derive from actual probe executions."""
+
+    def test_gate_09_and_markdown_reflect_actual_subtests(self, monkeypatch, tmp_path):
+        fake_response = {"models": [{"name": "qwen3.5:2b", "size_vram": 1024 * 1024 * 1500, "digest": "sha256:abc"}]}
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        real_verify = voice_bench.verify_model_artifact
+        def mock_verify(p, **kwargs):
+            if str(p).endswith("fake_model.bin"):
+                return {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"}
+            return real_verify(p, **kwargs)
+        monkeypatch.setattr("tools.bench.voice_bench.verify_model_artifact", mock_verify)
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                rdir = kwargs.get("runtime_dir") or (args[1] if len(args) > 1 else None)
+                if rdir and not Path(rdir).exists():
+                    raise WhisperRuntimeError("Missing runtime directory")
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, **kwargs):
+                return ("dummy", 0.1, 5.0, {"wav_parse_seconds": 0.001, "pcm_norm_seconds": 0.001, "c_buf_prep_seconds": 0.001, "native_inference_seconds": 0.097})
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(create_valid_test_wav(4.92))
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        gate_09 = report["gates"]["GATE-VOICE-09"]
+        assert gate_09["status"] == "PASS"
+        assert "Verified: all probes passed" in gate_09["measured"]
+        assert "missing model" in gate_09["measured"]
+        assert "truncated model header" in gate_09["measured"]
+        assert "digest mismatch" in gate_09["measured"]
+        assert "missing runtime" in gate_09["measured"]
+
+        md = render_markdown_report(report)
+        assert "Verified immediate typed exceptions across all probes" in md
+        assert "missing model" in md

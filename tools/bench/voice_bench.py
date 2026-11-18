@@ -28,6 +28,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -232,14 +233,14 @@ def query_gpu_vram_mb() -> int | None:
         return None
 
 
-def query_git_commit(repo_root: Path | None = None) -> tuple[str, bool]:
+def query_git_commit(repo_root: Path | None = None) -> tuple[str, bool | None]:
     """Query current repository HEAD commit hash and working tree cleanliness.
 
     Strips GIT_* environment overrides to ensure local repository inspection,
     executing strictly with cwd set to repo_root.
 
     Returns:
-        (commit_hash, is_clean)
+        (commit_hash, is_clean) where is_clean is True (clean), False (modified), or None (unknown).
     """
     target_dir = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
     clean_env = os.environ.copy()
@@ -267,9 +268,9 @@ def query_git_commit(repo_root: Path | None = None) -> tuple[str, bool]:
             timeout=5.0,
             text=True,
         ).strip()
-        is_clean = len(status_out) == 0
+        is_clean: bool | None = len(status_out) == 0
     except Exception:
-        is_clean = False
+        is_clean = None
 
     return commit, is_clean
 
@@ -458,7 +459,8 @@ def verify_ollama_model_residency(
                 for m in matching_entries:
                     m_name = m.get("name", "unknown")
                     size_vram = m.get("size_vram")
-                    digest = m.get("digest")
+                    raw_digest = m.get("digest")
+                    digest = raw_digest.strip() if isinstance(raw_digest, str) and raw_digest.strip() else None
                     if size_vram > 0:
                         vram_mb = round(size_vram / (1024 * 1024), 1)
                         desc = SUPPORTED_OLLAMA_MODELS.get(m_name.strip().lower(), "Supported model")
@@ -470,10 +472,12 @@ def verify_ollama_model_residency(
 
                 # If all matching entries have size_vram == 0, confirmed CPU-only
                 first_m = matching_entries[0]
+                raw_d = first_m.get("digest")
+                clean_d = raw_d.strip() if isinstance(raw_d, str) and raw_d.strip() else None
                 return OllamaResidencyResult(
                     OllamaResidencyState.NOT_RESIDENT,
                     f"Model '{first_m.get('name')}' is loaded on CPU only (size_vram=0), not GPU-resident",
-                    digest=first_m.get("digest"),
+                    digest=clean_d,
                 )
 
             if models:
@@ -577,6 +581,44 @@ CANONICAL_CORPUS_GROUND_TRUTH: dict[str, dict[str, Any]] = {
 }
 
 
+def validate_designated_wav(
+    wav_path: Path,
+    expected_duration: float = 4.92,
+    duration_tolerance: float = 0.5,
+) -> tuple[bool, str]:
+    """Validate designated WAV contents, PCM format, positive frame count, and manifest duration.
+
+    Returns:
+        (is_valid, detail_message)
+    """
+    if not wav_path.is_file():
+        return False, f"File does not exist: {wav_path}"
+
+    try:
+        with wave.open(str(wav_path), "rb") as wf:
+            channels = wf.getnchannels()
+            sample_rate = wf.getframerate()
+            sampwidth = wf.getsampwidth()
+            n_frames = wf.getnframes()
+    except Exception as exc:
+        return False, f"Invalid WAV file format or header: {exc}"
+
+    if channels != 1:
+        return False, f"WAV channels={channels} (expected mono, channels=1)"
+    if sample_rate != 16000:
+        return False, f"WAV sample_rate={sample_rate} Hz (expected 16000 Hz)"
+    if sampwidth != 2:
+        return False, f"WAV sample width={sampwidth} bytes (expected 2 bytes / 16-bit PCM)"
+    if n_frames <= 0:
+        return False, f"WAV has non-positive frame count ({n_frames} frames)"
+
+    duration = n_frames / sample_rate
+    if abs(duration - expected_duration) > duration_tolerance:
+        return False, f"WAV duration={duration:.2f}s deviates from manifest expected duration {expected_duration:.2f}s (+/- {duration_tolerance:.2f}s)"
+
+    return True, f"Valid 16kHz mono 16-bit PCM ({n_frames} frames, {duration:.2f}s)"
+
+
 def verify_fail_closed_behavior(runtime_dir: Path) -> dict[str, Any]:
     """Verify that corrupted models and missing DLLs fail closed immediately in isolated environments.
 
@@ -584,6 +626,8 @@ def verify_fail_closed_behavior(runtime_dir: Path) -> dict[str, Any]:
     """
     subtests: dict[str, bool] = {
         "missing_model_fails_closed": False,
+        "truncated_model_header_fails_closed": False,
+        "digest_mismatch_fails_closed": False,
         "corrupted_model_fails_closed": False,
         "missing_runtime_fails_closed": False,
     }
@@ -597,58 +641,69 @@ def verify_fail_closed_behavior(runtime_dir: Path) -> dict[str, Any]:
         logger.error("Test 1 (missing model) raised unexpected exception: %s", exc)
 
     # Test 2: Corrupted model file in isolated TemporaryDirectory (truncated size & cryptographic digest mismatch)
-    with tempfile.TemporaryDirectory(prefix="pico_corrupt_test_") as tmp_dir:
-        # 2a: Truncated header (size mismatch)
-        corrupt_path = Path(tmp_dir) / "ggml-base.en-q8_0.bin"
-        corrupt_path.write_bytes(b"corrupted truncated header")
-        t2a_pass = False
-        try:
-            verify_model_artifact(corrupt_path)
-        except WhisperModelVerificationError:
-            t2a_pass = True
-        except Exception as exc:
-            logger.error("Test 2a (truncated model) raised unexpected exception: %s", exc)
+    try:
+        with tempfile.TemporaryDirectory(prefix="pico_corrupt_test_") as tmp_dir:
+            # 2a: Truncated header (size mismatch)
+            try:
+                corrupt_path = Path(tmp_dir) / "ggml-base.en-q8_0.bin"
+                corrupt_path.write_bytes(b"corrupted truncated header")
+                try:
+                    verify_model_artifact(corrupt_path)
+                except WhisperModelVerificationError:
+                    subtests["truncated_model_header_fails_closed"] = True
+                except Exception as exc:
+                    logger.error("Test 2a (truncated model) raised unexpected exception: %s", exc)
+            except Exception as exc:
+                logger.error("Test 2a fixture setup/write failed: %s", exc)
 
-        # 2b: Matching size with invalid SHA-256 (cryptographic digest mismatch)
-        t2b_pass = False
-        dummy_exact_path = Path(tmp_dir) / "custom.bin"
-        dummy_exact_path.write_bytes(b"\x00" * 1024)
-        try:
-            verify_model_artifact(
-                dummy_exact_path,
-                expected_sha256="0" * 64,
-                expected_size=1024,
-            )
-        except WhisperModelVerificationError:
-            t2b_pass = True
-        except Exception as exc:
-            logger.error("Test 2b (digest mismatch) raised unexpected exception: %s", exc)
+            # 2b: Matching size with invalid SHA-256 (cryptographic digest mismatch)
+            try:
+                dummy_exact_path = Path(tmp_dir) / "custom.bin"
+                dummy_exact_path.write_bytes(b"\x00" * 1024)
+                try:
+                    verify_model_artifact(
+                        dummy_exact_path,
+                        expected_sha256="0" * 64,
+                        expected_size=1024,
+                    )
+                except WhisperModelVerificationError:
+                    subtests["digest_mismatch_fails_closed"] = True
+                except Exception as exc:
+                    logger.error("Test 2b (digest mismatch) raised unexpected exception: %s", exc)
+            except Exception as exc:
+                logger.error("Test 2b fixture setup/write failed: %s", exc)
+    except Exception as exc:
+        logger.error("Test 2 (corrupted model directory setup) failed: %s", exc)
 
-        if t2a_pass and t2b_pass:
-            subtests["corrupted_model_fails_closed"] = True
+    subtests["corrupted_model_fails_closed"] = (
+        subtests["truncated_model_header_fails_closed"] and subtests["digest_mismatch_fails_closed"]
+    )
 
     # Test 3: Missing runtime directory with a valid model fixture
-    with tempfile.TemporaryDirectory(prefix="pico_runtime_test_") as tmp_dir:
-        staged_model = DEFAULT_MODEL_DIR / "ggml-base.en-q8_0.bin"
-        if staged_model.is_file():
-            model_to_use = staged_model
-            verify_digest = True
-        else:
-            dummy_model = Path(tmp_dir) / "dummy.bin"
-            dummy_model.write_bytes(b"12345678")
-            model_to_use = dummy_model
-            verify_digest = False
+    try:
+        with tempfile.TemporaryDirectory(prefix="pico_runtime_test_") as tmp_dir:
+            staged_model = DEFAULT_MODEL_DIR / "ggml-base.en-q8_0.bin"
+            if staged_model.is_file():
+                model_to_use = staged_model
+                verify_digest = True
+            else:
+                dummy_model = Path(tmp_dir) / "dummy.bin"
+                dummy_model.write_bytes(b"12345678")
+                model_to_use = dummy_model
+                verify_digest = False
 
-        try:
-            PicoWhisperEngine(
-                model_path=model_to_use,
-                runtime_dir=Path(tmp_dir) / "non_existent_runtime_dir",
-                verify_digest=verify_digest,
-            )
-        except WhisperRuntimeError:
-            subtests["missing_runtime_fails_closed"] = True
-        except Exception as exc:
-            logger.error("Test 3 (missing runtime) raised unexpected exception: %s", exc)
+            try:
+                PicoWhisperEngine(
+                    model_path=model_to_use,
+                    runtime_dir=Path(tmp_dir) / "non_existent_runtime_dir",
+                    verify_digest=verify_digest,
+                )
+            except WhisperRuntimeError:
+                subtests["missing_runtime_fails_closed"] = True
+            except Exception as exc:
+                logger.error("Test 3 (missing runtime) raised unexpected exception: %s", exc)
+    except Exception as exc:
+        logger.error("Test 3 (missing runtime directory setup) failed: %s", exc)
 
     all_passed = all(subtests.values())
     return {
@@ -697,11 +752,14 @@ def evaluate_gate_04(
             name = item[0]
             if len(item) == 2 and isinstance(item[1], OllamaResidencyResult):
                 res = item[1]
-                normalized_ckpts.append((name, res.state, res.info, res.digest))
+                raw_d = res.digest
+                clean_d = raw_d.strip() if isinstance(raw_d, str) and raw_d.strip() else None
+                normalized_ckpts.append((name, res.state, res.info, clean_d))
                 continue
             val = item[1]
             info = item[2] if len(item) > 2 else ""
-            digest = item[3] if len(item) > 3 else getattr(val, "digest", None)
+            raw_d = item[3] if len(item) > 3 else getattr(val, "digest", None)
+            clean_d = raw_d.strip() if isinstance(raw_d, str) and raw_d.strip() else None
             if isinstance(val, OllamaResidencyState):
                 state = val
             elif isinstance(val, bool):
@@ -715,7 +773,7 @@ def evaluate_gate_04(
                         state = OllamaResidencyState.NOT_RESIDENT
             else:
                 state = OllamaResidencyState.QUERY_ERROR
-            normalized_ckpts.append((name, state, info, digest))
+            normalized_ckpts.append((name, state, info, clean_d))
     elif ollama_resident is not None:
         st = OllamaResidencyState.GPU_RESIDENT if ollama_resident else (
             OllamaResidencyState.QUERY_ERROR if any(err in (ollama_info or "").lower() for err in ["unreachable", "timed out", "timeout", "connection refused", "error", "malformed"]) else OllamaResidencyState.NOT_RESIDENT
@@ -725,9 +783,15 @@ def evaluate_gate_04(
     pre_ckpts = [c for c in normalized_ckpts if c[0] == "pre_init" or c[0].startswith("pre_")]
     subsequent_ckpts = [c for c in normalized_ckpts if c not in pre_ckpts]
 
+    # Baseline is valid GPU resident if all pre-checkpoints exist, are GPU_RESIDENT, and have non-empty matching digests
+    baseline_gpu_resident = bool(pre_ckpts and all(c[1] == OllamaResidencyState.GPU_RESIDENT for c in pre_ckpts))
+    pre_digests = [c[3] for c in pre_ckpts if c[3] is not None]
+    baseline_digest_stable = (len(pre_digests) == len(pre_ckpts) and len(set(pre_digests)) <= 1) if pre_ckpts else False
+    baseline_digest = pre_ckpts[0][3] if (pre_ckpts and baseline_digest_stable) else None
+
     # Rule 1: Confirmed model eviction during STT execution produces FAIL
     # (Evaluated before VRAM completeness so a telemetry failure cannot hide a confirmed eviction)
-    if pre_ckpts and any(c[1] == OllamaResidencyState.GPU_RESIDENT for c in pre_ckpts):
+    if baseline_gpu_resident:
         confirmed_evictions = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.NOT_RESIDENT]
         if confirmed_evictions:
             evict_name, _, evict_info, _ = confirmed_evictions[0]
@@ -738,8 +802,8 @@ def evaluate_gate_04(
             )
 
     # Rule 2: Confirmed digest substitution produces FAIL
-    baseline_digest = pre_ckpts[0][3] if pre_ckpts else None
-    if baseline_digest:
+    # Only classified as a workload failure when a valid GPU-resident baseline was established
+    if baseline_gpu_resident and baseline_digest is not None:
         for c_name, _, _, c_digest in subsequent_ckpts:
             if c_digest and c_digest != baseline_digest:
                 return (
@@ -798,6 +862,16 @@ def evaluate_gate_04(
                 f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified before benchmark ({p_info}).",
             )
 
+    # Pre-run baseline digest stability check
+    if len(pre_ckpts) >= 2 and pre_ckpts[0][3] != pre_ckpts[1][3]:
+        return (
+            "NOT RUN",
+            f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
+            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+            f"Single-model residency qualification NOT RUN because baseline model artifact digest was unstable before benchmark "
+            f"('{pre_ckpts[0][0]}'={pre_ckpts[0][3]} vs '{pre_ckpts[1][0]}'={pre_ckpts[1][3]}).",
+        )
+
     # Rule 7: Telemetry query errors at subsequent checkpoints
     query_errors = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.QUERY_ERROR]
     if query_errors:
@@ -818,7 +892,7 @@ def evaluate_gate_04(
             f"Single-model residency qualification NOT RUN because baseline model artifact digest was not provided by Ollama.",
         )
 
-    missing_digest_ckpts = [c for c in subsequent_ckpts if c[3] is None]
+    missing_digest_ckpts = [c for c in subsequent_ckpts if not c[3]]
     if missing_digest_ckpts:
         m_name = missing_digest_ckpts[0][0]
         return (
@@ -855,12 +929,18 @@ def evaluate_gate_05(
 
     Returns (status, measured_text).
     """
+    if min_available_ram_mb is not None:
+        r1 = round(min_available_ram_mb, 1)
+        r2 = round(min_available_ram_mb, 2)
+        avail_disp = f"{r2}" if r1 != r2 else f"{r1}"
+    else:
+        avail_disp = "N/A"
+
     if not ram_telemetry_valid or peak_working_set_mb is None or min_available_ram_mb is None:
         breaches: list[str] = []
         if peak_working_set_mb is not None and peak_working_set_mb >= ws_threshold_mb:
             breaches.append(f"Peak Working Set: {peak_working_set_mb} MB exceeds {ws_threshold_mb} MB ceiling")
         if min_available_ram_mb is not None and min_available_ram_mb <= avail_threshold_mb:
-            avail_disp = f"{round(min_available_ram_mb, 1)}"
             breaches.append(f"Minimum Available RAM: {avail_disp} MB <= {avail_threshold_mb} MB (1.5 GB) threshold")
         if breaches:
             return "FAIL", "; ".join(breaches) + " (telemetry flagged incomplete or error encountered)"
@@ -869,7 +949,6 @@ def evaluate_gate_05(
     ws_pass = peak_working_set_mb < ws_threshold_mb
     avail_pass = min_available_ram_mb > avail_threshold_mb
 
-    avail_disp = f"{round(min_available_ram_mb, 1)}" if min_available_ram_mb is not None else "N/A"
     priv_str = f", Private Bytes: {private_usage_mb} MB" if private_usage_mb is not None else ""
     samples_str = f" across {samples_count} continuous samples" if samples_count > 0 else ""
 
@@ -945,13 +1024,12 @@ def run_benchmark(
         report["host"]["ollama_llm_resident"] = (res_pre.state == OllamaResidencyState.GPU_RESIDENT)
         report["host"]["ollama_llm_details"] = res_pre.info
 
-        # Step 2: Confirm residency stability across baseline setup
-        if res_pre.state == OllamaResidencyState.GPU_RESIDENT:
-            time.sleep(0.05)
-            res_stable = verify_ollama_model_residency("qwen3.5:2b")
-            if res_stable.state != OllamaResidencyState.GPU_RESIDENT:
-                logger.warning("Ollama residency unstable during baseline setup: %s -> %s", res_pre.info, res_stable.info)
-                ollama_checkpoints.append(("pre_init_stability_check", res_stable.state, res_stable.info, res_stable.digest))
+        # Step 2: Always retain second pre-initialization observation and compare digest with the first
+        time.sleep(0.05)
+        res_stable = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("pre_init_stability_check", res_stable.state, res_stable.info, res_stable.digest))
+        if res_stable.state != OllamaResidencyState.GPU_RESIDENT:
+            logger.warning("Ollama residency unstable during baseline setup: %s -> %s", res_pre.info, res_stable.info)
 
         # Step 3: Capture VRAM baseline only AFTER verifying Ollama residency state
         vram_initial = query_gpu_vram_mb()
@@ -1267,22 +1345,28 @@ def run_benchmark(
     DESIGNATED_5S_SAMPLE = "audio_cmd_workflow_5s.wav"
     five_sec_sample = next((s for s in sample_results if s["filename"] == DESIGNATED_5S_SAMPLE), None)
     if five_sec_sample is not None:
-        p50_5s = five_sec_sample["p50_latency_seconds"]
-        rtf_5s = five_sec_sample["rtf_p50"]
-        nat_p50_5s = five_sec_sample["native_p50_latency_seconds"]
-        nat_rtf_5s = five_sec_sample["native_rtf_p50"]
-        bk = five_sec_sample["breakdown_ms"]
+        designated_wav_path = corpus_dir / DESIGNATED_5S_SAMPLE
+        wav_valid, wav_detail = validate_designated_wav(designated_wav_path)
+        if not wav_valid:
+            gate_01_status = "FAIL"
+            gate_01_measured = f"Designated 5s sample '{DESIGNATED_5S_SAMPLE}' failed audio validation: {wav_detail}"
+        else:
+            p50_5s = five_sec_sample["p50_latency_seconds"]
+            rtf_5s = five_sec_sample["rtf_p50"]
+            nat_p50_5s = five_sec_sample["native_p50_latency_seconds"]
+            nat_rtf_5s = five_sec_sample["native_rtf_p50"]
+            bk = five_sec_sample["breakdown_ms"]
 
-        gate_01_pass = (p50_5s <= 1.5) and (rtf_5s <= 0.30)
-        gate_01_status = "PASS" if gate_01_pass else "FAIL"
-        gate_01_measured = (
-            f"5s sample '{five_sec_sample['filename']}': "
-            f"End-to-End P50={p50_5s}s (RTF={rtf_5s}), P90={five_sec_sample['p90_latency_seconds']}s, "
-            f"P95={five_sec_sample['p95_latency_seconds']}s, Max={five_sec_sample['max_latency_seconds']}s; "
-            f"Native-only P50={nat_p50_5s}s (RTF={nat_rtf_5s}), P90={five_sec_sample['native_p90_latency_seconds']}s, "
-            f"P95={five_sec_sample['native_p95_latency_seconds']}s, Max={five_sec_sample['native_max_latency_seconds']}s "
-            f"[Breakdown: WAV parse={bk['wav_parse']}ms, PCM norm={bk['pcm_norm']}ms, C buf={bk['c_buf_prep']}ms, Native={bk['native_inference']}ms]"
-        )
+            gate_01_pass = (p50_5s <= 1.5) and (rtf_5s <= 0.30)
+            gate_01_status = "PASS" if gate_01_pass else "FAIL"
+            gate_01_measured = (
+                f"5s sample '{five_sec_sample['filename']}': "
+                f"End-to-End P50={p50_5s}s (RTF={rtf_5s}), P90={five_sec_sample['p90_latency_seconds']}s, "
+                f"P95={five_sec_sample['p95_latency_seconds']}s, Max={five_sec_sample['max_latency_seconds']}s; "
+                f"Native-only P50={nat_p50_5s}s (RTF={nat_rtf_5s}), P90={five_sec_sample['native_p90_latency_seconds']}s, "
+                f"P95={five_sec_sample['native_p95_latency_seconds']}s, Max={five_sec_sample['native_max_latency_seconds']}s "
+                f"[Breakdown: WAV parse={bk['wav_parse']}ms, PCM norm={bk['pcm_norm']}ms, C buf={bk['c_buf_prep']}ms, Native={bk['native_inference']}ms]"
+            )
     else:
         gate_01_status = "NOT RUN"
         gate_01_measured = f"Designated 5-second benchmark sample '{DESIGNATED_5S_SAMPLE}' missing from evaluation corpus"
@@ -1357,10 +1441,14 @@ def run_benchmark(
     fc_results = verify_fail_closed_behavior(runtime_dir=runtime_dir)
     gate_09_pass = fc_results["passed"]
     gate_09_status = "PASS" if gate_09_pass else "FAIL"
-    gate_09_measured = (
-        "Verified: missing model fails closed, corrupted model fails closed, "
-        "missing runtime fails closed in isolated fixtures"
-    )
+    sub_results = fc_results.get("subtests", {})
+    report["fail_closed_subtests"] = sub_results
+    passed_probes = [k.replace("_fails_closed", "").replace("_", " ") for k, v in sub_results.items() if v]
+    failed_probes = [k.replace("_fails_closed", "").replace("_", " ") for k, v in sub_results.items() if not v]
+    if gate_09_pass:
+        gate_09_measured = f"Verified: all probes passed ({', '.join(passed_probes)}) in isolated fixtures"
+    else:
+        gate_09_measured = f"Incomplete/Failed: passed [{', '.join(passed_probes)}], failed/unexecuted [{', '.join(failed_probes)}]"
 
     # GATE-VOICE-10: License Review
     gate_10_status = "NOT RUN"
@@ -1459,11 +1547,14 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         status_line = "Stage 2 Prototype — Incomplete / Partial Qualification"
 
     git_commit_str = report['host'].get('git_commit', 'unknown')
-    if report['host'].get('git_clean') is not None:
-        clean_str = " (Clean)" if report['host']['git_clean'] else " (Modified)"
-        git_commit_display = f"`{git_commit_str}`{clean_str}"
+    git_clean_val = report['host'].get('git_clean')
+    if git_clean_val is True:
+        clean_str = " (Clean)"
+    elif git_clean_val is False:
+        clean_str = " (Modified)"
     else:
-        git_commit_display = f"`{git_commit_str}`"
+        clean_str = " (Unknown)"
+    git_commit_display = f"`{git_commit_str}`{clean_str}"
 
     lines: list[str] = [
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
@@ -1521,6 +1612,17 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     real_macro_cer = summary.get("real_speech_macro_cer")
     smoke_wer = summary.get("smoke_commands_aggregate_wer")
 
+    fc_subtests = report.get("fail_closed_subtests", {})
+    if fc_subtests and all(fc_subtests.values()):
+        passed_names = ", ".join(k.replace("_fails_closed", "").replace("_", " ") for k in fc_subtests)
+        fc_desc = f"4. **Fail-Closed Protection**: Verified immediate typed exceptions across all probes ({passed_names}) in isolated fixtures."
+    elif fc_subtests:
+        passed_names = ", ".join(k.replace("_fails_closed", "").replace("_", " ") for k, v in fc_subtests.items() if v)
+        failed_names = ", ".join(k.replace("_fails_closed", "").replace("_", " ") for k, v in fc_subtests.items() if not v)
+        fc_desc = f"4. **Fail-Closed Protection**: Incomplete fail-closed verification: passed [{passed_names}], failed/unexecuted [{failed_names}]."
+    else:
+        fc_desc = "4. **Fail-Closed Protection**: Fail-closed safety probe execution unrecorded."
+
     lines.extend([
         "",
         "---",
@@ -1558,7 +1660,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "1. **Zero Raw-Audio Disk Retention**: Evaluated in-memory pointer pipeline. 0 audio files found in process temporary directories. Full OS kernel minifilter audit marked NOT RUN.",
         "2. **Zero Cloud Egress**: Monitored socket connections for PID. Full kernel ETW DNS tracing marked NOT RUN.",
         "3. **In-Memory Buffer Zeroization**: Best-effort zeroization scrubs mutable application arrays (ctypes float arrays, lists, bytearrays). Immutable Python objects and native C++ heap buffers are freed upon context teardown.",
-        "4. **Fail-Closed Protection**: Verified immediate typed exceptions upon missing model, truncated model header, cryptographic SHA-256 digest mismatch, and missing runtime in isolated fixtures.",
+        fc_desc,
         "5. **Production Boundary**: Production adapter (`LocalWhisperSpeechToTextAdapter`) remains strictly disabled (`is_available() == False`) and fails closed.",
     ])
 
