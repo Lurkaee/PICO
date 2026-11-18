@@ -79,3 +79,65 @@
 3. **In-Memory Buffer Zeroization**: Best-effort zeroization scrubs mutable application arrays (ctypes float arrays, lists, bytearrays). Immutable Python objects and native C++ heap buffers are freed upon context teardown.
 4. **Fail-Closed Protection**: Verified immediate typed exceptions upon missing model, truncated model header, cryptographic SHA-256 digest mismatch, and missing runtime in isolated fixtures.
 5. **Production Boundary**: Production adapter (`LocalWhisperSpeechToTextAdapter`) remains strictly disabled (`is_available() == False`) and fails closed.
+
+---
+
+## 6. Stage 3 Readiness Assessment & Preflight Audit
+
+- **Audit Date**: 2026-11-18T22:30:00+05:30
+- **Audited Main Commit**: `6f39fd74dce5c30850792d55993ab30b1873c8fd`
+- **Evaluation Target**: Milestone P11.3 Stage 3 (Local STT Runtime Integration) Readiness
+
+### 6.1 Resource Preflight Telemetry
+
+A non-invasive, read-only preflight inspection of host memory and compute resources was conducted:
+
+| Metric | Measured Value | Qualification Threshold | Compliance Assessment |
+|---|---|---|---|
+| **Total System RAM** | 15.64 GB (16,791,048,192 bytes) | 16 GB Physical | Compliant |
+| **Available System RAM** | 2.41 GB (2,472.8 MB, 2,592,919,552 bytes) | > 1,536.0 MB (1.5 GB) | Exceeds idle threshold; however, physical test under load historically dipped to 863.1 MB |
+| **Dedicated GPU VRAM** | Total: 4,094.0 MiB, Used: 0.0 MiB, Free: 3,892.0 MiB | 0 MiB Voice Consumption | VRAM available; LLM residency unverified |
+| **Ollama Model Residency** | 0 models resident (`/api/ps` returned 0 active instances) | `qwen3.5:2b` resident in VRAM | **NOT MET** (`qwen3.5:2b` installed but not resident) |
+
+**Top Host Memory Consuming Processes**:
+1. `chrome.exe` (PID 20660): 804.09 MB
+2. `MsMpEng.exe` (PID 4268): 768.48 MB
+3. `agy.exe` (PID 18160): 706.17 MB
+4. `Antigravity IDE.exe` (PIDs 3312, 5756, 23336, 3240, 13084): ~2.25 GB aggregate
+5. `vmmemWSL` (PID 6072): 327.51 MB
+
+### 6.2 Pre-Requisite Audit for Stage 3
+
+1. **Representative Multi-Speaker Corpus (`GATE-VOICE-02`)**:
+   - Current manifest (`docs/evaluation/voice_corpus_manifest.json`) explicitly acknowledges: *"The current corpus does NOT constitute a representative multi-speaker conversational evaluation."*
+   - Current fixtures comprise 1 historical speech (JFK, 1 male speaker), 1 synthetic digit sequence (Vosk, 1 speaker), and 4 synthetic Windows SAPI commands.
+   - Genuine multi-speaker conversational dataset with verified ground truth transcripts and permissive licensing: **UNAVAILABLE**.
+   - Status: **NOT RUN** (Accuracy qualification blocked until dataset is acquired).
+
+2. **Single-Model GPU VRAM & Co-Residency (`GATE-VOICE-04`)**:
+   - Ollama `api/ps` reported 0 active models during preflight.
+   - PICO operating rules strictly forbid automated warmup, pulling, or loading of models.
+   - In accordance with benchmark Gate 04 evaluation rules, missing model residency results in **NOT RUN**.
+
+3. **RAM Ceiling Under Concurrent Load (`GATE-VOICE-05`)**:
+   - While idle available RAM is currently 2,472.8 MB (> 1,536.0 MB), historical benchmark load testing recorded an available RAM minimum of 863.1 MB under concurrent development load.
+   - Status: **FAIL** (Historical qualification failure preserved until full benchmark can be cleanly executed with resident LLM).
+
+4. **Privacy & Elevation Audits (`GATE-VOICE-06` & `GATE-VOICE-07`)**:
+   - Current security context verified: `Administrator == False` (non-elevated session).
+   - Independent kernel ETW DNS-client activity tracing and filesystem minifilter audits require administrative elevation.
+   - In accordance with non-negotiable security boundaries, Windows security controls are preserved without modification.
+   - Status: **NOT RUN** (Process-level zero sockets and zero temp disk files confirmed).
+
+### 6.3 Stage 3 Authorization Decision
+
+- **DECISION: P11.3 STAGE 3 INTEGRATION IS NOT AUTHORIZED**
+- **Rationale**:
+  - `GATE-VOICE-02` (Accuracy) remains unverified on a representative multi-speaker corpus.
+  - `GATE-VOICE-04` (GPU Co-Residency) lacks same-artifact digest continuity evidence against a resident LLM.
+  - `GATE-VOICE-05` (RAM Ceiling) remains in a FAIL state from historical load testing.
+  - `GATE-VOICE-06` and `GATE-VOICE-07` lack elevated kernel trace verification.
+- **Production Guardrails Maintained**:
+  - `LocalWhisperSpeechToTextAdapter` in `pico/perception/audio/adapter.py` remains strictly disabled (`is_available() == False`).
+  - `VoiceService` and `AudioSessionManager` continue to fail closed with `ValidationError("Speech recognition is disabled")`.
+  - Zero model weights or binary artifacts committed to version control.
