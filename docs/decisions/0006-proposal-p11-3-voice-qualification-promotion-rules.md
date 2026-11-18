@@ -13,14 +13,15 @@
 > [!IMPORTANT]
 > **PROPOSAL STATUS — NON-NORMATIVE NOTICE:**
 > This document is an **architectural proposal submitted for project owner review and explicit decision**. It does **NOT** amend, supersede, or modify the accepted baseline of [ADR 0005](0005-local-voice-engine-selection-and-hardware-qualification.md), [Qualification Protocol](../evaluation/voice-engine-qualification.md), or [Implementation Plan](../implementation-plan.md).
-> 
+>
 > Furthermore, this proposal does **NOT** authorize or activate Milestone P11.3 Stage 3 (Local Speech-to-Text Runtime Integration) or Stage 4 (Local Text-to-Speech Runtime Integration). Production speech recognition remains strictly disabled (`LocalWhisperSpeechToTextAdapter.is_available() == False`) and fails closed with `ValidationError("Speech transcription runtime is unavailable")`.
 
-This proposal addresses two structural ambiguities identified during the closure of Milestone P11.3.2 Stage 2 and recorded in PR #94:
+This proposal addresses three structural ambiguities and canonical inconsistencies identified during the closure of Milestone P11.3.2 Stage 2 and recorded in PR #94:
 1. **The Stage 3 / Stage 4 Qualification Scope Ambiguity**: The tension between the sequential implementation plan (which separates STT Stage 3 from TTS Stage 4) and the qualification protocol §7 (which lists a unified set of ten gates as blockers before Stage 3/4).
 2. **The `GATE-VOICE-02` Accuracy Corpus Acceptance Interpretation**: The tension between the ADR requirement for "conversational English commands", the protocol specification of four named command clips, and the reality that those clips in the current manifest are synthetic Windows SAPI recordings.
+3. **The Voice Working Set RAM Threshold Inconsistency**: The variation between ADR 0005 §4.1 (< 450 MB), ADR 0005 §6 (< 500 MB), and Qualification Protocol §7 (< 450 MB peak with > 1.5 GB free RAM).
 
-This proposal provides a concrete, stage-specific gate decomposition and evaluates two corpus interpretation options for project owner sign-off.
+This proposal provides a concrete, stage-specific gate decomposition, conservative resource treatments, and two corpus interpretation options for project owner sign-off.
 
 ---
 
@@ -83,11 +84,32 @@ A three-way divergence exists between the architectural requirement, the protoco
 
 ---
 
+### 2.3 Conflict 3: Canonical Voice Working Set RAM Threshold Inconsistency
+
+An explicit numerical inconsistency exists across canonical project documents regarding peak memory allocation:
+
+| Canonical Document Reference | Stated Working Set Target | Stated System Free RAM Headroom | Context |
+| :--- | :--- | :--- | :--- |
+| **ADR 0005 §4.1 (Table 4.1)** | `< 450 MiB Working Set` | `~1,500 MiB` (above free threshold) | Voice STT/TTS Allocation Target |
+| **ADR 0005 §6 (Table 6, Row 1)** | `< 500 MB total peak Working Set` | Not explicitly listed in row | Runtime Memory Target across whisper.cpp and Piper |
+| **Qualification Protocol §7 (`GATE-VOICE-05`)** | `Voice peak Working Set < 450 MB` | `System Free RAM > 1.5 GB` ($> 1,536.0\text{ MB}$) | Formal Pass/Fail Blocker Gate |
+
+- **Inconsistency Assessment**:
+  - ADR 0005 §4.1 and Protocol §7 specify a **$450\text{ MB}$ Working Set ceiling**, while ADR 0005 §6 specifies a **$500\text{ MB}$ peak Working Set target**.
+  - Neither entry has formally superseded the other in accepted records.
+- **Proposed Conservative Treatment Pending Owner Approval**:
+  - **Stage 3 (STT Standalone)**: Voice STT peak Working Set strictly $< 450\text{ MB}$.
+  - **Stage 4 (Combined STT + TTS)**: Combined peak Working Set strictly $< 450\text{ MB}$ (conservatively honoring the stricter Protocol §7 and ADR §4.1 threshold).
+  - **System Available RAM**: Strictly $> 1,536.0\text{ MB}$ ($1.5\text{ GB}$) under concurrent development and Ollama workloads.
+  - **Preserved Status**: `GATE-VOICE-05` remains **`FAIL`** based on historical test load dropping to 863.1 MB available RAM.
+
+---
+
 ## 3. Proposed Stage-Specific Gate Matrix
 
 To reconcile the sequential delivery model with rigorous hardware and safety gating, this proposal decomposes the unified ten-gate matrix into two decoupled, verifiable milestone stages.
 
-Every canonical numerical threshold and severity classification from Protocol §7 is strictly preserved.
+Every canonical numerical threshold, severity classification, and protocol gate definition from Protocol §7 is strictly preserved.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -98,21 +120,23 @@ Every canonical numerical threshold and severity classification from Protocol §
 │   ├── GATE-VOICE-01 : STT Latency (RTF <= 0.30, 5s audio <= 1.5s)    [BLOCKER]  │
 │   ├── GATE-VOICE-02 : STT Accuracy (WER <= 12.0% on command corpus)   [BLOCKER]  │
 │   ├── GATE-VOICE-04 : Single-Model VRAM (Delta VRAM = 0 MiB, Ollama)  [BLOCKER]  │
-│   ├── GATE-VOICE-05 : RAM Ceiling (Voice peak < 450 MB, Free > 1.5 GB)[BLOCKER] │
+│   ├── GATE-VOICE-05 : RAM Ceiling (Peak STT < 450 MB, Free > 1.5 GB)  [BLOCKER]  │
 │   ├── GATE-VOICE-06 : Zero Audio Disk Retention & Buffer Zeroization  [BLOCKER]  │
 │   ├── GATE-VOICE-07 : Zero Network & DNS Egress Isolation             [BLOCKER]  │
-│   ├── GATE-VOICE-08 : STT Intermediate Packaging Budget (<= 150 MB)   [HIGH]     │
-│   ├── GATE-VOICE-09 : STT Fail-Closed Safety (Missing/Corrupt Model)  [BLOCKER]  │
-│   └── STT Licensing : Verified Permissive MIT License for whisper.cpp [BLOCKER]  │
+│   ├── GATE-VOICE-08 : Interim STT Packaging Measurement (Informational           │
+│   │                   against canonical < 350 MB combined budget)     [HIGH]     │
+│   ├── GATE-VOICE-09 : Integrated STT Fail-Closed Verification         [BLOCKER]  │
+│   └── STT Licensing : Component-Level MIT License Verification                   │
+│                       (Derived from ADR 0005; non-numbered check)                │
 │                                                                                 │
 │   STAGE 4: LOCAL TTS RUNTIME PROMOTION GATES                                    │
 │   ├── GATE-VOICE-03 : TTS Latency (TTFAC < 500 ms, RTF_synth <= 0.15) [BLOCKER] │
-│   ├── GATE-VOICE-08 : Combined Voice Packaging Budget (< 350 MB Total)[HIGH]     │
+│   ├── GATE-VOICE-08 : Combined Voice Subsystem Packaging (< 350 MB)   [HIGH]     │
 │   ├── GATE-VOICE-10 : Complete Voice Subsystem License Review         [BLOCKER]  │
 │   │                   (Piper GPL-3.0 Compatibility or Sherpa-ONNX)              │
 │   └── Combined Voice Resource & Privacy Re-Verification:                        │
 │       ├── Re-verify GATE-VOICE-04 (Co-residency with STT + TTS + LLM) [BLOCKER]  │
-│       ├── Re-verify GATE-VOICE-05 (Combined Working Set < 500 MB)     [BLOCKER]  │
+│       ├── Re-verify GATE-VOICE-05 (Combined Working Set < 450 MB)     [BLOCKER]  │
 │       ├── Re-verify GATE-VOICE-06 (TTS Audio Memory Zeroization)      [BLOCKER]  │
 │       ├── Re-verify GATE-VOICE-07 (TTS Zero Network/DNS Egress)       [BLOCKER]  │
 │       └── Re-verify GATE-VOICE-09 (TTS Fail-Closed Safety)            [BLOCKER]  │
@@ -123,9 +147,9 @@ Every canonical numerical threshold and severity classification from Protocol §
 
 ### 3.1 Stage 3 Promotion Matrix (Local Speech-to-Text Runtime Integration)
 
-Before promoting PICO to **Milestone P11.3 Stage 3** (activating `LocalWhisperSpeechToTextAdapter` in production), the following gates must be satisfied:
+Before promoting PICO to **Milestone P11.3 Stage 3** (activating `LocalWhisperSpeechToTextAdapter` in production), the following gates and prerequisites must be satisfied:
 
-| Gate ID | Target Requirement | Severity | Verification Method | Stage 3 Promotion Applicability |
+| Gate / Evidence Item | Canonical Target Requirement | Severity | Verification Method | Stage 3 Promotion Applicability |
 | :--- | :--- | :--- | :--- | :--- |
 | **`GATE-VOICE-01`** | STT $\text{RTF} \le 0.30$ on Intel i5-13420H CPU (5s audio in $\le 1.5\text{s}$) | **BLOCKER** | Deterministic benchmark on `audio_cmd_workflow_5s.wav` | **Mandatory Precondition**. Passed historically ($\text{RTF}=0.2437$, P50=1.1992s). |
 | **`GATE-VOICE-02`** | STT $\text{WER} \le 12.0\%$ on conversational English commands | **BLOCKER** | Word Error Rate evaluation across canonical command clips | **Mandatory Precondition**. Currently `NOT RUN`. Requires owner selection between Option A and Option B below. |
@@ -133,9 +157,9 @@ Before promoting PICO to **Milestone P11.3 Stage 3** (activating `LocalWhisperSp
 | **`GATE-VOICE-05`** | STT peak Working Set $< 450\text{ MB}$; System Available RAM $> 1,536.0\text{ MB}$ under load | **BLOCKER** | Continuous memory sampler during simultaneous LLM + STT load | **Mandatory Precondition**. Currently `FAIL` (863.1 MB recorded under historical test load). |
 | **`GATE-VOICE-06`** | Zero audio bytes written to persistent storage; mutable capture buffers zeroized | **BLOCKER** | Process file handle monitoring & buffer inspection | **Mandatory Precondition**. Currently `NOT RUN` (verified in prototype; elevated kernel audit required). |
 | **`GATE-VOICE-07`** | Zero outbound socket connections and zero DNS queries during transcription | **BLOCKER** | Socket inspection & DNS event monitoring during inference | **Mandatory Precondition**. Currently `NOT RUN` (verified 0 sockets; elevated ETW trace required). |
-| **`GATE-VOICE-08` (STT Slice)** | STT engine binary + DLLs + model footprint $\le 150\text{ MB}$ on disk | **HIGH** | Directory size check of STT bundle components | **Intermediate Milestone Check**. Prototype footprint is 80.92 MB (well within the STT slice). Treated as HIGH (see §3.3). |
+| **`GATE-VOICE-08`** *(Interim Measurement)* | Total combined voice packaging $< 350\text{ MB}$. At Stage 3: interim footprint measurement of STT slice. | **HIGH** | Directory size check of STT bundle components | **Informational Interim Measurement**. Retains canonical `HIGH` severity. Measured prototype STT footprint is **80.92 MB** (informational evidence against eventual $< 350\text{ MB}$ budget; see §3.3). |
 | **`GATE-VOICE-09`** | Deterministic typed exceptions on missing binary or corrupted model in integrated adapter | **BLOCKER** | Unit & integration tests asserting fail-closed behavior without fallback mocks | **Mandatory Precondition**. Validated on isolated prototype; must be re-verified on production adapter. |
-| **STT Component Licensing** | Permissive open-source license (MIT) for Whisper runtime, shim, and GGML model | **BLOCKER** | Legal audit of `whisper.cpp` (MIT) and GGML weights | **Mandatory Precondition**. Prototype STT tooling is 100% MIT. Compliant. |
+| **STT Component Licensing** *(Derived Prerequisite)* | Permissive open-source license (MIT) for Whisper runtime, shim, and GGML model | **Prerequisite** *(Non-numbered)* | Legal audit of `whisper.cpp` (MIT) and GGML weights | **Component-Level Prerequisite** derived from ADR 0005 §2.7. Prototype STT tooling is 100% MIT. `GATE-VOICE-10` remains the formal full gate at Stage 4. |
 
 ---
 
@@ -143,29 +167,47 @@ Before promoting PICO to **Milestone P11.3 Stage 3** (activating `LocalWhisperSp
 
 Before promoting PICO to **Milestone P11.3 Stage 4** (activating `LocalTextToSpeechAdapter` in production), the remaining voice gates must be satisfied:
 
-| Gate ID | Target Requirement | Severity | Verification Method | Stage 4 Promotion Applicability |
+| Gate / Evidence Item | Canonical Target Requirement | Severity | Verification Method | Stage 4 Promotion Applicability |
 | :--- | :--- | :--- | :--- | :--- |
 | **`GATE-VOICE-03`** | TTS Time-to-First-Audio-Chunk (TTFAC) $< 500\text{ ms}$; Synthesis $\text{RTF}_{\text{synth}} \le 0.15$ | **BLOCKER** | High-resolution timer measuring synthesis on benchmark prompt corpus | **Mandatory Precondition for TTS**. Evaluates Piper ONNX or sherpa-onnx. |
-| **`GATE-VOICE-08` (Combined Subsystem)** | Combined STT + TTS binaries, DLLs, and models disk footprint $< 350\text{ MB}$ total | **HIGH** | Installer staging check (`tools/packaging/stage_windows_bundle.py`) | **Release Packaging Gate**. Verifies total footprint before Windows NSIS distribution (see §3.3). |
-| **`GATE-VOICE-10`** | Complete voice subsystem licensing: resolution of Piper GPL-3.0 redistribution compatibility or adoption of `sherpa-onnx` (Apache 2.0) | **BLOCKER** | Formal legal & packaging architecture review sign-off | **Mandatory Precondition for TTS**. Prohibits shipping unreviewed copyleft binaries in NSIS bundle. |
-| **Combined Resource & Privacy Re-Verification** | Coexistence of STT + TTS + LLM: $\Delta\text{VRAM}=0\text{ MiB}$, Combined Working Set $< 500\text{ MB}$, Available RAM $> 1.5\text{ GB}$, zero disk retention, zero egress | **BLOCKER** | Comprehensive multi-modal benchmark executing simultaneous STT and TTS | **Mandatory Precondition for Voice System Completion**. Prevents resource regression when both voice runtimes are active. |
+| **`GATE-VOICE-08`** *(Combined Subsystem)* | Combined STT + TTS binaries, DLLs, and models disk footprint $< 350\text{ MB}$ total | **HIGH** | Installer staging check (`tools/packaging/stage_windows_bundle.py`) | **Release Packaging Gate**. Retains canonical `HIGH` severity. Evaluates complete voice subsystem before Windows NSIS distribution (see §3.3). |
+| **`GATE-VOICE-10`** | Complete voice subsystem licensing: resolution of Piper GPL-3.0 redistribution compatibility or adoption of `sherpa-onnx` (Apache 2.0) | **BLOCKER** | Formal legal & packaging architecture review sign-off | **Mandatory Precondition for Full Voice System**. Formal gate resolving copyleft redistribution in NSIS bundle. |
+| **Combined Resource & Privacy Re-Verification** | Coexistence of STT + TTS + LLM: $\Delta\text{VRAM}=0\text{ MiB}$, Combined Working Set $< 450\text{ MB}$, Available RAM $> 1.5\text{ GB}$, zero disk retention, zero egress | **BLOCKER** | Comprehensive multi-modal benchmark executing simultaneous STT and TTS | **Mandatory Precondition for Voice System Completion**. Prevents resource regression when both voice runtimes are active. |
 
 ---
 
-### 3.3 Treatment and Severity of `GATE-VOICE-08` (Packaging Bounds)
+### 3.3 Precise Treatment of `GATE-VOICE-08` (Packaging Bounds)
 
-A key operational nuance concerns **`GATE-VOICE-08`**, which is classified as **`HIGH`** in Qualification Protocol §7, rather than **`BLOCKER`**:
+To eliminate specification drift regarding packaging budgets:
 
-1. **Protocol Definition**:
-   - Threshold: Total voice engine binaries, shared runtime DLLs, and voice models must remain $< 350\text{ MB}$ combined.
-   - Severity: `HIGH` (important release quality attribute, but not a catastrophic runtime stability blocker like memory exhaustion or privacy leakage).
-2. **Treatment at Stage 3 (STT Integration)**:
-   - At Stage 3, only the STT runtime (`whisper.dll` / `pico_whisper_shim.dll` ~3.2 MB) and STT model (`ggml-base.en-q8_0.bin` ~81.8 MB) are installed, totaling **80.92 MB**.
-   - The full $350\text{ MB}$ threshold cannot be fairly assessed at Stage 3 because the TTS runtime and voice models are not yet deployed.
-   - **Proposed Rule**: At Stage 3, `GATE-VOICE-08` is treated as an **intermediate verification check** (STT component footprint $\le 150\text{ MB}$, severity `HIGH`). It is non-blocking for STT runtime integration as long as the STT footprint remains within its allocated slice.
-3. **Treatment at Stage 4 (TTS & Full System Packaging)**:
-   - At Stage 4, the combined voice subsystem (STT + Piper/Sherpa TTS + ONNX Runtime + voice models) is staged into the Windows package.
-   - **Proposed Rule**: At Stage 4, `GATE-VOICE-08` evaluates the full combined footprint ($< 350\text{ MB}$). While classified `HIGH` during intermediate development, **formal packaging and distribution in the Windows NSIS installer requires 100% compliance** to respect host disk constraints (~5.48 GB available disk space on target hardware).
+1. **Canonical Budget Preservation**:
+   - The accepted ADR 0005 §2.6 and Qualification Protocol §7 define exactly one packaging threshold:
+     $$\text{Combined Voice Subsystem Footprint} < 350\text{ MB}$$
+   - **No separate $\le 150\text{ MB}$ formal gate exists in normative records.** Any reference to a $150\text{ MB}$ threshold is an internal engineering heuristic and must not be treated as a formal gate.
+2. **Preservation of Canonical Severity**:
+   - `GATE-VOICE-08` is classified as **`HIGH`** in Qualification Protocol §7.
+   - It is not silently elevated to `BLOCKER` in this proposal.
+3. **Stage 3 Application (Informational Interim Measurement)**:
+   - At Stage 3, only the STT runtime (`whisper.dll` / `pico_whisper_shim.dll` ~3.2 MB) and default STT model (`ggml-base.en-q8_0.bin` ~81.8 MB) are present, totaling **80.92 MB**.
+   - This 80.92 MB footprint is recorded as **informational empirical evidence** demonstrating that STT consumes only ~23% of the eventual $350\text{ MB}$ allowance.
+   - It does not constitute a separate pass/fail gate.
+4. **Stage 4 Application (Full Subsystem Packaging)**:
+   - At Stage 4, the full voice subsystem (STT + Piper/Sherpa TTS + ONNX Runtime + voice models) is staged.
+   - The combined bundle must satisfy the canonical $< 350\text{ MB}$ target before inclusion in the production Windows NSIS installer.
+
+---
+
+### 3.4 Precise Classification of STT Licensing Evidence
+
+To prevent proliferation of non-canonical gates:
+
+1. **Component-Level Prerequisite, Not a New Gate**:
+   - Verifying the licensing of `whisper.cpp`, the native MSVC shim, and GGML model weights is an **evidence prerequisite derived directly from ADR 0005 §2.7** (*"Licensing Compatibility"*).
+   - It is **not** assigned a new numbered gate identifier (e.g. `GATE-VOICE-11`), nor does it invent a new severity classification.
+2. **`GATE-VOICE-10` Remains the Canonical Gate**:
+   - `GATE-VOICE-10` remains the formal, numbered qualification gate defined in Protocol §7: *"Resolution of Piper GPL-3.0 redistribution compatibility or adoption of sherpa-onnx (Apache 2.0)"*.
+   - Because `GATE-VOICE-10` specifically addresses the copyleft redistribution implications of Piper TTS within the Windows NSIS package, it is formally scoped to **Stage 4**.
+   - STT components (`whisper.cpp` MIT license) already comply with PICO's top-level MIT license, satisfying the component-level prerequisite for Stage 3 without ambiguity.
 
 ---
 
@@ -258,7 +300,7 @@ The existing empirical qualification report ([docs/evaluation/voice-qualificatio
 | **`GATE-VOICE-05`** | RAM Ceiling | **FAIL** | **BLOCKER**: Available RAM dropped to 863.1 MB ($\le 1,536.0\text{ MB}$ threshold) under historical test load. |
 | **`GATE-VOICE-06`** | Disk Retention | **NOT RUN** | **BLOCKER**: 0 temp audio files observed; formal elevated kernel filesystem audit pending. |
 | **`GATE-VOICE-07`** | Network Egress | **NOT RUN** | **BLOCKER**: 0 sockets observed; formal elevated kernel ETW DNS-client trace audit pending. |
-| **`GATE-VOICE-08`** | Packaging Bounds | **NOT RUN** | Intermediate STT footprint (80.92 MB) is compliant; full subsystem deferred to Stage 4. |
+| **`GATE-VOICE-08`** | Packaging Bounds | **NOT RUN** | Interim STT footprint (80.92 MB) is recorded; full subsystem gate deferred to Stage 4. Severity: `HIGH`. |
 | **`GATE-VOICE-09`** | Fail-Closed Safety | **PASS** | Passed on isolated prototype harness fixtures. Production adapter verification required. |
 | **`GATE-VOICE-10`** | License Review | **NOT RUN** | STT tooling is MIT compliant; Piper GPL-3.0 vs. Sherpa Apache-2.0 deferred to Stage 4. |
 
@@ -275,12 +317,12 @@ The existing empirical qualification report ([docs/evaluation/voice-qualificatio
 
 ## 6. Decisions Required from Project Owner
 
-To progress from this proposal to normative document amendments, the project owner must review and decide upon the following four explicit questions:
+To progress from this proposal to normative document amendments, the project owner must review and decide upon the following five explicit questions:
 
 ### Owner Decision Checklist
 
 - [ ] **Decision 1: Stage-Specific Gate Decomposition**
-  - **Proposed**: Formally decouple P11.3 into Stage 3 (STT Gates 01, 02, 04, 05, 06, 07, 08-STT, 09, STT-License) and Stage 4 (TTS Gates 03, 08-Full, 10, and Combined Voice Re-Verification).
+  - **Proposed**: Formally decouple P11.3 into Stage 3 (STT Gates 01, 02, 04, 05, 06, 07, 08-interim, 09, STT licensing evidence) and Stage 4 (TTS Gates 03, 08-Full, 10, and Combined Voice Re-Verification).
   - *Options*: `APPROVE Proposed Decomposition` | `REJECT (Retain Unified 10-Gate Blocker Matrix)` | `REVISE (Specify Adjustments)`
 
 - [ ] **Decision 2: `GATE-VOICE-02` Accuracy Corpus Acceptance Standard**
@@ -288,11 +330,15 @@ To progress from this proposal to normative document amendments, the project own
   - *Options*: `APPROVE Option B (Human Command Audio)` | `APPROVE Option A (Synthetic SAPI Audio)` | `REVISE (Specify Alternative)`
 
 - [ ] **Decision 3: `GATE-VOICE-08` Packaging Footprint Treatment**
-  - **Proposed**: Treat `GATE-VOICE-08` at Stage 3 as an intermediate check ($\le 150\text{ MB}$ STT slice, severity `HIGH`), and at Stage 4 as a mandatory release packaging requirement ($< 350\text{ MB}$ combined voice subsystem).
-  - *Options*: `APPROVE Proposed Treatment` | `ELEVATE to BLOCKER at all stages` | `REVISE (Specify Adjustments)`
+  - **Proposed**: Preserve the canonical $< 350\text{ MB}$ total voice budget and `HIGH` severity. At Stage 3, record STT footprint (80.92 MB) as an informational interim measurement without inventing a separate 150 MB gate. At Stage 4, evaluate the combined voice subsystem against $< 350\text{ MB}$.
+  - *Options*: `APPROVE Proposed Treatment` | `ELEVATE to BLOCKER at Stage 4` | `REVISE (Specify Adjustments)`
 
-- [ ] **Decision 4: Authorization to Amend Normative Architecture Documents**
-  - **Proposed**: Upon owner decision on items 1–3, author formal amendments to [ADR 0005](0005-local-voice-engine-selection-and-hardware-qualification.md), [Qualification Protocol](../evaluation/voice-engine-qualification.md), and [Implementation Plan](../implementation-plan.md).
+- [ ] **Decision 4: Working Set RAM Inconsistency Resolution (`GATE-VOICE-05`)**
+  - **Proposed**: Resolve the inconsistency between ADR 0005 §4.1 (450 MB) and ADR 0005 §6 (500 MB) by adopting the conservative `< 450 MB` peak Working Set limit for both Stage 3 STT and Stage 4 combined voice, while strictly enforcing $> 1,536.0\text{ MB}$ available system RAM headroom.
+  - *Options*: `APPROVE Conservative 450 MB Ceiling` | `ACCEPT 500 MB Table 6 Limit` | `REVISE (Specify Threshold)`
+
+- [ ] **Decision 5: Authorization to Amend Normative Architecture Documents**
+  - **Proposed**: Upon owner decision on items 1–4, author formal amendments to [ADR 0005](0005-local-voice-engine-selection-and-hardware-qualification.md), [Qualification Protocol](../evaluation/voice-engine-qualification.md), and [Implementation Plan](../implementation-plan.md).
   - *Options*: `AUTHORIZE Document Amendments` | `DEFER Amendments`
 
 ---
@@ -302,7 +348,7 @@ To progress from this proposal to normative document amendments, the project own
 Following project owner approval of this proposal:
 
 1. **Phase 1: Normative Document Amendments**:
-   - Amend ADR 0005 to record the accepted stage-specific promotion gates and corpus interpretation.
+   - Amend ADR 0005 to record the accepted stage-specific promotion gates, corpus interpretation, and clarified RAM Working Set threshold.
    - Update `docs/evaluation/voice-engine-qualification.md` §7 to formalize the separate Stage 3 and Stage 4 gate matrices.
    - If Option B is approved, update `docs/evaluation/voice_corpus_manifest.json` to define the ingestion schema for human command recordings.
 2. **Phase 2: Pre-Qualification Execution (Stage 2 Closure)**:
