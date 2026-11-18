@@ -207,8 +207,10 @@ def query_system_memory_mb() -> tuple[float | None, float | None]:
 def query_gpu_vram_mb() -> int | None:
     """Query NVIDIA GPU dedicated VRAM used in MiB via nvidia-smi.
 
-    Returns:
-        int MiB used, or None if nvidia-smi is unavailable or query fails.
+    If exactly one GPU is present, returns int MiB used.
+    If multiple GPUs are present, returns None (unavailable) to prevent false qualification
+    from measuring only the first GPU while activity occurs on a secondary GPU.
+    Returns None if nvidia-smi is unavailable, output is malformed, or query fails.
     """
     try:
         out = subprocess.check_output(
@@ -216,7 +218,16 @@ def query_gpu_vram_mb() -> int | None:
             stderr=subprocess.DEVNULL,
             timeout=5.0,
         )
-        return int(out.decode().strip().splitlines()[0])
+        lines = [line.strip() for line in out.decode("utf-8").strip().splitlines() if line.strip()]
+        if not lines:
+            return None
+        if len(lines) > 1:
+            logger.warning(
+                "Multiple NVIDIA GPUs detected (%d devices); marking VRAM telemetry unavailable to prevent single-device bias",
+                len(lines),
+            )
+            return None
+        return int(lines[0])
     except Exception:
         return None
 
@@ -402,6 +413,13 @@ def verify_ollama_model_residency(
           - OllamaResidencyState.NOT_RESIDENT (no models, cpu-only, or non-matching model)
           - OllamaResidencyState.QUERY_ERROR (API unreachable, network error, malformed JSON, invalid telemetry)
     """
+    clean_expected = expected_model.strip().lower()
+    valid_target_names = {clean_expected}
+    if not clean_expected.endswith(":latest"):
+        valid_target_names.add(f"{clean_expected}:latest")
+    if clean_expected.endswith(":latest"):
+        valid_target_names.add(clean_expected[:-7])
+
     try:
         req = urllib.request.Request("http://127.0.0.1:11434/api/ps")
         with urllib.request.urlopen(req, timeout=2.0) as resp:
@@ -421,8 +439,8 @@ def verify_ollama_model_residency(
                     continue
                 m_clean = m_name.strip().lower()
 
-                # Exact allowlist match only - reject arbitrary variants or substring matches
-                if m_clean in SUPPORTED_OLLAMA_MODELS:
+                # Exact target model match against valid names and global allowlist
+                if m_clean in valid_target_names and m_clean in SUPPORTED_OLLAMA_MODELS:
                     matching_entries.append(m)
 
             if matching_entries:
@@ -462,7 +480,7 @@ def verify_ollama_model_residency(
                 resident_names = [str(m.get("name", "unknown")) for m in models if isinstance(m, dict)]
                 return OllamaResidencyResult(
                     OllamaResidencyState.NOT_RESIDENT,
-                    f"Different model(s) resident: {', '.join(resident_names)} (expected one of: {', '.join(SUPPORTED_OLLAMA_MODELS.keys())})",
+                    f"Different model(s) resident: {', '.join(resident_names)} (expected target: {expected_model})",
                 )
             return OllamaResidencyResult(OllamaResidencyState.NOT_RESIDENT, "No models currently resident in Ollama memory")
     except Exception as exc:
@@ -659,39 +677,28 @@ def evaluate_gate_04(
 ) -> tuple[str, str]:
     """Evaluate GATE-VOICE-04: Single-Model GPU VRAM & Concurrent Ollama LLM Residency.
 
-    Requirements:
-    - Dedicated VRAM delta must be <= 0 MiB (zero additional VRAM consumed by STT).
-    - Uses maximum observed incremental VRAM change over the interval, including final reading.
-    - Requires complete lifecycle evidence:
-        * 'pre_init'
-        * at least one during-workload checkpoint (name starting with 'sample_' or containing 'workload')
-        * 'post_final'
-    - Pre-run target model must be positively GPU-resident. If not resident, returns NOT RUN (CPU isolation PASS).
-    - If target model loses GPU residency at any subsequent checkpoint (confirmed eviction), returns FAIL.
-    - If Ollama query fails (QUERY_ERROR or network error) without confirmed eviction, returns NOT RUN.
-    - Missing VRAM telemetry returns NOT RUN.
+    Evaluation hierarchy:
+    1. Confirmed model eviction: FAIL.
+    2. Confirmed digest substitution: FAIL.
+    3. Confirmed positive VRAM increase: FAIL (preserves observed breach even if later polls fail).
+    4. Missing VRAM telemetry without a confirmed violation: NOT RUN.
+    5. Incomplete lifecycle (requires pre_init, during-workload, post_final): NOT RUN.
+    6. Baseline not GPU resident or query error: NOT RUN.
+    7. Unverified residency query error at subsequent checkpoint: NOT RUN.
+    8. Missing model identity evidence (missing baseline or checkpoint digest): NOT RUN.
+    9. Complete valid observations with continuity and zero additional VRAM: PASS.
 
     Returns (status, measured_text).
     """
-    if vram_max_delta_mb is None or not vram_readings_valid or vram_initial_mb is None:
-        return (
-            "NOT RUN",
-            "GPU VRAM telemetry unavailable via nvidia-smi",
-        )
-
-    if vram_max_delta_mb > 0:
-        return (
-            "FAIL",
-            f"Maximum observed VRAM Delta = {vram_max_delta_mb} MiB (exceeds 0 MiB budget; "
-            f"initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
-            f"final={vram_final_mb} MiB across {vram_observations_count} observations)",
-        )
-
     # Normalize checkpoints to list of (name, OllamaResidencyState, info, digest)
     normalized_ckpts: list[tuple[str, OllamaResidencyState, str, str | None]] = []
     if ollama_checkpoints is not None:
         for item in ollama_checkpoints:
             name = item[0]
+            if len(item) == 2 and isinstance(item[1], OllamaResidencyResult):
+                res = item[1]
+                normalized_ckpts.append((name, res.state, res.info, res.digest))
+                continue
             val = item[1]
             info = item[2] if len(item) > 2 else ""
             digest = item[3] if len(item) > 3 else getattr(val, "digest", None)
@@ -715,7 +722,50 @@ def evaluate_gate_04(
         )
         normalized_ckpts = [("initial", st, ollama_info or "", None)]
 
-    # Check for required lifecycle phases: pre_init, during_workload, post_final
+    pre_ckpts = [c for c in normalized_ckpts if c[0] == "pre_init" or c[0].startswith("pre_")]
+    subsequent_ckpts = [c for c in normalized_ckpts if c not in pre_ckpts]
+
+    # Rule 1: Confirmed model eviction during STT execution produces FAIL
+    # (Evaluated before VRAM completeness so a telemetry failure cannot hide a confirmed eviction)
+    if pre_ckpts and any(c[1] == OllamaResidencyState.GPU_RESIDENT for c in pre_ckpts):
+        confirmed_evictions = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.NOT_RESIDENT]
+        if confirmed_evictions:
+            evict_name, _, evict_info, _ = confirmed_evictions[0]
+            return (
+                "FAIL",
+                f"Target model 'qwen3.5:2b' was evicted from GPU during STT execution (residency lost at checkpoint '{evict_name}': {evict_info}). "
+                f"Co-residency was violated.",
+            )
+
+    # Rule 2: Confirmed digest substitution produces FAIL
+    baseline_digest = pre_ckpts[0][3] if pre_ckpts else None
+    if baseline_digest:
+        for c_name, _, _, c_digest in subsequent_ckpts:
+            if c_digest and c_digest != baseline_digest:
+                return (
+                    "FAIL",
+                    f"Target model 'qwen3.5:2b' digest changed during STT execution (baseline: {baseline_digest}, at '{c_name}': {c_digest}). "
+                    f"Model substitution or re-loading detected.",
+                )
+
+    # Rule 3: Confirmed positive VRAM increase produces FAIL
+    # (Preserved even if subsequent VRAM readings failed or vram_readings_valid is False)
+    if vram_max_delta_mb is not None and vram_max_delta_mb > 0:
+        return (
+            "FAIL",
+            f"Maximum observed VRAM Delta = {vram_max_delta_mb} MiB (exceeds 0 MiB budget; "
+            f"initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
+            f"final={vram_final_mb} MiB across {vram_observations_count} observations)",
+        )
+
+    # Rule 4: Missing or invalid VRAM telemetry without a confirmed violation produces NOT RUN
+    if vram_max_delta_mb is None or not vram_readings_valid or vram_initial_mb is None:
+        return (
+            "NOT RUN",
+            "GPU VRAM telemetry unavailable via nvidia-smi",
+        )
+
+    # Rule 5: Lifecycle completeness
     has_pre_init = any(name == "pre_init" or name.startswith("pre_") for name, _, _, _ in normalized_ckpts)
     has_workload = any(name.startswith("sample_") or "workload" in name for name, _, _, _ in normalized_ckpts)
     has_post_final = any(name == "post_final" for name, _, _, _ in normalized_ckpts)
@@ -730,8 +780,7 @@ def evaluate_gate_04(
             f"(requires pre_init, during_workload, and post_final checkpoints; observed: {observed_phases}).",
         )
 
-    # Check pre-run baseline checkpoints (pre_init, pre_init_stability_check)
-    pre_ckpts = [c for c in normalized_ckpts if c[0] == "pre_init" or c[0].startswith("pre_")]
+    # Rule 6: Pre-run baseline checks
     for p_name, p_state, p_info, _ in pre_ckpts:
         if p_state == OllamaResidencyState.NOT_RESIDENT:
             status_desc = "was not stable on GPU before benchmark" if "stability" in p_name else "was not resident on GPU before benchmark"
@@ -749,20 +798,8 @@ def evaluate_gate_04(
                 f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified before benchmark ({p_info}).",
             )
 
-    # Baseline was GPU_RESIDENT! Now inspect subsequent checkpoints
-    baseline_digest = pre_ckpts[0][3] if pre_ckpts else None
-    subsequent_ckpts = [c for c in normalized_ckpts if c not in pre_ckpts]
-    confirmed_evictions = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.NOT_RESIDENT]
+    # Rule 7: Telemetry query errors at subsequent checkpoints
     query_errors = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.QUERY_ERROR]
-
-    if confirmed_evictions:
-        evict_name, _, evict_info, _ = confirmed_evictions[0]
-        return (
-            "FAIL",
-            f"Target model 'qwen3.5:2b' was evicted from GPU during STT execution (residency lost at checkpoint '{evict_name}': {evict_info}). "
-            f"CPU isolation observed 0 MiB VRAM delta at sampled checkpoints, but co-residency was violated.",
-        )
-
     if query_errors:
         unv_name, _, unv_info, _ = query_errors[0]
         return (
@@ -772,17 +809,26 @@ def evaluate_gate_04(
             f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified at checkpoint '{unv_name}' ({unv_info}).",
         )
 
-    # Verify model digest continuity across subsequent checkpoints
-    if baseline_digest:
-        for c_name, _, _, c_digest in subsequent_ckpts:
-            if c_digest and c_digest != baseline_digest:
-                return (
-                    "FAIL",
-                    f"Target model 'qwen3.5:2b' digest changed during STT execution (baseline: {baseline_digest}, at '{c_name}': {c_digest}). "
-                    f"Model substitution or re-loading detected.",
-                )
+    # Rule 8: Missing model identity evidence (missing baseline digest or checkpoint digest)
+    if baseline_digest is None:
+        return (
+            "NOT RUN",
+            f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
+            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+            f"Single-model residency qualification NOT RUN because baseline model artifact digest was not provided by Ollama.",
+        )
 
-    # All lifecycle checkpoints verified GPU_RESIDENT!
+    missing_digest_ckpts = [c for c in subsequent_ckpts if c[3] is None]
+    if missing_digest_ckpts:
+        m_name = missing_digest_ckpts[0][0]
+        return (
+            "NOT RUN",
+            f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
+            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+            f"Single-model residency qualification NOT RUN because model artifact digest was missing at checkpoint '{m_name}'.",
+        )
+
+    # Rule 9: Complete valid observations with continuity and zero additional VRAM -> PASS
     final_info = normalized_ckpts[-1][2]
     return (
         "PASS",
@@ -814,7 +860,8 @@ def evaluate_gate_05(
         if peak_working_set_mb is not None and peak_working_set_mb >= ws_threshold_mb:
             breaches.append(f"Peak Working Set: {peak_working_set_mb} MB exceeds {ws_threshold_mb} MB ceiling")
         if min_available_ram_mb is not None and min_available_ram_mb <= avail_threshold_mb:
-            breaches.append(f"Minimum Available RAM: {min_available_ram_mb} MB <= {avail_threshold_mb} MB (1.5 GB) threshold")
+            avail_disp = f"{round(min_available_ram_mb, 1)}"
+            breaches.append(f"Minimum Available RAM: {avail_disp} MB <= {avail_threshold_mb} MB (1.5 GB) threshold")
         if breaches:
             return "FAIL", "; ".join(breaches) + " (telemetry flagged incomplete or error encountered)"
         return "NOT RUN", "Required process or system RAM monitoring could not be completed"
@@ -822,6 +869,7 @@ def evaluate_gate_05(
     ws_pass = peak_working_set_mb < ws_threshold_mb
     avail_pass = min_available_ram_mb > avail_threshold_mb
 
+    avail_disp = f"{round(min_available_ram_mb, 1)}" if min_available_ram_mb is not None else "N/A"
     priv_str = f", Private Bytes: {private_usage_mb} MB" if private_usage_mb is not None else ""
     samples_str = f" across {samples_count} continuous samples" if samples_count > 0 else ""
 
@@ -829,7 +877,7 @@ def evaluate_gate_05(
         return (
             "PASS",
             f"Peak Working Set: {peak_working_set_mb} MB (< {ws_threshold_mb} MB), "
-            f"Min Available System RAM: {min_available_ram_mb} MB (> 1.5 GB){priv_str}{samples_str}",
+            f"Min Available System RAM: {avail_disp} MB (> 1.5 GB){priv_str}{samples_str}",
         )
     else:
         fail_reasons: list[str] = []
@@ -837,7 +885,7 @@ def evaluate_gate_05(
             fail_reasons.append(f"Peak Working Set {peak_working_set_mb} MB >= {ws_threshold_mb} MB")
         if not avail_pass:
             fail_reasons.append(
-                f"Min Available System RAM {min_available_ram_mb} MB <= {avail_threshold_mb} MB (1.5 GB threshold)"
+                f"Min Available System RAM {avail_disp} MB <= {avail_threshold_mb} MB (1.5 GB threshold)"
             )
         return (
             "FAIL",
@@ -892,18 +940,18 @@ def run_benchmark(
 
     try:
         # Step 1: Verify intended model is positively GPU-resident before establishing baseline
-        ollama_pre_state, ollama_pre_info = verify_ollama_model_residency("qwen3.5:2b")
-        ollama_checkpoints.append(("pre_init", ollama_pre_state, ollama_pre_info, getattr(ollama_pre_state, "digest", None)))
-        report["host"]["ollama_llm_resident"] = (ollama_pre_state == OllamaResidencyState.GPU_RESIDENT)
-        report["host"]["ollama_llm_details"] = ollama_pre_info
+        res_pre = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("pre_init", res_pre.state, res_pre.info, res_pre.digest))
+        report["host"]["ollama_llm_resident"] = (res_pre.state == OllamaResidencyState.GPU_RESIDENT)
+        report["host"]["ollama_llm_details"] = res_pre.info
 
         # Step 2: Confirm residency stability across baseline setup
-        if ollama_pre_state == OllamaResidencyState.GPU_RESIDENT:
+        if res_pre.state == OllamaResidencyState.GPU_RESIDENT:
             time.sleep(0.05)
-            ollama_stable_state, ollama_stable_info = verify_ollama_model_residency("qwen3.5:2b")
-            if ollama_stable_state != OllamaResidencyState.GPU_RESIDENT:
-                logger.warning("Ollama residency unstable during baseline setup: %s -> %s", ollama_pre_info, ollama_stable_info)
-                ollama_checkpoints.append(("pre_init_stability_check", ollama_stable_state, ollama_stable_info, getattr(ollama_stable_state, "digest", None)))
+            res_stable = verify_ollama_model_residency("qwen3.5:2b")
+            if res_stable.state != OllamaResidencyState.GPU_RESIDENT:
+                logger.warning("Ollama residency unstable during baseline setup: %s -> %s", res_pre.info, res_stable.info)
+                ollama_checkpoints.append(("pre_init_stability_check", res_stable.state, res_stable.info, res_stable.digest))
 
         # Step 3: Capture VRAM baseline only AFTER verifying Ollama residency state
         vram_initial = query_gpu_vram_mb()
@@ -928,8 +976,8 @@ def run_benchmark(
         report["runtime"]["cold_init_seconds"] = round(t_init_cold, 4)
 
         # Step 5: Record post-initialization residency
-        ollama_post_init_state, ollama_post_init_info = verify_ollama_model_residency("qwen3.5:2b")
-        ollama_checkpoints.append(("post_init", ollama_post_init_state, ollama_post_init_info, getattr(ollama_post_init_state, "digest", None)))
+        res_post_init = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("post_init", res_post_init.state, res_post_init.info, res_post_init.digest))
 
         sample_results: list[dict[str, Any]] = []
         max_vram_observed = vram_initial if vram_initial is not None else 0
@@ -1088,12 +1136,12 @@ def run_benchmark(
             )
 
             # Checkpoint: Check Ollama residency during workload after each audio file
-            res_ckpt, info_ckpt = verify_ollama_model_residency("qwen3.5:2b")
-            ollama_checkpoints.append((f"sample_{filename}", res_ckpt, info_ckpt, getattr(res_ckpt, "digest", None)))
+            res_ckpt = verify_ollama_model_residency("qwen3.5:2b")
+            ollama_checkpoints.append((f"sample_{filename}", res_ckpt.state, res_ckpt.info, res_ckpt.digest))
 
         # Checkpoint: Check Ollama residency post-final inference iteration
-        res_post_final, info_post_final = verify_ollama_model_residency("qwen3.5:2b")
-        ollama_checkpoints.append(("post_final", res_post_final, info_post_final, getattr(res_post_final, "digest", None)))
+        res_post_final = verify_ollama_model_residency("qwen3.5:2b")
+        ollama_checkpoints.append(("post_final", res_post_final.state, res_post_final.info, res_post_final.digest))
 
         # 5. Final Telemetry
         peak_ws_final, cur_ws_final, priv_final = query_process_memory_mb()
@@ -1156,12 +1204,17 @@ def run_benchmark(
     report["host"]["vram_observations_count"] = vram_observations_count
     report["host"]["vram_cadence"] = "sampled per iteration (~every 1s)"
 
+    confirmed_max_delta: float | None = None
+    if vram_initial is not None and max_vram_observed > vram_initial:
+        confirmed_max_delta = max_vram_observed - vram_initial
+
     if vram_readings_valid and vram_initial is not None and vram_final is not None:
         report["host"]["vram_delta_mb"] = vram_final - vram_initial
         report["host"]["vram_max_delta_mb"] = max_vram_observed - vram_initial
     else:
         report["host"]["vram_delta_mb"] = None
-        report["host"]["vram_max_delta_mb"] = None
+        # Preserve confirmed positive breach even if subsequent polls failed
+        report["host"]["vram_max_delta_mb"] = confirmed_max_delta
 
     report["results"] = sample_results
 
@@ -1210,8 +1263,9 @@ def run_benchmark(
 
     # 7. GATE Evaluation Matrix
     # GATE-VOICE-01: STT Latency
-    # Strict requirement: 5-second sample MUST exist and satisfy End-to-End P50 latency <= 1.5s (RTF <= 0.30)
-    five_sec_sample = next((s for s in sample_results if 4.5 <= s["audio_duration_seconds"] <= 5.5), None)
+    # Strict requirement: Designated 5-second sample ('audio_cmd_workflow_5s.wav') MUST exist and satisfy End-to-End P50 latency <= 1.5s (RTF <= 0.30)
+    DESIGNATED_5S_SAMPLE = "audio_cmd_workflow_5s.wav"
+    five_sec_sample = next((s for s in sample_results if s["filename"] == DESIGNATED_5S_SAMPLE), None)
     if five_sec_sample is not None:
         p50_5s = five_sec_sample["p50_latency_seconds"]
         rtf_5s = five_sec_sample["rtf_p50"]
@@ -1231,7 +1285,7 @@ def run_benchmark(
         )
     else:
         gate_01_status = "NOT RUN"
-        gate_01_measured = "Designated 5-second benchmark sample missing from evaluation corpus"
+        gate_01_measured = f"Designated 5-second benchmark sample '{DESIGNATED_5S_SAMPLE}' missing from evaluation corpus"
 
     # GATE-VOICE-02: STT Accuracy (WER)
     # The current corpus contains only JFK slices and 1 numeric sample.
@@ -1266,7 +1320,7 @@ def run_benchmark(
     # GATE-VOICE-05: System RAM Ceiling
     gate_05_status, gate_05_measured = evaluate_gate_05(
         peak_working_set_mb=report["host"]["peak_working_set_mb"],
-        min_available_ram_mb=report["host"]["min_available_ram_mb"],
+        min_available_ram_mb=overall_min_avail_ram,
         private_usage_mb=priv_final,
         ws_threshold_mb=450.0,
         avail_threshold_mb=1536.0,
@@ -1482,7 +1536,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## 4. Hardware & Resource Telemetry",
         "",
-        f"- **Cold Start Initialization Time**: {summary.get('cold_init_seconds')}s (PicoWhisperEngine.__init__() - model mmap and tensor allocation)",
+        f"- **Cold Start Initialization Time**: {summary.get('cold_init_seconds')}s (PicoWhisperEngine.__init__() - full constructor: artifact SHA-256 verification, DLL load, native context prep)",
         f"- **Peak Working Set Memory**: {summary.get('peak_working_set_mb')} MB",
         f"- **Minimum Available System RAM**: {summary.get('min_available_ram_mb')} MB"
         + (

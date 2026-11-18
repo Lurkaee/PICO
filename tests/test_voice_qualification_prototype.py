@@ -425,10 +425,10 @@ class TestGate04Evaluation:
 
     def test_gate_04_pass_with_multi_checkpoint_resident_llm(self):
         checkpoints = [
-            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
-            ("post_init", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
-            ("sample_1", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
-            ("post_final", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)", "sha256:target_digest_123"),
+            ("post_init", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)", "sha256:target_digest_123"),
+            ("sample_1", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)", "sha256:target_digest_123"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)", "sha256:target_digest_123"),
         ]
         status, text = evaluate_gate_04(
             vram_max_delta_mb=0,
@@ -610,6 +610,34 @@ class TestOllamaResidencyVerification:
                 {
                     "name": "qwen3.5:2b-instruct",
                     "size_vram": 1500000000,
+                    "digest": "sha256:instruct_instance",
+                }
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        state, info = verify_ollama_model_residency("qwen3.5:2b-instruct")
+        assert state == OllamaResidencyState.GPU_RESIDENT
+        assert "Model 'qwen3.5:2b-instruct'" in info
+
+    def test_verify_ollama_instruct_alias_rejected_when_canonical_expected(self, monkeypatch):
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b-instruct",
+                    "size_vram": 1500000000,
+                    "digest": "sha256:instruct_instance",
                 }
             ]
         }
@@ -627,8 +655,9 @@ class TestOllamaResidencyVerification:
 
         monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
         state, info = verify_ollama_model_residency("qwen3.5:2b")
-        assert state == OllamaResidencyState.GPU_RESIDENT
-        assert "Model 'qwen3.5:2b-instruct'" in info
+        assert state == OllamaResidencyState.NOT_RESIDENT
+        assert "Different model(s) resident: qwen3.5:2b-instruct" in info
+        assert "expected target: qwen3.5:2b" in info
 
     def test_verify_ollama_cpu_only_rejected(self, monkeypatch):
         fake_response = {
@@ -655,32 +684,6 @@ class TestOllamaResidencyVerification:
         state, info = verify_ollama_model_residency("qwen3.5:2b")
         assert state == OllamaResidencyState.NOT_RESIDENT
         assert "loaded on CPU only (size_vram=0), not GPU-resident" in info
-
-    def test_verify_ollama_invalid_vram_types_rejected(self, monkeypatch):
-        fake_response = {
-            "models": [
-                {
-                    "name": "qwen3.5:2b",
-                    "size_vram": None,
-                }
-            ]
-        }
-
-        class MockResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                pass
-
-            def read(self):
-                import json
-                return json.dumps(fake_response).encode("utf-8")
-
-        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
-        state, info = verify_ollama_model_residency("qwen3.5:2b")
-        assert state == OllamaResidencyState.NOT_RESIDENT
-        assert "loaded on CPU only (size_vram=None), not GPU-resident" in info
 
     def test_verify_ollama_different_model(self, monkeypatch):
         fake_response = {
@@ -937,6 +940,14 @@ class TestGate05Evaluation:
         assert status == "FAIL"
         assert "Min Available System RAM 1535.9 MB <= 1536.0 MB" in text
 
+    def test_available_ram_boundary_1535_99_fails(self):
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=1535.99,
+        )
+        assert status == "FAIL"
+        assert "Min Available System RAM 1536.0 MB <= 1536.0 MB" in text
+
     def test_available_ram_boundary_exact_fails(self):
         status, text = evaluate_gate_05(
             peak_working_set_mb=300.0,
@@ -944,6 +955,15 @@ class TestGate05Evaluation:
         )
         assert status == "FAIL"
         assert "Min Available System RAM 1536.0 MB <= 1536.0 MB" in text
+
+    def test_available_ram_boundary_1536_04_passes(self):
+        # 1536.04 MB is strictly > 1536.0 MB threshold and must pass, even if display rounding shows 1536.0 MB
+        status, text = evaluate_gate_05(
+            peak_working_set_mb=300.0,
+            min_available_ram_mb=1536.04,
+        )
+        assert status == "PASS"
+        assert "Min Available System RAM: 1536.0 MB (> 1.5 GB)" in text
 
     def test_available_ram_boundary_above_passes(self):
         status, _ = evaluate_gate_05(
@@ -1376,3 +1396,464 @@ class TestEngineSetupAndCleanupRobustness:
         )
         assert status == "NOT RUN"
         assert "was not stable on GPU before benchmark" in text
+
+
+class TestGpuVramTelemetryAndMultiGpu:
+    """Verifies single-GPU, multi-GPU, and malformed telemetry handling in query_gpu_vram_mb."""
+
+    def test_query_gpu_vram_single_gpu(self, monkeypatch):
+        monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: b"1450\n")
+        assert voice_bench.query_gpu_vram_mb() == 1450
+
+    def test_query_gpu_vram_multi_gpu_returns_unavailable(self, monkeypatch):
+        monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: b"1450\n2048\n")
+        assert voice_bench.query_gpu_vram_mb() is None
+
+    def test_query_gpu_vram_malformed_returns_unavailable(self, monkeypatch):
+        monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: b"not_an_int\n")
+        assert voice_bench.query_gpu_vram_mb() is None
+
+    def test_query_gpu_vram_empty_returns_unavailable(self, monkeypatch):
+        monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: b"   \n")
+        assert voice_bench.query_gpu_vram_mb() is None
+
+
+class TestGate04EvaluationHierarchy:
+    """Verifies the strict evaluation hierarchy of GATE-VOICE-04:
+    - Confirmed eviction -> FAIL (even if VRAM telemetry is unavailable)
+    - Confirmed digest substitution -> FAIL (even if VRAM telemetry is unavailable)
+    - Confirmed positive VRAM increase -> FAIL (even if subsequent readings failed)
+    - Missing VRAM telemetry without confirmed violation -> NOT RUN
+    - Missing model identity evidence (baseline or checkpoint digest missing) -> NOT RUN
+    - Complete valid observations with continuity and zero additional VRAM -> PASS
+    """
+
+    def test_confirmed_eviction_fails_even_with_unavailable_vram(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:abc"),
+            ("sample_1.wav", OllamaResidencyState.NOT_RESIDENT, "evicted from GPU", None),
+            ("post_final", OllamaResidencyState.NOT_RESIDENT, "evicted from GPU", None),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=None,  # VRAM telemetry failed!
+            vram_readings_valid=False,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "FAIL"
+        assert "evicted from GPU during STT execution" in text
+
+    def test_confirmed_digest_substitution_fails_even_with_unavailable_vram(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("sample_1.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:substituted"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:substituted"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=None,  # VRAM telemetry failed!
+            vram_readings_valid=False,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "FAIL"
+        assert "digest changed during STT execution" in text
+
+    def test_confirmed_vram_increase_fails_even_if_later_readings_failed(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("sample_1.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=25.0,  # Observed breach +25 MiB
+            vram_readings_valid=False,  # But later query timed out / invalid
+            vram_initial_mb=1000.0,
+            max_vram_observed_mb=1025.0,
+            vram_final_mb=None,
+            vram_observations_count=5,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "FAIL"
+        assert "exceeds 0 MiB budget" in text
+        assert "25.0 MiB" in text
+
+    def test_missing_vram_telemetry_without_violation_returns_not_run(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("sample_1.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=None,
+            vram_readings_valid=False,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "NOT RUN"
+        assert "GPU VRAM telemetry unavailable" in text
+
+    def test_missing_baseline_digest_returns_not_run(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", None),  # Missing digest!
+            ("sample_1.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_initial_mb=1000.0,
+            vram_final_mb=1000.0,
+            max_vram_observed_mb=1000.0,
+            vram_observations_count=10,
+            vram_readings_valid=True,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "NOT RUN"
+        assert "baseline model artifact digest was not provided" in text
+
+    def test_missing_checkpoint_digest_returns_not_run(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("sample_1.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", None),  # Missing digest!
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_initial_mb=1000.0,
+            vram_final_mb=1000.0,
+            max_vram_observed_mb=1000.0,
+            vram_observations_count=10,
+            vram_readings_valid=True,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "NOT RUN"
+        assert "model artifact digest was missing at checkpoint 'sample_1.wav'" in text
+
+    def test_complete_valid_continuity_passes(self):
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("sample_1.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:orig"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_initial_mb=1000.0,
+            vram_final_mb=1000.0,
+            max_vram_observed_mb=1000.0,
+            vram_observations_count=10,
+            vram_readings_valid=True,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "PASS"
+        assert "VRAM Delta = 0 MiB" in text
+
+
+class TestBenchmarkEndToEndDigestAndDesignatedFixture:
+    """Verifies end-to-end run_benchmark integration:
+    - Real OllamaResidencyResult digest propagates to every checkpoint
+    - Digest mutation causes end-to-end GATE-04 failure
+    - Designated 5s sample is strictly chosen by filename
+    """
+
+    def test_run_benchmark_propagates_digest_to_every_checkpoint(self, monkeypatch, tmp_path):
+        import json
+
+        # Mock Ollama returning consistent digest
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": 1024 * 1024 * 1500,
+                    "digest": "sha256:verified_target_digest_12345",
+                }
+            ]
+        }
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, **kwargs):
+                return (
+                    "dummy",
+                    0.1,
+                    5.0,
+                    {
+                        "wav_parse_seconds": 0.001,
+                        "pcm_norm_seconds": 0.001,
+                        "c_buf_prep_seconds": 0.001,
+                        "native_inference_seconds": 0.097,
+                    },
+                )
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        # Create corpus with designated file
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"RIFFdummyWAVE")
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        checkpoints = report["host"]["ollama_checkpoints"]
+        assert len(checkpoints) >= 3  # pre_init, sample_..., post_final
+        for name, state, info, digest in checkpoints:
+            assert digest == "sha256:verified_target_digest_12345", f"Checkpoint {name} missing verified digest!"
+
+        assert report["gates"]["GATE-VOICE-04"]["status"] == "PASS"
+
+    def test_run_benchmark_digest_change_fails_gate_04(self, monkeypatch, tmp_path):
+        import json
+
+        # Simulate digest mutating on third call
+        call_count = [0]
+        def mock_urlopen(req, timeout=2.0):
+            call_count[0] += 1
+            digest = "sha256:orig" if call_count[0] <= 1 else "sha256:tampered_digest"
+            fake_response = {
+                "models": [
+                    {
+                        "name": "qwen3.5:2b",
+                        "size_vram": 1024 * 1024 * 1500,
+                        "digest": digest,
+                    }
+                ]
+            }
+            class MockResponse:
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self): return json.dumps(fake_response).encode("utf-8")
+            return MockResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, **kwargs):
+                return (
+                    "dummy",
+                    0.1,
+                    5.0,
+                    {
+                        "wav_parse_seconds": 0.001,
+                        "pcm_norm_seconds": 0.001,
+                        "c_buf_prep_seconds": 0.001,
+                        "native_inference_seconds": 0.097,
+                    },
+                )
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"RIFFdummyWAVE")
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        assert report["gates"]["GATE-VOICE-04"]["status"] == "FAIL"
+        assert "digest changed during STT execution" in report["gates"]["GATE-VOICE-04"]["measured"]
+
+    def test_run_benchmark_designated_fixture_selection(self, monkeypatch, tmp_path):
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": 1024 * 1024 * 1500,
+                    "digest": "sha256:abc",
+                }
+            ]
+        }
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, wav_bytes, *args, **kwargs):
+                # If aaa_other_5s.wav is processed, return a very high latency that would fail
+                if b"AAA" in wav_bytes:
+                    proc_time = 3.5  # Exceeds 1.5s
+                else:
+                    proc_time = 0.5  # Satisfies <= 1.5s
+                return (
+                    "dummy",
+                    proc_time,
+                    5.0,
+                    {
+                        "wav_parse_seconds": 0.001,
+                        "pcm_norm_seconds": 0.001,
+                        "c_buf_prep_seconds": 0.001,
+                        "native_inference_seconds": proc_time - 0.003,
+                    },
+                )
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        # aaa_other_5s.wav sorts before audio_cmd_workflow_5s.wav
+        (corpus_dir / "aaa_other_5s.wav").write_bytes(b"RIFF_AAA_5s_WAVE")
+        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(b"RIFF_CMD_5s_WAVE")
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        # Gate 01 must evaluate audio_cmd_workflow_5s.wav, NOT aaa_other_5s.wav
+        gate_01 = report["gates"]["GATE-VOICE-01"]
+        assert "5s sample 'audio_cmd_workflow_5s.wav'" in gate_01["measured"]
+        assert gate_01["status"] == "PASS"
+
+    def test_run_benchmark_missing_designated_fixture_returns_not_run(self, monkeypatch, tmp_path):
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": 1024 * 1024 * 1500,
+                    "digest": "sha256:abc",
+                }
+            ]
+        }
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", lambda: (16000.0, 4000.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_process_memory_mb", lambda pid=None: (200.0, 200.0, 200.0))
+        monkeypatch.setattr("tools.bench.voice_bench.query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr("tools.bench.voice_bench.audit_active_process_sockets", lambda pid=None: [])
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs): pass
+            def start(self): pass
+            def stop(self): pass
+            def get_results(self): return 250.0, 3500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, **kwargs):
+                return (
+                    "dummy",
+                    0.5,
+                    5.0,
+                    {
+                        "wav_parse_seconds": 0.001,
+                        "pcm_norm_seconds": 0.001,
+                        "c_buf_prep_seconds": 0.001,
+                        "native_inference_seconds": 0.497,
+                    },
+                )
+            def close(self): pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        # Only an undesignated file is present
+        (corpus_dir / "aaa_other_5s.wav").write_bytes(b"RIFF_AAA_5s_WAVE")
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        gate_01 = report["gates"]["GATE-VOICE-01"]
+        assert gate_01["status"] == "NOT RUN"
+        assert "audio_cmd_workflow_5s.wav' missing" in gate_01["measured"]

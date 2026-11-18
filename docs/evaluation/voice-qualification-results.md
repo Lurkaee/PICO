@@ -22,7 +22,7 @@
 | `GATE-VOICE-01` | **STT Latency** | RTF <= 0.30 (5s audio in <= 1.5s) | 5s sample 'audio_cmd_workflow_5s.wav': End-to-End P50=1.1992s (RTF=0.2437), P90=1.2432s, P95=1.2432s, Max=1.2432s; Native-only P50=1.1817s (RTF=0.2402), P90=1.2268s, P95=1.2268s, Max=1.2268s [Breakdown: WAV parse=0.06ms, PCM norm=2.56ms, C buf=6.3ms, Native=1154.46ms] | **PASS** |
 | `GATE-VOICE-02` | **STT Accuracy (WER)** | Aggregate WER <= 12.0% on representative multi-speaker real speech corpus | Preliminary real-speech aggregate WER=2.67% (Macro WER=8.33%, CER=6.41%). Smoke command WER=0.0%. Qualification marked NOT RUN pending multi-speaker conversational corpus per manifest. | NOT RUN |
 | `GATE-VOICE-03` | **TTS Latency** | TTFAC < 500ms; RTF_synth <= 0.15 | Deferred to Milestone P11.3.4 (Piper/sherpa-onnx qualification) | NOT RUN |
-| `GATE-VOICE-04` | **Single-Model GPU VRAM** | VRAM Delta = 0 MiB (preserves Ollama LLM residency) | VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across sampled checkpoints (Model 'qwen3.5:2b' (Canonical PICO local-small LLM model tag) resident in GPU VRAM (1772.9 MiB)). CPU isolation observed (0 MiB additional VRAM at sampled checkpoints; initial=2495 MiB, peak=2495 MiB, final=2495 MiB across 102 observations). | **PASS** |
+| `GATE-VOICE-04` | **Single-Model GPU VRAM** | VRAM Delta = 0 MiB (preserves Ollama LLM residency) | Historical observation: CPU isolation observed (0 MiB additional VRAM at sampled checkpoints; initial=2495 MiB, peak=2495 MiB, final=2495 MiB across 102 observations) and tag 'qwen3.5:2b' was reported GPU-resident (1772.9 MiB). Full co-residency qualification marked NOT RUN because model artifact digest continuity was not established by the historical benchmark run. | NOT RUN |
 | `GATE-VOICE-05` | **System RAM Ceiling** | Peak Working Set < 450 MB and Available System RAM > 1.5 GB | Min Available System RAM 863.1 MB <= 1536.0 MB (1.5 GB threshold), Private Bytes: 810.29 MB across 2115 continuous samples | FAIL |
 | `GATE-VOICE-06` | **Disk Retention** | 0 raw-audio bytes persisted to disk | 0 raw audio files created in process temp/working directories; independent kernel ETW minifilter filesystem audit unavailable without administrative elevation | NOT RUN |
 | `GATE-VOICE-07` | **Network Egress** | 0 outbound socket connections & 0 DNS queries | 0 active socket connections detected for PID 32972; kernel ETW DNS-client activity tracing unavailable without elevation | NOT RUN |
@@ -60,7 +60,7 @@
 
 ## 4. Hardware & Resource Telemetry
 
-- **Cold Start Initialization Time**: 0.2481s (PicoWhisperEngine.__init__() - model mmap and tensor allocation)
+- **Cold Start Initialization Time**: 0.2481s (PicoWhisperEngine.__init__() - full constructor: artifact SHA-256 verification, DLL load, native context prep)
 - **Peak Working Set Memory**: 331.95 MB
 - **Minimum Available System RAM**: 863.1 MB (threshold > 1.5 GB, continuously sampled across 2115 intervals)
 - **Initial GPU VRAM**: 2495 MiB
