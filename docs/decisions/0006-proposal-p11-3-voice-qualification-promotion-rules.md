@@ -356,5 +356,13 @@ Following project owner approval of this proposal:
    - Run the benchmark harness with resident Ollama LLM to resolve `GATE-VOICE-04` (VRAM) and measure `GATE-VOICE-02` (Accuracy).
    - Re-measure system RAM headroom under controlled conditions to remediate `GATE-VOICE-05`.
    - Conduct elevated privacy audits to close `GATE-VOICE-06` (Disk) and `GATE-VOICE-07` (Network).
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:ea51cc0c3c23a2de215eb6be80ab9232ceff335c13369c3be77e975f97b6dac9 -->
+
 3. **Phase 3: Stage 3 Runtime Implementation**:
-   - Only after all Stage 3 promotion gates are physically passed and verified in `docs/evaluation/voice-qualification-results.md`, begin implementing `LocalWhisperSpeechToTextAdapter` in `pico.perception.audio.adapter`.
+   - Following Phase 2, implementation of `LocalWhisperSpeechToTextAdapter` in `pico.perception.audio.adapter` may begin before the integrated `GATE-VOICE-09` has passed.
+   - During implementation, keep the production adapter unavailable (`is_available() == False`) and production transcription fail-closed.
+   - Before production activation, complete the Stage 3 promotion requirements in §3.1, including passing `GATE-VOICE-09` on the integrated adapter, and record the verified results in `docs/evaluation/voice-qualification-results.md`.
+
+<!-- /coderabbit-ai-generated:v1 -->
