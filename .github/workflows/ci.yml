@@ -281,3 +281,65 @@ jobs:
             frontend/src-tauri/target/release/bundle/nsis/PICO_0.1.0_*-setup.exe
             frontend/src-tauri/staged/staging-manifest.json
             frontend/src-tauri/staged/installer-qualification-report.json
+
+  whisper-shim:
+    name: Native Whisper Shim (Windows MSVC)
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Toolchain Preflight (VS 2022 & CMake)
+        shell: powershell
+        run: |
+          Write-Host "Runner OS: $((Get-CimInstance Win32_OperatingSystem).Caption) ($((Get-CimInstance Win32_OperatingSystem).Version))"
+          $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+          if (-not $cmake) {
+            throw "Preflight Failure: CMake was not found in PATH."
+          }
+          Write-Host "CMake Version: $(cmake --version | Select-Object -First 1)"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "Preflight Failure: vswhere.exe not found at '$vswhere'."
+          }
+          $vsPath = & $vswhere -version "[17.0,18.0)" -latest -property installationPath
+          $vsVersion = & $vswhere -version "[17.0,18.0)" -latest -property installationVersion
+          if (-not $vsPath) {
+            throw "Preflight Failure: Visual Studio 17 2022 toolchain is required for native MSVC build but was not found. Current runner must be windows-2022."
+          }
+          Write-Host "Detected Visual Studio 2022: $vsPath (Version: $vsVersion)"
+
+      - name: Build Native Whisper Shim
+        shell: powershell
+        run: |
+          $tempSource = Join-Path $env:RUNNER_TEMP "whisper_cpp_src"
+          $tempBuild = Join-Path $env:RUNNER_TEMP "whisper_build"
+          $tempOutput = Join-Path $env:RUNNER_TEMP "whisper_bin"
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/whisper_shim/build_shim.ps1 `
+            -SourceDir $tempSource `
+            -BuildDir $tempBuild `
+            -OutputDir $tempOutput
+
+      - name: Verify Staged Native Artifacts
+        shell: powershell
+        run: |
+          $expectedDlls = @(
+            "pico_whisper_shim.dll",
+            "whisper.dll",
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cpu.dll"
+          )
+          $tempOutput = Join-Path $env:RUNNER_TEMP "whisper_bin"
+          foreach ($dll in $expectedDlls) {
+            $p = Join-Path $tempOutput $dll
+            if (-not (Test-Path $p)) {
+              throw "Expected staged DLL '$dll' missing from $tempOutput"
+            }
+            $size = (Get-Item $p).Length
+            Write-Host "Verified DLL: $dll ($([math]::Round($size/1KB, 1)) KB)"
+          }

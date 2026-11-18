@@ -75,3 +75,13 @@ frontend/dist/
 # Tauri & Desktop Shell
 frontend/src-tauri/target/
 frontend/src-tauri/staged/
+
+# Native Voice & Whisper Artifacts
+*.dll
+*.lib
+*.exp
+*.pdb
+*.obj
+*.bin
+*.onnx
+tools/whisper_shim/build/
