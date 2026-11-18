@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::BackendSupervisionStatus;
 
-/// Authoritative visual expression derived strictly from `BackendSupervisionStatus`.
+/// Authoritative visual expression derived strictly from `BackendSupervisionStatus`,
+/// enriched with presentation-layer expressive character moods inspired by EMO robotics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompanionExpression {
     /// Core is cleanly stopped or unmanaged: softly closed resting contour, low illumination.
@@ -26,6 +27,26 @@ pub enum CompanionExpression {
     Online,
     /// Authoritative failure (spawn failure, verification failure, crash, poisoned lock).
     Error,
+
+    // --- EMO-inspired presentation character expressions ---
+    /// Gentle transition from closed resting slit to alert open eyes.
+    WakingUp,
+    /// Calm, relaxed squircle eyes with gentle gaze.
+    Neutral,
+    /// Widened aperture, attentive forward gaze, bright catchlights.
+    Attentive,
+    /// Concentrated narrowed aperture, inward brow slant, precision pulse.
+    Focused,
+    /// Inquisitive upward-angled glance with thoughtful lid narrowing.
+    Thinking,
+    /// Asymmetric eye aperture and subtle tilt with curious gaze.
+    Curious,
+    /// Joyful smiling crescent eyes with upward curved cheeks (e.g. on click interaction).
+    Happy,
+    /// Inquisitive asymmetric brow slant.
+    Confused,
+    /// Drooping outer corners expressing concern or distress.
+    Concerned,
 }
 
 /// Maps authoritative supervisor state into PICO's visual expression without inventing
@@ -59,16 +80,24 @@ pub const VERIFYING_PULSE_INTERVAL_MS: u32 = 500;
 /// Low-frequency calm gaze cadence when Core is online.
 pub const ONLINE_GAZE_INTERVAL_MS: u32 = 2400;
 
-/// Discrete upper-eyelid closure sequence (0.0 = open, 1.0 = sealed).
-const BLINK_CLOSURE_FRAMES: [f32; 6] = [0.40, 0.85, 1.0, 0.72, 0.30, 0.0];
-/// Calm gaze micro-offsets in normalized iris units (small and restrained).
-const CALM_GAZE_OFFSETS: [(f32, f32); 6] = [
-    (0.0, 0.0),
-    (-0.11, -0.02),
-    (0.0, 0.0),
-    (0.11, -0.02),
-    (0.0, 0.03),
-    (0.0, 0.0),
+/// Primary natural blink closure sequence (0.0 = open, 1.0 = sealed).
+pub const BLINK_PRIMARY_FRAMES: [f32; 6] = [0.35, 0.82, 1.0, 0.65, 0.20, 0.0];
+/// Backwards-compatible alias for existing test assertions.
+pub const BLINK_CLOSURE_FRAMES: [f32; 6] = BLINK_PRIMARY_FRAMES;
+/// Secondary flutter closure sequence for natural double-blinking.
+pub const BLINK_SECONDARY_FRAMES: [f32; 4] = [0.50, 0.92, 0.30, 0.0];
+
+/// Calm and expressive gaze micro-offsets in normalized iris units.
+/// Cycled every 2.4s during Online state to create natural character saccades.
+pub const CALM_GAZE_OFFSETS: [(f32, f32); 8] = [
+    (0.0, 0.0),     // Step 0: Neutral center
+    (0.12, -0.02),  // Step 1: Gentle glance right
+    (0.0, 0.0),     // Step 2: Attentive center
+    (-0.14, -0.10), // Step 3: Thoughtful glance up-left
+    (0.0, -0.03),   // Step 4: Alert forward
+    (-0.12, 0.02),  // Step 5: Gentle glance left
+    (0.0, 0.0),     // Step 6: Thinking center
+    (0.15, -0.08),  // Step 7: Curious glance up-right
 ];
 
 /// Computes deterministic non-identical blink intervals strictly within [3500, 6500] ms.
@@ -115,6 +144,9 @@ pub struct AnimationState {
     pub starting_step: u8,
     pub verifying_pulse_phase: bool,
     pub gaze_step: usize,
+    pub interactive_reaction: bool,
+    pub is_double_blink: bool,
+    pub double_blink_stage: u8,
 }
 
 impl AnimationState {
@@ -126,13 +158,18 @@ impl AnimationState {
             blink_frame_idx: None,
             blink_count: 1,
             last_blink_interval_ms: None,
-            starting_step: if initial == CompanionExpression::Starting {
+            starting_step: if initial == CompanionExpression::Starting
+                || initial == CompanionExpression::WakingUp
+            {
                 0
             } else {
                 3
             },
             verifying_pulse_phase: false,
             gaze_step: 0,
+            interactive_reaction: false,
+            is_double_blink: false,
+            double_blink_stage: 0,
         }
     }
 
@@ -142,28 +179,64 @@ impl AnimationState {
         }
         self.expression = next;
         match next {
-            CompanionExpression::Starting => {
+            CompanionExpression::Starting | CompanionExpression::WakingUp => {
                 self.starting_step = 0;
                 self.gaze_step = 0;
                 self.verifying_pulse_phase = false;
             }
-            CompanionExpression::Verifying => {
+            CompanionExpression::Verifying | CompanionExpression::Focused => {
                 self.starting_step = 3;
                 self.verifying_pulse_phase = true;
                 self.gaze_step = 0;
             }
-            CompanionExpression::Online => {
+            CompanionExpression::Online
+            | CompanionExpression::Neutral
+            | CompanionExpression::Attentive
+            | CompanionExpression::Thinking
+            | CompanionExpression::Curious
+            | CompanionExpression::Happy
+            | CompanionExpression::Confused => {
                 self.starting_step = 3;
                 self.verifying_pulse_phase = false;
                 self.gaze_step = 0;
             }
-            CompanionExpression::Resting | CompanionExpression::Error => {
+            CompanionExpression::Resting
+            | CompanionExpression::Error
+            | CompanionExpression::Concerned => {
                 self.blink_frame_idx = None;
                 self.verifying_pulse_phase = false;
                 self.gaze_step = 0;
             }
         }
         true
+    }
+
+    /// Sets or clears tactile interactive reaction (e.g. on mouse down/up).
+    pub fn set_interactive_reaction(&mut self, active: bool) {
+        self.interactive_reaction = active;
+        if active {
+            self.blink_frame_idx = None;
+        }
+    }
+
+    /// Resolves the effective presentation mood taking into account interactive reactions
+    /// and ambient micro-expressions without altering authoritative supervision truth.
+    pub fn effective_expression(&self) -> CompanionExpression {
+        if self.interactive_reaction {
+            return CompanionExpression::Happy;
+        }
+        match self.expression {
+            CompanionExpression::Online => match self.gaze_step % 8 {
+                2 => CompanionExpression::Attentive,
+                4 => CompanionExpression::Curious,
+                6 => CompanionExpression::Thinking,
+                _ => CompanionExpression::Neutral,
+            },
+            CompanionExpression::Starting => CompanionExpression::WakingUp,
+            CompanionExpression::Verifying => CompanionExpression::Focused,
+            CompanionExpression::Error => CompanionExpression::Concerned,
+            other => other,
+        }
     }
 
     /// Evaluates whether the window is actively observable and permitted to schedule timers.
@@ -182,8 +255,14 @@ impl AnimationState {
         }
 
         let can_blink = matches!(
-            self.expression,
-            CompanionExpression::Online | CompanionExpression::Verifying
+            self.effective_expression(),
+            CompanionExpression::Online
+                | CompanionExpression::Neutral
+                | CompanionExpression::Attentive
+                | CompanionExpression::Thinking
+                | CompanionExpression::Curious
+                | CompanionExpression::Verifying
+                | CompanionExpression::Focused
         );
         let blinking_now = can_blink && self.blink_frame_idx.is_some();
 
@@ -191,8 +270,15 @@ impl AnimationState {
             CompanionExpression::Starting if self.starting_step < 3 => {
                 Some(STARTING_STEP_INTERVAL_MS)
             }
-            CompanionExpression::Verifying => Some(VERIFYING_PULSE_INTERVAL_MS),
-            CompanionExpression::Online => Some(ONLINE_GAZE_INTERVAL_MS),
+            CompanionExpression::WakingUp if self.starting_step < 3 => {
+                Some(STARTING_STEP_INTERVAL_MS)
+            }
+            CompanionExpression::Verifying | CompanionExpression::Focused => {
+                Some(VERIFYING_PULSE_INTERVAL_MS)
+            }
+            CompanionExpression::Online | CompanionExpression::Neutral => {
+                Some(ONLINE_GAZE_INTERVAL_MS)
+            }
             _ => None,
         };
 
@@ -203,33 +289,59 @@ impl AnimationState {
         }
     }
 
-    /// Begins a single blink cycle cleanly.
+    /// Begins a single or double blink cycle cleanly.
     pub fn start_blink(&mut self) -> bool {
-        if !self.is_render_active()
-            || !matches!(
-                self.expression,
-                CompanionExpression::Online | CompanionExpression::Verifying
-            )
-        {
+        if !self.is_render_active() {
+            return false;
+        }
+        let can_blink = matches!(
+            self.effective_expression(),
+            CompanionExpression::Online
+                | CompanionExpression::Neutral
+                | CompanionExpression::Attentive
+                | CompanionExpression::Thinking
+                | CompanionExpression::Curious
+                | CompanionExpression::Verifying
+                | CompanionExpression::Focused
+        );
+        if !can_blink {
             return false;
         }
         self.blink_frame_idx = Some(0);
+        // Natural double-blink every 4th cycle
+        self.is_double_blink = (self.blink_count % 4 == 0) && self.blink_count > 0;
+        self.double_blink_stage = 0;
         true
     }
 
-    /// Advances active blink by one frame; returns `true` if blink ended cleanly.
+    /// Advances active blink by one frame; returns `true` if full blink sequence ended cleanly.
     pub fn advance_blink_frame(&mut self) -> bool {
         match self.blink_frame_idx {
-            Some(idx) if idx + 1 < BLINK_CLOSURE_FRAMES.len() => {
-                self.blink_frame_idx = Some(idx + 1);
-                false
-            }
-            Some(_) => {
-                self.blink_frame_idx = None;
-                self.blink_count = self.blink_count.wrapping_add(1);
-                let next_ms = next_blink_interval_ms(self.blink_count, self.last_blink_interval_ms);
-                self.last_blink_interval_ms = Some(next_ms);
-                true
+            Some(idx) => {
+                let max_len = if self.is_double_blink && self.double_blink_stage == 1 {
+                    BLINK_SECONDARY_FRAMES.len()
+                } else {
+                    BLINK_PRIMARY_FRAMES.len()
+                };
+
+                if idx + 1 < max_len {
+                    self.blink_frame_idx = Some(idx + 1);
+                    false
+                } else if self.is_double_blink && self.double_blink_stage == 0 {
+                    // Transition to secondary quick flutter
+                    self.double_blink_stage = 1;
+                    self.blink_frame_idx = Some(0);
+                    false
+                } else {
+                    self.blink_frame_idx = None;
+                    self.is_double_blink = false;
+                    self.double_blink_stage = 0;
+                    self.blink_count = self.blink_count.wrapping_add(1);
+                    let next_ms =
+                        next_blink_interval_ms(self.blink_count, self.last_blink_interval_ms);
+                    self.last_blink_interval_ms = Some(next_ms);
+                    true
+                }
             }
             None => true,
         }
@@ -238,46 +350,73 @@ impl AnimationState {
     /// Advances ambient low-frequency state step (`Starting`, `Verifying`, `Online`).
     pub fn advance_ambient(&mut self) {
         match self.expression {
-            CompanionExpression::Starting => {
+            CompanionExpression::Starting | CompanionExpression::WakingUp => {
                 if self.starting_step < 3 {
                     self.starting_step += 1;
                 }
             }
-            CompanionExpression::Verifying => {
+            CompanionExpression::Verifying | CompanionExpression::Focused => {
                 self.verifying_pulse_phase = !self.verifying_pulse_phase;
             }
-            CompanionExpression::Online => {
+            CompanionExpression::Online | CompanionExpression::Neutral => {
                 self.gaze_step = (self.gaze_step + 1) % CALM_GAZE_OFFSETS.len();
             }
-            CompanionExpression::Resting | CompanionExpression::Error => {}
+            _ => {}
         }
     }
 
-    /// Returns normalized eyelid openness in [0.0, 1.0].
-    pub fn eye_openness(&self) -> f32 {
-        let base = match self.expression {
-            CompanionExpression::Resting => 0.0,
-            CompanionExpression::Starting => match self.starting_step {
-                0 => 0.22,
-                1 => 0.52,
-                2 => 0.80,
-                _ => 1.0,
-            },
-            CompanionExpression::Verifying => 0.86,
-            CompanionExpression::Online => 1.0,
-            CompanionExpression::Error => 0.68,
+    /// Returns current eyelid closure amount in [0.0, 1.0].
+    pub fn blink_closure_amount(&self) -> f32 {
+        let idx = match self.blink_frame_idx {
+            Some(i) => i,
+            None => return 0.0,
         };
-        let closure = self
-            .blink_frame_idx
-            .and_then(|idx| BLINK_CLOSURE_FRAMES.get(idx).copied())
-            .unwrap_or(0.0);
-        (base * (1.0 - closure)).clamp(0.0, 1.0)
+        if self.is_double_blink && self.double_blink_stage == 1 {
+            BLINK_SECONDARY_FRAMES.get(idx).copied().unwrap_or(0.0)
+        } else {
+            BLINK_PRIMARY_FRAMES.get(idx).copied().unwrap_or(0.0)
+        }
+    }
+
+    /// Returns normalized eyelid openness in [0.0, 1.15].
+    pub fn eye_openness(&self) -> f32 {
+        let eff = self.effective_expression();
+        let base = match eff {
+            CompanionExpression::Resting => 0.0,
+            CompanionExpression::Starting | CompanionExpression::WakingUp => {
+                match self.starting_step {
+                    0 => 0.22,
+                    1 => 0.52,
+                    2 => 0.80,
+                    _ => 1.0,
+                }
+            }
+            CompanionExpression::Verifying | CompanionExpression::Focused => 0.86,
+            CompanionExpression::Online | CompanionExpression::Neutral => 1.0,
+            CompanionExpression::Attentive => 1.08,
+            CompanionExpression::Thinking => 0.90,
+            CompanionExpression::Curious => 1.02,
+            CompanionExpression::Happy => 0.80,
+            CompanionExpression::Confused => 0.94,
+            CompanionExpression::Concerned | CompanionExpression::Error => 0.68,
+        };
+        let closure = self.blink_closure_amount();
+        (base * (1.0 - closure)).clamp(0.0, 1.15)
     }
 
     /// Returns restrained normalized gaze offset `(gx, gy)` for iris placement.
     pub fn gaze_offset(&self) -> (f32, f32) {
-        match self.expression {
-            CompanionExpression::Online => CALM_GAZE_OFFSETS[self.gaze_step],
+        if self.interactive_reaction {
+            return (0.0, -0.04);
+        }
+        match self.effective_expression() {
+            CompanionExpression::Thinking => (-0.15, -0.12),
+            CompanionExpression::Curious => (0.16, -0.08),
+            CompanionExpression::Attentive => (0.0, -0.03),
+            CompanionExpression::Confused => (-0.08, 0.04),
+            CompanionExpression::Online | CompanionExpression::Neutral => {
+                CALM_GAZE_OFFSETS[self.gaze_step % CALM_GAZE_OFFSETS.len()]
+            }
             _ => (0.0, 0.0),
         }
     }
@@ -400,7 +539,7 @@ pub fn palette_for_expression(
             highlight_argb: 0x45E0F7FA,
             resting_lid_argb: 0x8C38BDF8,
         },
-        CompanionExpression::Starting => ExpressionPalette {
+        CompanionExpression::Starting | CompanionExpression::WakingUp => ExpressionPalette {
             halo_argb: 0x1E06B6D4,
             rim_argb: 0xBA22D3EE,
             iris_outer_argb: 0xD00891B2,
@@ -408,7 +547,7 @@ pub fn palette_for_expression(
             highlight_argb: 0xB8E0F7FA,
             resting_lid_argb: 0xB038BDF8,
         },
-        CompanionExpression::Verifying => {
+        CompanionExpression::Verifying | CompanionExpression::Focused => {
             if verifying_pulse {
                 ExpressionPalette {
                     halo_argb: 0x3006B6D4,
@@ -429,13 +568,61 @@ pub fn palette_for_expression(
                 }
             }
         }
-        CompanionExpression::Online => ExpressionPalette {
+        CompanionExpression::Online | CompanionExpression::Neutral => ExpressionPalette {
             halo_argb: 0x2406B6D4,
             rim_argb: 0xEB22D3EE,
             iris_outer_argb: 0xEA0891B2,
             iris_core_argb: 0xF538BDF8,
             highlight_argb: 0xE8ECFEFF,
             resting_lid_argb: 0xCC38BDF8,
+        },
+        CompanionExpression::Attentive => ExpressionPalette {
+            halo_argb: 0x2E06B6D4,
+            rim_argb: 0xF522D3EE,
+            iris_outer_argb: 0xF00891B2,
+            iris_core_argb: 0xFA67E8F9,
+            highlight_argb: 0xF0FFFFFF,
+            resting_lid_argb: 0xCC38BDF8,
+        },
+        CompanionExpression::Thinking => ExpressionPalette {
+            halo_argb: 0x1C06B6D4,
+            rim_argb: 0xD822D3EE,
+            iris_outer_argb: 0xDE0E7490,
+            iris_core_argb: 0xEB22D3EE,
+            highlight_argb: 0xD0ECFEFF,
+            resting_lid_argb: 0xB838BDF8,
+        },
+        CompanionExpression::Curious => ExpressionPalette {
+            halo_argb: 0x2606B6D4,
+            rim_argb: 0xEE22D3EE,
+            iris_outer_argb: 0xEC0891B2,
+            iris_core_argb: 0xF838BDF8,
+            highlight_argb: 0xECFFFFFF,
+            resting_lid_argb: 0xCC38BDF8,
+        },
+        CompanionExpression::Happy => ExpressionPalette {
+            halo_argb: 0x3606B6D4,
+            rim_argb: 0xFF67E8F9,
+            iris_outer_argb: 0xF20891B2,
+            iris_core_argb: 0xFF38BDF8,
+            highlight_argb: 0xFFFFFFFF,
+            resting_lid_argb: 0xE067E8F9,
+        },
+        CompanionExpression::Confused => ExpressionPalette {
+            halo_argb: 0x2006B6D4,
+            rim_argb: 0xDE22D3EE,
+            iris_outer_argb: 0xE00891B2,
+            iris_core_argb: 0xED22D3EE,
+            highlight_argb: 0xDCECFEFF,
+            resting_lid_argb: 0xC038BDF8,
+        },
+        CompanionExpression::Concerned => ExpressionPalette {
+            halo_argb: 0x24F59E0B,
+            rim_argb: 0xEEF59E0B,
+            iris_outer_argb: 0xDEB45309,
+            iris_core_argb: 0xEEFBBF24,
+            highlight_argb: 0xD8FEF3C7,
+            resting_lid_argb: 0xD0F59E0B,
         },
         CompanionExpression::Error => ExpressionPalette {
             halo_argb: 0x26F59E0B,
@@ -444,6 +631,168 @@ pub fn palette_for_expression(
             iris_core_argb: 0xF0FBBF24,
             highlight_argb: 0xDCFEF3C7,
             resting_lid_argb: 0xD8F59E0B,
+        },
+    }
+}
+
+/// Geometric contour parameters for anti-aliased EMO-inspired eyelid shapes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EyeContourParams {
+    pub width_scale: f32,
+    pub height_scale: f32,
+    pub openness: f32,
+    pub upper_arch: f32,
+    pub brow_slant: f32,
+    pub cheek_lift: f32,
+    pub corner_factor: f32,
+    pub vertical_offset: f32,
+}
+
+/// Computes expressive contour parameters based on active mood and eyelid state.
+pub fn contour_params_for_expression(
+    expr: CompanionExpression,
+    openness: f32,
+    starting_step: u8,
+    is_right_eye: bool,
+) -> EyeContourParams {
+    match expr {
+        CompanionExpression::Resting => EyeContourParams {
+            width_scale: 1.0,
+            height_scale: 1.0,
+            openness: 0.0,
+            upper_arch: 0.0,
+            brow_slant: 0.0,
+            cheek_lift: 0.0,
+            corner_factor: 0.40,
+            vertical_offset: 0.0,
+        },
+        CompanionExpression::Starting | CompanionExpression::WakingUp => {
+            let (arch, h_scale) = match starting_step {
+                0 => (-0.06, 0.50),
+                1 => (0.04, 0.75),
+                2 => (0.10, 0.90),
+                _ => (0.12, 1.0),
+            };
+            EyeContourParams {
+                width_scale: 1.0,
+                height_scale: h_scale,
+                openness,
+                upper_arch: arch,
+                brow_slant: 0.0,
+                cheek_lift: 0.0,
+                corner_factor: 0.40,
+                vertical_offset: 0.0,
+            }
+        }
+        CompanionExpression::Verifying | CompanionExpression::Focused => EyeContourParams {
+            width_scale: 1.02,
+            height_scale: 0.88,
+            openness,
+            upper_arch: -0.06,
+            brow_slant: 0.16,
+            cheek_lift: 0.08,
+            corner_factor: 0.38,
+            vertical_offset: 0.0,
+        },
+        CompanionExpression::Online | CompanionExpression::Neutral => EyeContourParams {
+            width_scale: 1.0,
+            height_scale: 1.0,
+            openness,
+            upper_arch: 0.12,
+            brow_slant: 0.0,
+            cheek_lift: 0.0,
+            corner_factor: 0.40,
+            vertical_offset: 0.0,
+        },
+        CompanionExpression::Attentive => EyeContourParams {
+            width_scale: 1.06,
+            height_scale: 1.10,
+            openness,
+            upper_arch: 0.18,
+            brow_slant: 0.0,
+            cheek_lift: 0.0,
+            corner_factor: 0.44,
+            vertical_offset: -0.02,
+        },
+        CompanionExpression::Thinking => EyeContourParams {
+            width_scale: 0.98,
+            height_scale: 0.90,
+            openness,
+            upper_arch: -0.04,
+            brow_slant: 0.08,
+            cheek_lift: 0.06,
+            corner_factor: 0.38,
+            vertical_offset: -0.03,
+        },
+        CompanionExpression::Curious => {
+            if is_right_eye {
+                EyeContourParams {
+                    width_scale: 0.95,
+                    height_scale: 0.92,
+                    openness: openness * 0.96,
+                    upper_arch: 0.04,
+                    brow_slant: 0.10,
+                    cheek_lift: 0.04,
+                    corner_factor: 0.38,
+                    vertical_offset: 0.02,
+                }
+            } else {
+                EyeContourParams {
+                    width_scale: 1.07,
+                    height_scale: 1.08,
+                    openness,
+                    upper_arch: 0.20,
+                    brow_slant: -0.06,
+                    cheek_lift: 0.0,
+                    corner_factor: 0.44,
+                    vertical_offset: -0.03,
+                }
+            }
+        }
+        CompanionExpression::Happy => EyeContourParams {
+            width_scale: 1.05,
+            height_scale: 0.84,
+            openness,
+            upper_arch: 0.22,
+            brow_slant: 0.0,
+            cheek_lift: 0.60,
+            corner_factor: 0.42,
+            vertical_offset: -0.01,
+        },
+        CompanionExpression::Confused => {
+            if is_right_eye {
+                EyeContourParams {
+                    width_scale: 0.96,
+                    height_scale: 0.94,
+                    openness,
+                    upper_arch: -0.02,
+                    brow_slant: 0.22,
+                    cheek_lift: 0.05,
+                    corner_factor: 0.38,
+                    vertical_offset: 0.03,
+                }
+            } else {
+                EyeContourParams {
+                    width_scale: 1.04,
+                    height_scale: 1.06,
+                    openness,
+                    upper_arch: 0.16,
+                    brow_slant: -0.18,
+                    cheek_lift: 0.0,
+                    corner_factor: 0.42,
+                    vertical_offset: -0.03,
+                }
+            }
+        }
+        CompanionExpression::Concerned | CompanionExpression::Error => EyeContourParams {
+            width_scale: 0.98,
+            height_scale: 0.90,
+            openness,
+            upper_arch: 0.04,
+            brow_slant: -0.20,
+            cheek_lift: 0.0,
+            corner_factor: 0.38,
+            vertical_offset: 0.02,
         },
     }
 }
@@ -630,6 +979,38 @@ mod win32 {
     }
 
     #[repr(C)]
+    #[allow(dead_code)]
+    struct BITMAPINFOHEADER {
+        bi_size: u32,
+        bi_width: i32,
+        bi_height: i32,
+        bi_planes: u16,
+        bi_bit_count: u16,
+        bi_compression: u32,
+        bi_size_image: u32,
+        bi_xpels_per_meter: i32,
+        bi_ypels_per_meter: i32,
+        bi_clr_used: u32,
+        bi_clr_important: u32,
+    }
+
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct RGBQUAD {
+        rgb_blue: u8,
+        rgb_green: u8,
+        rgb_red: u8,
+        rgb_reserved: u8,
+    }
+
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct BITMAPINFO {
+        bmi_header: BITMAPINFOHEADER,
+        bmi_colors: [RGBQUAD; 1],
+    }
+
+    #[repr(C)]
     struct GdiplusStartupInput {
         gdiplus_version: u32,
         debug_event_callback: *const c_void,
@@ -662,6 +1043,7 @@ mod win32 {
         fn IsWindowVisible(hwnd: HWND) -> BOOL;
         fn IsIconic(hwnd: HWND) -> BOOL;
         fn InvalidateRect(hwnd: HWND, lp_rect: *const RECT, b_erase: BOOL) -> BOOL;
+        fn UpdateWindow(hwnd: HWND) -> BOOL;
         fn PostMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> BOOL;
         fn SendMessageW(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT;
         fn SetTimer(
@@ -717,6 +1099,15 @@ mod win32 {
             y1: i32,
             rop: u32,
         ) -> BOOL;
+        #[allow(dead_code)]
+        fn CreateDIBSection(
+            hdc: HDC,
+            pbmi: *const BITMAPINFO,
+            usage: UINT,
+            ppv_bits: *mut *mut c_void,
+            h_section: *mut c_void,
+            offset: DWORD,
+        ) -> HBITMAP;
     }
 
     #[link(name = "comctl32")]
@@ -773,6 +1164,18 @@ mod win32 {
             sweep_angle: f32,
         ) -> i32;
         fn GdipAddPathEllipse(path: *mut c_void, x: f32, y: f32, width: f32, height: f32) -> i32;
+        fn GdipAddPathBezier(
+            path: *mut c_void,
+            x1: f32,
+            y1: f32,
+            x2: f32,
+            y2: f32,
+            x3: f32,
+            y3: f32,
+            x4: f32,
+            y4: f32,
+        ) -> i32;
+        fn GdipAddPathLine(path: *mut c_void, x1: f32, y1: f32, x2: f32, y2: f32) -> i32;
         fn GdipClosePathFigure(path: *mut c_void) -> i32;
         fn GdipFillPath(graphics: *mut c_void, brush: *mut c_void, path: *mut c_void) -> i32;
         fn GdipDrawPath(graphics: *mut c_void, pen: *mut c_void, path: *mut c_void) -> i32;
@@ -1200,6 +1603,127 @@ mod win32 {
         }
     }
 
+    fn create_expressive_eye_path(
+        cx: f32,
+        cy: f32,
+        base_w: f32,
+        base_h: f32,
+        params: &EyeContourParams,
+        is_right_eye: bool,
+    ) -> Option<GdipPath> {
+        let w = base_w * params.width_scale;
+        let h = (base_h * params.height_scale * params.openness).max(6.0);
+        let half_w = w * 0.5;
+        let half_h = h * 0.5;
+        let eye_cy = cy + params.vertical_offset * base_h;
+
+        let slant_mag = params.brow_slant * half_h * 0.40;
+        let (slant_left, slant_right) = if is_right_eye {
+            (slant_mag, -slant_mag)
+        } else {
+            (-slant_mag, slant_mag)
+        };
+
+        let upper_dome = params.upper_arch * half_h * 0.55;
+        let cheek_lift = params.cheek_lift * half_h * 0.95;
+        let cheek_arch = params.cheek_lift * half_h * 0.65;
+
+        let cheek_drop = cheek_lift;
+        let side_span = (2.0 * half_h - cheek_drop - slant_mag.abs()).max(4.0);
+        let cr = (w * params.corner_factor)
+            .min(half_h * 0.88)
+            .min(side_span * 0.44)
+            .max(2.0);
+
+        let p_tl_x = cx - half_w;
+        let p_tl_y = eye_cy - half_h + slant_left;
+        let p_tr_x = cx + half_w;
+        let p_tr_y = eye_cy - half_h + slant_right;
+        let p_br_x = cx + half_w;
+        let p_br_y = eye_cy + half_h - cheek_lift;
+        let p_bl_x = cx - half_w;
+        let p_bl_y = eye_cy + half_h - cheek_lift;
+
+        let mut path_ptr: *mut c_void = ptr::null_mut();
+        unsafe {
+            if GdipCreatePath(FILL_MODE_ALTERNATE, &mut path_ptr) != 0 || path_ptr.is_null() {
+                return None;
+            }
+            let path = GdipPath(path_ptr);
+
+            // 1. Top-left corner arc: sweeping from 180 to 270 deg
+            GdipAddPathArc(path.0, p_tl_x, p_tl_y, cr * 2.0, cr * 2.0, 180.0, 90.0);
+
+            // 2. Upper eyelid Bézier arch
+            GdipAddPathBezier(
+                path.0,
+                p_tl_x + cr,
+                p_tl_y,
+                cx - half_w * 0.25,
+                p_tl_y - upper_dome,
+                cx + half_w * 0.25,
+                p_tr_y - upper_dome,
+                p_tr_x - cr,
+                p_tr_y,
+            );
+
+            // 3. Top-right corner arc: sweeping from 270 to 360 deg
+            GdipAddPathArc(
+                path.0,
+                p_tr_x - cr * 2.0,
+                p_tr_y,
+                cr * 2.0,
+                cr * 2.0,
+                270.0,
+                90.0,
+            );
+
+            // 4. Right edge straight down
+            GdipAddPathLine(path.0, p_tr_x, p_tr_y + cr, p_br_x, p_br_y - cr);
+
+            // 5. Bottom-right corner arc: sweeping from 0 to 90 deg
+            GdipAddPathArc(
+                path.0,
+                p_br_x - cr * 2.0,
+                p_br_y - cr * 2.0,
+                cr * 2.0,
+                cr * 2.0,
+                0.0,
+                90.0,
+            );
+
+            // 6. Lower eyelid / cheek Bézier arch
+            GdipAddPathBezier(
+                path.0,
+                p_br_x - cr,
+                p_br_y,
+                cx + half_w * 0.25,
+                p_br_y - cheek_arch,
+                cx - half_w * 0.25,
+                p_bl_y - cheek_arch,
+                p_bl_x + cr,
+                p_bl_y,
+            );
+
+            // 7. Bottom-left corner arc: sweeping from 90 to 180 deg
+            GdipAddPathArc(
+                path.0,
+                p_bl_x,
+                p_bl_y - cr * 2.0,
+                cr * 2.0,
+                cr * 2.0,
+                90.0,
+                90.0,
+            );
+
+            // 8. Left edge straight up
+            GdipAddPathLine(path.0, p_bl_x, p_bl_y - cr, p_tl_x, p_tl_y + cr);
+
+            GdipClosePathFigure(path.0);
+            Some(path)
+        }
+    }
+
     fn draw_single_eye(
         graphics: *mut c_void,
         cx: f32,
@@ -1210,40 +1734,42 @@ mod win32 {
         openness: f32,
         gaze: (f32, f32),
         expr: CompanionExpression,
+        starting_step: u8,
         palette: &ExpressionPalette,
         is_right_eye: bool,
     ) {
+        let params = contour_params_for_expression(expr, openness, starting_step, is_right_eye);
+
         // 1. Resting / closed contour when aperture is essentially shut
-        if openness <= 0.07 {
-            let line_w = eye_w * 0.86;
-            let arc_h = eye_h * 0.24;
-            let pen_w = (2.1 * dpi_scale).max(1.5);
+        if params.openness <= 0.07 {
+            let line_w = eye_w * 0.88;
+            let arc_h = eye_h * 0.26;
+            let pen_w = (2.2 * dpi_scale).max(1.6);
             if let Some(lid_pen) = create_pen(palette.resting_lid_argb, pen_w, true) {
-                // Soft lower-lidded curve for calm resting presence
+                // Soft downward-curved sleeping eyelid
                 unsafe {
                     GdipDrawArc(
                         graphics,
                         lid_pen.0,
                         cx - line_w * 0.5,
-                        cy - arc_h * 0.2,
+                        cy - arc_h * 0.35,
                         line_w,
                         arc_h * 2.0,
-                        20.0,
-                        140.0,
+                        25.0,
+                        130.0,
                     );
                 }
             }
             return;
         }
 
-        let visible_h = (eye_h * openness).max(6.0);
-        let top = cy - visible_h * 0.5;
-        let left = cx - eye_w * 0.5;
-        let corner_r = (eye_w * 0.42).min(visible_h * 0.46);
+        let eff_w = eye_w * params.width_scale;
+        let eff_h = (eye_h * params.height_scale * params.openness).max(6.0);
+        let eye_cy = cy + params.vertical_offset * eye_h;
 
         // 2. Subtle outer ambient glow halo (soft vector radial gradient)
-        let halo_w = eye_w * 1.48;
-        let halo_h = visible_h * 1.48;
+        let halo_w = eff_w * 1.48;
+        let halo_h = eff_h * 1.48;
         let mut halo_path_ptr: *mut c_void = ptr::null_mut();
         unsafe {
             if GdipCreatePath(FILL_MODE_ALTERNATE, &mut halo_path_ptr) == 0
@@ -1253,7 +1779,7 @@ mod win32 {
                 GdipAddPathEllipse(
                     halo_path.0,
                     cx - halo_w * 0.5,
-                    cy - halo_h * 0.5,
+                    eye_cy - halo_h * 0.5,
                     halo_w,
                     halo_h,
                 );
@@ -1274,7 +1800,7 @@ mod win32 {
                         graphics,
                         grad_brush.0,
                         cx - halo_w * 0.5,
-                        cy - halo_h * 0.5,
+                        eye_cy - halo_h * 0.5,
                         halo_w,
                         halo_h,
                     );
@@ -1282,8 +1808,10 @@ mod win32 {
             }
         }
 
-        // 3. Eye aperture shape (rounded PICO capsule)
-        if let Some(eye_path) = create_rounded_rect_path(left, top, eye_w, visible_h, corner_r) {
+        // 3. EMO-inspired expressive eyelid aperture path
+        if let Some(eye_path) =
+            create_expressive_eye_path(cx, cy, eye_w, eye_h, &params, is_right_eye)
+        {
             if let Some(cavity_brush) = create_solid_brush(0xFF0A_1320) {
                 unsafe { GdipFillPath(graphics, cavity_brush.0, eye_path.0) };
             }
@@ -1293,11 +1821,11 @@ mod win32 {
                 GdipSetClipPath(graphics, eye_path.0, COMBINE_MODE_INTERSECT);
             }
 
-            let iris_d = (eye_w * 0.72).min(eye_h * 0.72);
+            let iris_d = (eff_w * 0.74).min(eye_h * params.height_scale * 0.74);
             let gx = gaze.0 * eye_w * 0.35;
-            let gy = gaze.1 * eye_h * 0.25;
+            let gy = (gaze.1 + params.vertical_offset) * eye_h * 0.25;
             let iris_x = cx + gx - iris_d * 0.5;
-            let iris_y = cy + gy - iris_d * 0.5;
+            let iris_y = eye_cy + gy - iris_d * 0.5;
 
             if let Some(iris_outer) = create_solid_brush(palette.iris_outer_argb) {
                 unsafe { GdipFillEllipse(graphics, iris_outer.0, iris_x, iris_y, iris_d, iris_d) };
@@ -1310,16 +1838,19 @@ mod win32 {
                         graphics,
                         iris_core.0,
                         cx + gx - core_d * 0.5,
-                        cy + gy - core_d * 0.5,
+                        eye_cy + gy - core_d * 0.5,
                         core_d,
                         core_d,
                     );
                 }
             }
 
-            // Restrained inner iris precision ring (accented in Verifying/Online)
+            // Restrained inner iris precision ring
             let ring_d = iris_d * 0.84;
-            let ring_argb = if expr == CompanionExpression::Verifying {
+            let ring_argb = if matches!(
+                expr,
+                CompanionExpression::Verifying | CompanionExpression::Focused
+            ) {
                 palette.rim_argb
             } else {
                 0x50E0_F7FA
@@ -1330,7 +1861,7 @@ mod win32 {
                         graphics,
                         ring_pen.0,
                         cx + gx - ring_d * 0.5,
-                        cy + gy - ring_d * 0.5,
+                        eye_cy + gy - ring_d * 0.5,
                         ring_d,
                         ring_d,
                     );
@@ -1345,14 +1876,14 @@ mod win32 {
                         graphics,
                         pupil_brush.0,
                         cx + gx - pupil_d * 0.5,
-                        cy + gy - pupil_d * 0.5,
+                        eye_cy + gy - pupil_d * 0.5,
                         pupil_d,
                         pupil_d,
                     );
                 }
             }
 
-            // Soft dual specular catchlights for warm optical depth
+            // Dual specular catchlights + extra cheerful gleam in Happy mood
             let spec_big = (iris_d * 0.20).max(2.2);
             let spec_small = (iris_d * 0.09).max(1.2);
             if let Some(spec_brush) = create_solid_brush(palette.highlight_argb) {
@@ -1361,7 +1892,7 @@ mod win32 {
                         graphics,
                         spec_brush.0,
                         cx + gx - iris_d * 0.22 - spec_big * 0.5,
-                        cy + gy - iris_d * 0.20 - spec_big * 0.5,
+                        eye_cy + gy - iris_d * 0.20 - spec_big * 0.5,
                         spec_big,
                         spec_big,
                     );
@@ -1369,10 +1900,21 @@ mod win32 {
                         graphics,
                         spec_brush.0,
                         cx + gx + iris_d * 0.16,
-                        cy + gy + iris_d * 0.14,
+                        eye_cy + gy + iris_d * 0.14,
                         spec_small,
                         spec_small,
                     );
+                    if expr == CompanionExpression::Happy {
+                        let gleam_d = (iris_d * 0.14).max(1.8);
+                        GdipFillEllipse(
+                            graphics,
+                            spec_brush.0,
+                            cx + gx + iris_d * 0.12 - gleam_d * 0.5,
+                            eye_cy + gy - iris_d * 0.24 - gleam_d * 0.5,
+                            gleam_d,
+                            gleam_d,
+                        );
+                    }
                 }
             }
 
@@ -1384,16 +1926,34 @@ mod win32 {
                 unsafe { GdipDrawPath(graphics, rim_pen.0, eye_path.0) };
             }
 
-            // Gentle authoritative warning brow angle strictly on Error state
-            if expr == CompanionExpression::Error {
+            // Brow accents for Focused or Concerned/Error
+            if matches!(
+                expr,
+                CompanionExpression::Error | CompanionExpression::Concerned
+            ) {
                 let brow_pen_w = (1.8 * dpi_scale).max(1.4);
                 if let Some(brow_pen) = create_pen(palette.rim_argb, brow_pen_w, true) {
-                    let y_outer = top - 2.0 * dpi_scale;
-                    let y_inner = top + 3.0 * dpi_scale;
+                    let y_outer = eye_cy - eff_h * 0.5 - 2.0 * dpi_scale;
+                    let y_inner = eye_cy - eff_h * 0.5 + 3.0 * dpi_scale;
                     let (x1, y1, x2, y2) = if is_right_eye {
-                        (left + eye_w * 0.08, y_inner, left + eye_w * 0.92, y_outer)
+                        (cx - eff_w * 0.42, y_inner, cx + eff_w * 0.42, y_outer)
                     } else {
-                        (left + eye_w * 0.08, y_outer, left + eye_w * 0.92, y_inner)
+                        (cx - eff_w * 0.42, y_outer, cx + eff_w * 0.42, y_inner)
+                    };
+                    unsafe { GdipDrawLine(graphics, brow_pen.0, x1, y1, x2, y2) };
+                }
+            } else if matches!(
+                expr,
+                CompanionExpression::Focused | CompanionExpression::Verifying
+            ) {
+                let brow_pen_w = (1.5 * dpi_scale).max(1.2);
+                if let Some(brow_pen) = create_pen(palette.rim_argb, brow_pen_w, true) {
+                    let y_outer = eye_cy - eff_h * 0.5 - 3.0 * dpi_scale;
+                    let y_inner = eye_cy - eff_h * 0.5 - 1.0 * dpi_scale;
+                    let (x1, y1, x2, y2) = if is_right_eye {
+                        (cx - eff_w * 0.38, y_inner, cx + eff_w * 0.38, y_outer)
+                    } else {
+                        (cx - eff_w * 0.38, y_outer, cx + eff_w * 0.38, y_inner)
                     };
                     unsafe { GdipDrawLine(graphics, brow_pen.0, x1, y1, x2, y2) };
                 }
@@ -1446,10 +2006,9 @@ mod win32 {
                         }
                     }
 
-                    let palette = palette_for_expression(
-                        ctx.animation.expression,
-                        ctx.animation.verifying_pulse_phase,
-                    );
+                    let eff_expr = ctx.animation.effective_expression();
+                    let palette =
+                        palette_for_expression(eff_expr, ctx.animation.verifying_pulse_phase);
                     let openness = ctx.animation.eye_openness();
                     let gaze = ctx.animation.gaze_offset();
 
@@ -1462,7 +2021,8 @@ mod win32 {
                         geom.dpi_scale,
                         openness,
                         gaze,
-                        ctx.animation.expression,
+                        eff_expr,
+                        ctx.animation.starting_step,
                         &palette,
                         false,
                     );
@@ -1475,7 +2035,8 @@ mod win32 {
                         geom.dpi_scale,
                         openness,
                         gaze,
-                        ctx.animation.expression,
+                        eff_expr,
+                        ctx.animation.starting_step,
                         &palette,
                         true,
                     );
@@ -1485,12 +2046,19 @@ mod win32 {
                     let dot_x = geom.visor_x + geom.visor_w - (11.0 * geom.dpi_scale);
                     let dot_y = geom.visor_y + geom.visor_h - (10.0 * geom.dpi_scale);
                     let dot_color = match ctx.animation.expression {
-                        CompanionExpression::Online => 0xD010_B981,
-                        CompanionExpression::Error => 0xE8EF_4444,
-                        CompanionExpression::Verifying | CompanionExpression::Starting => {
-                            0xCC06_B6D4
-                        }
+                        CompanionExpression::Online
+                        | CompanionExpression::Neutral
+                        | CompanionExpression::Attentive
+                        | CompanionExpression::Curious
+                        | CompanionExpression::Thinking
+                        | CompanionExpression::Happy => 0xD010_B981,
+                        CompanionExpression::Error | CompanionExpression::Concerned => 0xE8EF_4444,
+                        CompanionExpression::Verifying
+                        | CompanionExpression::Focused
+                        | CompanionExpression::Starting
+                        | CompanionExpression::WakingUp => 0xCC06_B6D4,
                         CompanionExpression::Resting => 0x6064_748B,
+                        CompanionExpression::Confused => 0xCCA8_55F7,
                     };
                     if let Some(dot_brush) = create_solid_brush(dot_color) {
                         unsafe {
@@ -1517,16 +2085,189 @@ mod win32 {
         unsafe { EndPaint(hwnd, &ps) };
     }
 
-    fn show_native_context_menu(hwnd: HWND, ctx: &CompanionWindowContext) {
-        let status_text = ctx
-            .status_label
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| "Status: Unknown".to_string());
+    /// Offscreen render utility used to capture pixel-perfect visual verification frames.
+    #[allow(dead_code)]
+    pub fn render_companion_to_bmp(
+        width: i32,
+        height: i32,
+        dpi: u32,
+        expr: CompanionExpression,
+        pulse: bool,
+        openness: f32,
+        gaze: (f32, f32),
+        starting_step: u8,
+    ) -> Result<Vec<u8>, String> {
+        let _gdiplus = GdiplusSession::startup()?;
+        let w = width.max(1);
+        let h = height.max(1);
 
+        unsafe {
+            let mem_dc = CreateCompatibleDC(ptr::null_mut());
+            if mem_dc.is_null() {
+                return Err("Failed to create compatible DC".to_string());
+            }
+
+            let bmi = BITMAPINFO {
+                bmi_header: BITMAPINFOHEADER {
+                    bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    bi_width: w,
+                    bi_height: -h,
+                    bi_planes: 1,
+                    bi_bit_count: 32,
+                    bi_compression: 0,
+                    bi_size_image: (w * h * 4) as u32,
+                    bi_xpels_per_meter: 0,
+                    bi_ypels_per_meter: 0,
+                    bi_clr_used: 0,
+                    bi_clr_important: 0,
+                },
+                bmi_colors: [RGBQUAD {
+                    rgb_blue: 0,
+                    rgb_green: 0,
+                    rgb_red: 0,
+                    rgb_reserved: 0,
+                }],
+            };
+
+            let mut bits_ptr: *mut c_void = ptr::null_mut();
+            let hbm = CreateDIBSection(mem_dc, &bmi, 0, &mut bits_ptr, ptr::null_mut(), 0);
+            if hbm.is_null() || bits_ptr.is_null() {
+                DeleteDC(mem_dc);
+                return Err("Failed to create DIB section".to_string());
+            }
+
+            let old_bm = SelectObject(mem_dc, hbm);
+
+            let mut g_ptr: *mut c_void = ptr::null_mut();
+            if GdipCreateFromHDC(mem_dc, &mut g_ptr) != 0 || g_ptr.is_null() {
+                SelectObject(mem_dc, old_bm);
+                DeleteObject(hbm);
+                DeleteDC(mem_dc);
+                return Err("Failed to create GDI+ graphics".to_string());
+            }
+            let graphics = GdipGraphics(g_ptr);
+
+            GdipSetSmoothingMode(graphics.0, SMOOTHING_MODE_ANTI_ALIAS);
+            GdipSetPixelOffsetMode(graphics.0, PIXEL_OFFSET_MODE_HIGH_QUALITY);
+            GdipGraphicsClear(graphics.0, 0xFF09_0B11);
+
+            let geom = EyeGeometry::compute(w, h, dpi);
+            if let Some(visor_path) = create_rounded_rect_path(
+                geom.visor_x,
+                geom.visor_y,
+                geom.visor_w,
+                geom.visor_h,
+                geom.visor_radius,
+            ) {
+                if let Some(visor_fill) = create_solid_brush(0xFF10_1421) {
+                    GdipFillPath(graphics.0, visor_fill.0, visor_path.0);
+                }
+                if let Some(visor_border) =
+                    create_pen(0xFF1E_263C, (1.1 * geom.dpi_scale).max(1.0), false)
+                {
+                    GdipDrawPath(graphics.0, visor_border.0, visor_path.0);
+                }
+            }
+
+            let palette = palette_for_expression(expr, pulse);
+
+            draw_single_eye(
+                graphics.0,
+                geom.left_eye_cx,
+                geom.eye_cy,
+                geom.eye_w,
+                geom.eye_h,
+                geom.dpi_scale,
+                openness,
+                gaze,
+                expr,
+                starting_step,
+                &palette,
+                false,
+            );
+            draw_single_eye(
+                graphics.0,
+                geom.right_eye_cx,
+                geom.eye_cy,
+                geom.eye_w,
+                geom.eye_h,
+                geom.dpi_scale,
+                openness,
+                gaze,
+                expr,
+                starting_step,
+                &palette,
+                true,
+            );
+
+            let dot_r = (2.4 * geom.dpi_scale).max(2.0);
+            let dot_x = geom.visor_x + geom.visor_w - (11.0 * geom.dpi_scale);
+            let dot_y = geom.visor_y + geom.visor_h - (10.0 * geom.dpi_scale);
+            let dot_color = match expr {
+                CompanionExpression::Online
+                | CompanionExpression::Neutral
+                | CompanionExpression::Attentive
+                | CompanionExpression::Curious
+                | CompanionExpression::Thinking
+                | CompanionExpression::Happy => 0xD010_B981,
+                CompanionExpression::Error | CompanionExpression::Concerned => 0xE8EF_4444,
+                CompanionExpression::Verifying
+                | CompanionExpression::Focused
+                | CompanionExpression::Starting
+                | CompanionExpression::WakingUp => 0xCC06_B6D4,
+                CompanionExpression::Resting => 0x6064_748B,
+                CompanionExpression::Confused => 0xCCA8_55F7,
+            };
+            if let Some(dot_brush) = create_solid_brush(dot_color) {
+                GdipFillEllipse(
+                    graphics.0,
+                    dot_brush.0,
+                    dot_x - dot_r,
+                    dot_y - dot_r,
+                    dot_r * 2.0,
+                    dot_r * 2.0,
+                );
+            }
+
+            drop(graphics);
+
+            let pixel_bytes = (w * h * 4) as usize;
+            let mut out = Vec::with_capacity(14 + 40 + pixel_bytes);
+
+            out.extend_from_slice(b"BM");
+            let file_size = (14 + 40 + pixel_bytes) as u32;
+            out.extend_from_slice(&file_size.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            let off_bits = 54u32;
+            out.extend_from_slice(&off_bits.to_le_bytes());
+
+            out.extend_from_slice(&40u32.to_le_bytes());
+            out.extend_from_slice(&w.to_le_bytes());
+            out.extend_from_slice(&(-h).to_le_bytes());
+            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&32u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(pixel_bytes as u32).to_le_bytes());
+            out.extend_from_slice(&0i32.to_le_bytes());
+            out.extend_from_slice(&0i32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+
+            let slice = std::slice::from_raw_parts(bits_ptr as *const u8, pixel_bytes);
+            out.extend_from_slice(slice);
+
+            SelectObject(mem_dc, old_bm);
+            DeleteObject(hbm);
+            DeleteDC(mem_dc);
+
+            Ok(out)
+        }
+    }
+
+    fn show_native_context_menu(hwnd: HWND, status_text: &str, app_handle: &tauri::AppHandle) {
         let to_wide =
             |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
-        let status_w = to_wide(&status_text);
+        let status_w = to_wide(status_text);
         let open_w = to_wide("Open PICO");
         let quit_w = to_wide("Quit PICO");
 
@@ -1569,19 +2310,18 @@ mod win32 {
 
         match selected_cmd {
             MENU_CMD_OPEN_PICO => {
-                crate::open_or_focus_command_center(&ctx.app_handle);
+                crate::open_or_focus_command_center(app_handle);
             }
             MENU_CMD_QUIT_PICO => {
-                if let Some(lc) = ctx
-                    .app_handle
-                    .try_state::<crate::window_lifecycle::CommandCenterLifecycle>()
+                if let Some(lc) =
+                    app_handle.try_state::<crate::window_lifecycle::CommandCenterLifecycle>()
                 {
                     lc.mark_shutting_down();
                 }
-                if let Some(state) = ctx.app_handle.try_state::<crate::SupervisorState>() {
+                if let Some(state) = app_handle.try_state::<crate::SupervisorState>() {
                     state.shutdown();
                 }
-                ctx.app_handle.exit(0);
+                app_handle.exit(0);
             }
             _ => {}
         }
@@ -1599,21 +2339,23 @@ mod win32 {
             if dw_ref_data == 0 {
                 return DefSubclassProc(hwnd, msg, wparam, lparam);
             }
-            let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
 
             match msg {
                 WM_ERASEBKGND => 1,
                 WM_PAINT => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     paint_companion(hwnd, ctx);
                     0
                 }
                 WM_APP_PICO_STATUS => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.sync_status();
                     ctx.reconcile_timers(hwnd);
                     InvalidateRect(hwnd, ptr::null(), 0);
                     0
                 }
                 WM_SHOWWINDOW => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.animation.visible = wparam != 0;
                     ctx.reconcile_timers(hwnd);
                     if ctx.animation.visible {
@@ -1622,6 +2364,7 @@ mod win32 {
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_SIZE => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.animation.minimized = wparam == SIZE_MINIMIZED;
                     ctx.dpi = GetDpiForWindow(hwnd);
                     ctx.reconcile_timers(hwnd);
@@ -1629,6 +2372,7 @@ mod win32 {
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_DPICHANGED => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     ctx.dpi = GetDpiForWindow(hwnd);
                     ctx.backbuffer = None;
                     InvalidateRect(hwnd, ptr::null(), 0);
@@ -1646,61 +2390,130 @@ mod win32 {
                 }
                 WM_LBUTTONDOWN => {
                     let (x, y) = client_coords(lparam);
-                    ctx.pressing = true;
-                    ctx.down_x = x;
-                    ctx.down_y = y;
+                    {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        ctx.pressing = true;
+                        ctx.down_x = x;
+                        ctx.down_y = y;
+                        ctx.animation.set_interactive_reaction(true);
+                        invalidate_eyes_only(hwnd, ctx);
+                    }
                     SetCapture(hwnd);
+                    UpdateWindow(hwnd);
                     0
                 }
                 WM_MOUSEMOVE => {
-                    if ctx.pressing {
-                        let (x, y) = client_coords(lparam);
-                        let dx = (x - ctx.down_x).abs();
-                        let dy = (y - ctx.down_y).abs();
-                        let drag_cx = GetSystemMetrics(SM_CXDRAG).max(4);
-                        let drag_cy = GetSystemMetrics(SM_CYDRAG).max(4);
-                        if dx >= drag_cx || dy >= drag_cy {
-                            ctx.pressing = false;
-                            ReleaseCapture();
-                            let mut screen_pt = POINT::default();
-                            let _ = GetCursorPos(&mut screen_pt);
-                            let nc_lparam = ((screen_pt.y as i16 as u16 as isize) << 16)
-                                | (screen_pt.x as i16 as u16 as isize);
-                            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, nc_lparam);
-                            return 0;
+                    let drag_breakout = {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        if ctx.pressing {
+                            let (x, y) = client_coords(lparam);
+                            let dx = (x - ctx.down_x).abs();
+                            let dy = (y - ctx.down_y).abs();
+                            let drag_cx = GetSystemMetrics(SM_CXDRAG).max(4);
+                            let drag_cy = GetSystemMetrics(SM_CYDRAG).max(4);
+                            if dx >= drag_cx || dy >= drag_cy {
+                                ctx.pressing = false;
+                                ctx.animation.set_interactive_reaction(false);
+                                ctx.reconcile_timers(hwnd);
+                                invalidate_eyes_only(hwnd, ctx);
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
                         }
+                    };
+
+                    if drag_breakout {
+                        // Scope has closed: all mutable borrows of CompanionWindowContext have ended.
+                        // ReleaseCapture() will synchronously dispatch WM_CAPTURECHANGED, which can
+                        // re-enter companion_subclass_proc and safely borrow its own mutable context.
+                        ReleaseCapture();
+                        let mut screen_pt = POINT::default();
+                        let _ = GetCursorPos(&mut screen_pt);
+                        let nc_lparam = ((screen_pt.y as i16 as u16 as isize) << 16)
+                            | (screen_pt.x as i16 as u16 as isize);
+                        SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, nc_lparam);
+                        return 0;
                     }
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_LBUTTONUP => {
-                    if ctx.pressing {
-                        let (x, y) = client_coords(lparam);
-                        ctx.pressing = false;
+                    let action = {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        if ctx.pressing {
+                            let (x, y) = client_coords(lparam);
+                            ctx.pressing = false;
+                            ctx.animation.set_interactive_reaction(false);
+                            ctx.reconcile_timers(hwnd);
+                            invalidate_eyes_only(hwnd, ctx);
+
+                            let mut rc = RECT::default();
+                            let is_click_zone = if GetClientRect(hwnd, &mut rc) != 0 {
+                                let geom = EyeGeometry::compute(
+                                    rc.right - rc.left,
+                                    rc.bottom - rc.top,
+                                    ctx.dpi,
+                                );
+                                geom.is_in_eye_click_zone(x, y)
+                            } else {
+                                false
+                            };
+
+                            let handle = if is_click_zone {
+                                Some(ctx.app_handle.clone())
+                            } else {
+                                None
+                            };
+                            Some(handle)
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some(maybe_handle) = action {
+                        // Scope has closed: all mutable borrows of CompanionWindowContext have ended.
+                        // ReleaseCapture() synchronously triggers WM_CAPTURECHANGED to hwnd.
+                        // Re-entrant invocation of companion_subclass_proc acquires its own mutable
+                        // context with zero aliasing or undefined behavior.
                         ReleaseCapture();
-                        let mut rc = RECT::default();
-                        if GetClientRect(hwnd, &mut rc) != 0 {
-                            let geom = EyeGeometry::compute(
-                                rc.right - rc.left,
-                                rc.bottom - rc.top,
-                                ctx.dpi,
-                            );
-                            if geom.is_in_eye_click_zone(x, y) {
-                                crate::open_or_focus_command_center(&ctx.app_handle);
-                            }
+
+                        if let Some(app_handle) = maybe_handle {
+                            crate::open_or_focus_command_center(&app_handle);
                         }
                         return 0;
                     }
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_RBUTTONUP => {
-                    show_native_context_menu(hwnd, ctx);
+                    let (status_text, app_handle) = {
+                        let ctx = &*(dw_ref_data as *const CompanionWindowContext);
+                        let text = ctx
+                            .status_label
+                            .lock()
+                            .map(|g| g.clone())
+                            .unwrap_or_else(|_| "Status: Unknown".to_string());
+                        (text, ctx.app_handle.clone())
+                    };
+                    show_native_context_menu(hwnd, &status_text, &app_handle);
                     0
                 }
                 WM_CAPTURECHANGED => {
-                    ctx.pressing = false;
+                    {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        let was_active = ctx.pressing || ctx.animation.interactive_reaction;
+                        ctx.pressing = false;
+                        ctx.animation.set_interactive_reaction(false);
+                        ctx.reconcile_timers(hwnd);
+                        if was_active {
+                            invalidate_eyes_only(hwnd, ctx);
+                        }
+                    }
                     DefSubclassProc(hwnd, msg, wparam, lparam)
                 }
                 WM_TIMER => {
+                    let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
                     match wparam {
                         TIMER_BLINK_SCHEDULE_ID => {
                             KillTimer(hwnd, TIMER_BLINK_SCHEDULE_ID);
@@ -1729,10 +2542,15 @@ mod win32 {
                     0
                 }
                 WM_NCDESTROY => {
-                    ctx.kill_all_timers(hwnd);
-                    RemoveWindowSubclass(hwnd, companion_subclass_proc, u_id_subclass);
-                    if let Some(coord) = ctx.app_handle.try_state::<CompanionRenderCoordinator>() {
-                        coord.clear_hwnd();
+                    {
+                        let ctx = &mut *(dw_ref_data as *mut CompanionWindowContext);
+                        ctx.kill_all_timers(hwnd);
+                        RemoveWindowSubclass(hwnd, companion_subclass_proc, u_id_subclass);
+                        if let Some(coord) =
+                            ctx.app_handle.try_state::<CompanionRenderCoordinator>()
+                        {
+                            coord.clear_hwnd();
+                        }
                     }
                     let boxed = Box::from_raw(dw_ref_data as *mut CompanionWindowContext);
                     drop(boxed);
@@ -1940,5 +2758,381 @@ mod tests {
             );
             assert!(!anim.start_blink());
         }
+    }
+
+    #[test]
+    fn test_effective_expression_mapping_and_interaction() {
+        let mut anim = AnimationState::new(CompanionExpression::Online);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+
+        // Ambient micro-expression cycle during Online
+        anim.gaze_step = 2;
+        assert_eq!(anim.effective_expression(), CompanionExpression::Attentive);
+        anim.gaze_step = 4;
+        assert_eq!(anim.effective_expression(), CompanionExpression::Curious);
+        anim.gaze_step = 6;
+        assert_eq!(anim.effective_expression(), CompanionExpression::Thinking);
+        anim.gaze_step = 7;
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+
+        // Mouse click/down interactive tactile response
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+
+        // Core supervisor state truthful mapping to presentation moods
+        let starting_anim = AnimationState::new(CompanionExpression::Starting);
+        assert_eq!(
+            starting_anim.effective_expression(),
+            CompanionExpression::WakingUp
+        );
+
+        let verifying_anim = AnimationState::new(CompanionExpression::Verifying);
+        assert_eq!(
+            verifying_anim.effective_expression(),
+            CompanionExpression::Focused
+        );
+
+        let error_anim = AnimationState::new(CompanionExpression::Error);
+        assert_eq!(
+            error_anim.effective_expression(),
+            CompanionExpression::Concerned
+        );
+    }
+
+    #[test]
+    fn test_emo_double_blink_lifecycle() {
+        let mut anim = AnimationState::new(CompanionExpression::Online);
+        anim.blink_count = 4; // Multiple of 4 triggers natural double-blink
+        assert!(anim.start_blink());
+        assert!(anim.is_double_blink);
+        assert_eq!(anim.double_blink_stage, 0);
+
+        // Primary blink frames (6 frames: [0.35, 0.82, 1.0, 0.65, 0.20, 0.0])
+        for _ in 0..5 {
+            assert!(!anim.advance_blink_frame());
+        }
+        // Transition from primary to secondary flutter
+        assert!(!anim.advance_blink_frame());
+        assert_eq!(anim.double_blink_stage, 1);
+        assert_eq!(anim.blink_frame_idx, Some(0));
+
+        // Secondary flutter frames (4 frames: [0.50, 0.92, 0.30, 0.0])
+        for _ in 0..3 {
+            assert!(!anim.advance_blink_frame());
+        }
+        // Completion of full double-blink
+        assert!(anim.advance_blink_frame());
+        assert_eq!(anim.blink_frame_idx, None);
+        assert!(!anim.is_double_blink);
+        assert_eq!(anim.double_blink_stage, 0);
+        assert_eq!(anim.blink_count, 5);
+    }
+
+    #[test]
+    fn test_emo_contour_parameters_and_asymmetry() {
+        // Happy mood has strong cheek lift creating smiling crescent
+        let happy = contour_params_for_expression(CompanionExpression::Happy, 1.0, 3, false);
+        assert!(happy.cheek_lift >= 0.50);
+
+        // Focused mood has inward brow slant and narrowed aperture
+        let focused_l = contour_params_for_expression(CompanionExpression::Focused, 1.0, 3, false);
+        assert!(focused_l.brow_slant > 0.10);
+        assert!(focused_l.height_scale < 1.0);
+
+        // Concerned mood has outer brow droop
+        let concerned =
+            contour_params_for_expression(CompanionExpression::Concerned, 1.0, 3, false);
+        assert!(concerned.brow_slant < -0.10);
+
+        // Curious mood has subtle asymmetry between left and right eyes
+        let curious_l = contour_params_for_expression(CompanionExpression::Curious, 1.0, 3, false);
+        let curious_r = contour_params_for_expression(CompanionExpression::Curious, 1.0, 3, true);
+        assert!(curious_l.width_scale > curious_r.width_scale);
+        assert!(curious_l.upper_arch > curious_r.upper_arch);
+
+        // Confused mood has opposite brow angles between left and right eyes
+        let confused_l =
+            contour_params_for_expression(CompanionExpression::Confused, 1.0, 3, false);
+        let confused_r = contour_params_for_expression(CompanionExpression::Confused, 1.0, 3, true);
+        assert!(confused_l.brow_slant < 0.0);
+        assert!(confused_r.brow_slant > 0.0);
+    }
+
+    #[test]
+    fn test_gaze_saccade_bounds_and_coverage() {
+        assert_eq!(CALM_GAZE_OFFSETS.len(), 8);
+        for &(gx, gy) in &CALM_GAZE_OFFSETS {
+            assert!(gx.abs() <= 0.25, "Gaze X {} exceeds restrained bounds", gx);
+            assert!(gy.abs() <= 0.20, "Gaze Y {} exceeds restrained bounds", gy);
+        }
+    }
+
+    #[test]
+    fn test_all_expression_palettes_valid_and_distinct() {
+        let expressions = [
+            CompanionExpression::Resting,
+            CompanionExpression::WakingUp,
+            CompanionExpression::Neutral,
+            CompanionExpression::Attentive,
+            CompanionExpression::Focused,
+            CompanionExpression::Thinking,
+            CompanionExpression::Curious,
+            CompanionExpression::Happy,
+            CompanionExpression::Confused,
+            CompanionExpression::Concerned,
+            CompanionExpression::Error,
+        ];
+
+        for &expr in &expressions {
+            let p = palette_for_expression(expr, false);
+            assert_ne!(p.rim_argb, 0, "Rim ARGB must be non-zero for {:?}", expr);
+            assert_ne!(
+                p.iris_core_argb, 0,
+                "Iris core ARGB must be non-zero for {:?}",
+                expr
+            );
+            assert_ne!(
+                p.highlight_argb, 0,
+                "Highlight ARGB must be non-zero for {:?}",
+                expr
+            );
+
+            // Error and Concerned use warm amber warning colors
+            if matches!(
+                expr,
+                CompanionExpression::Error | CompanionExpression::Concerned
+            ) {
+                assert_eq!(
+                    p.rim_argb & 0x00FF_0000,
+                    0x00F5_0000,
+                    "Expected amber rim for {:?}",
+                    expr
+                );
+            } else {
+                // PICO signature cyan/teal
+                assert_ne!(
+                    p.rim_argb & 0x0000_FFFF,
+                    0,
+                    "Expected cyan/teal rim for {:?}",
+                    expr
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_render_and_export_all_expression_screenshots() {
+        use std::fs;
+        use std::path::PathBuf;
+
+        let candidates = [
+            PathBuf::from("docs/evaluation/screenshots"),
+            PathBuf::from("../../docs/evaluation/screenshots"),
+        ];
+        let target_dir = candidates
+            .into_iter()
+            .find(|p| p.exists())
+            .unwrap_or_else(|| PathBuf::from("docs/evaluation/screenshots"));
+
+        let export_files = std::env::var("PICO_EXPORT_SCREENSHOTS").is_ok();
+        if export_files {
+            fs::create_dir_all(&target_dir).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to create screenshot export directory {}: {}",
+                    target_dir.display(),
+                    e
+                )
+            });
+        }
+
+        let cases = [
+            (
+                "01_neutral",
+                CompanionExpression::Neutral,
+                false,
+                1.0,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "02_blink",
+                CompanionExpression::Online,
+                false,
+                0.35,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "03_focused_verifying",
+                CompanionExpression::Focused,
+                true,
+                0.86,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "04_waking_up_starting",
+                CompanionExpression::WakingUp,
+                false,
+                0.52,
+                (0.0, 0.0),
+                1,
+            ),
+            (
+                "05_curious",
+                CompanionExpression::Curious,
+                false,
+                1.02,
+                (0.16, -0.08),
+                3,
+            ),
+            (
+                "06_attentive",
+                CompanionExpression::Attentive,
+                false,
+                1.08,
+                (0.0, -0.03),
+                3,
+            ),
+            (
+                "07_happy",
+                CompanionExpression::Happy,
+                false,
+                0.80,
+                (0.0, -0.04),
+                3,
+            ),
+            (
+                "08_confused",
+                CompanionExpression::Confused,
+                false,
+                0.94,
+                (-0.08, 0.04),
+                3,
+            ),
+            (
+                "09_concerned_error",
+                CompanionExpression::Concerned,
+                false,
+                0.68,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "10_resting",
+                CompanionExpression::Resting,
+                false,
+                0.0,
+                (0.0, 0.0),
+                3,
+            ),
+            (
+                "11_thinking",
+                CompanionExpression::Thinking,
+                false,
+                0.88,
+                (-0.14, -0.10),
+                3,
+            ),
+        ];
+
+        for (name, expr, pulse, openness, gaze, step) in cases {
+            let bmp_bytes =
+                win32::render_companion_to_bmp(240, 120, 96, expr, pulse, openness, gaze, step)
+                    .expect("Render to BMP must succeed");
+
+            assert!(!bmp_bytes.is_empty());
+            assert_eq!(&bmp_bytes[0..2], b"BM");
+
+            if export_files {
+                let out_file = target_dir.join(format!("{}.bmp", name));
+                fs::write(&out_file, &bmp_bytes).unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to write screenshot export file {}: {}",
+                        out_file.display(),
+                        e
+                    )
+                });
+                assert!(
+                    out_file.exists(),
+                    "Exported screenshot file {} does not exist after writing",
+                    out_file.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_status_dot_reflects_authoritative_state_not_interactive_reaction() {
+        let mut anim = AnimationState::new(CompanionExpression::Error);
+        assert_eq!(anim.expression, CompanionExpression::Error);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Concerned);
+
+        // Click-induced Happy reaction
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        // Authoritative expression remains unchanged
+        assert_eq!(anim.expression, CompanionExpression::Error);
+
+        // Clear interaction
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.expression, CompanionExpression::Error);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Concerned);
+    }
+
+    #[test]
+    fn test_capture_release_reentrancy_state_and_timer_invariants() {
+        // 1. Initial Online idle state
+        let mut anim = AnimationState::new(CompanionExpression::Online);
+        assert_eq!(anim.expression, CompanionExpression::Online);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        let initial_sched = anim.timer_schedule();
+        assert!(initial_sched.want_blink_schedule);
+        assert!(!initial_sched.want_blink_frames);
+
+        // 2. Mouse down: tactile Happy reaction triggers and clears active blink frame
+        anim.start_blink();
+        assert!(anim.blink_frame_idx.is_some());
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        assert_eq!(
+            anim.blink_frame_idx, None,
+            "Happy reaction must clear in-progress blink"
+        );
+        let pressing_sched = anim.timer_schedule();
+        assert!(!pressing_sched.want_blink_schedule);
+        assert!(!pressing_sched.want_blink_frames);
+
+        // 3. Normal mouse up: reaction cleared, timers reconciled
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        let released_sched = anim.timer_schedule();
+        assert!(released_sched.want_blink_schedule);
+        assert!(!released_sched.want_blink_frames);
+
+        // 4. Re-entrant WM_CAPTURECHANGED arrival:
+        // Calling set_interactive_reaction(false) a second time simulates re-entrant
+        // WM_CAPTURECHANGED dispatch after ReleaseCapture(). Must be strictly idempotent.
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        let reentrant_sched = anim.timer_schedule();
+        assert_eq!(released_sched, reentrant_sched);
+        assert_eq!(
+            anim.expression,
+            CompanionExpression::Online,
+            "Authoritative state must not change"
+        );
+
+        // 5. Unexpected capture loss (e.g. Alt+Tab or system dialog during click)
+        anim.set_interactive_reaction(true);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Happy);
+        // Direct WM_CAPTURECHANGED clears reaction without WM_LBUTTONUP
+        anim.set_interactive_reaction(false);
+        assert_eq!(anim.effective_expression(), CompanionExpression::Neutral);
+        assert!(anim.timer_schedule().want_blink_schedule);
+        assert_eq!(anim.expression, CompanionExpression::Online);
     }
 }

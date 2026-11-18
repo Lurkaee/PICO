@@ -160,6 +160,16 @@ Chromium's mandatory multi-process architecture on Windows 11 allocates ~300 MiB
   - Dedicated non-UI-thread `WebviewWindowBuilder::build()` / `destroy()` (`CommandCenterLifecycle`) spawns `6` `msedgewebview2.exe` processes when open and returns cleanly to `0` on close while preserving Python Core PIDs and native companion eyes.
 - **ADR 0004 Status**: Accepted.
 
+### 7.1 Expressive Native Eyes Evolution (P11.2.4.3)
+
+In Milestone P11.2.4.3, the native GDI+ renderer (`companion_render.rs`) was evolved to support character-like expressive eye animation inspired by EMO robotics without compromising any architectural invariants:
+- **Vector Bézier Geometry**: Integrated `GdipAddPathBezier` and `GdipAddPathLine` into the native GDI+ Flat API layer, replacing rigid rounded rectangles with dynamic squircle contours, upper eyelid dome curvature, lower eyelid cheek lift (smiling crescent eyes), and asymmetric/slant angles (`Curious`, `Confused`, `Focused`, `Concerned`).
+- **Natural Blinking & Saccades**: Added natural curved eyelid sweep with elastic rebound, biological double-blink cadence (every 4th cycle), and 8 calm saccadic micro-glances.
+- **Tactile Interaction**: Integrated instant click feedback (`WM_LBUTTONDOWN` triggers joyful crescent `Happy` response before launching Command Center on `WM_LBUTTONUP`).
+- **Authoritative State Truthfulness**: Backend supervisor states (`Unmanaged`, `Starting`, `Verifying`, `Online`, `Offline`) remain strictly authoritative; mood variations (`Neutral`, `Attentive`, `Focused`, `Thinking`, `Curious`, `Happy`, `Confused`, `Concerned`, `Resting`, `WakingUp`) are purely presentation-layer mappings (`effective_expression()`).
+- **Resource Footprint Preservation**: Zero continuous 60 FPS polling loops (discrete one-shot timers only); timers suspended when minimized/hidden; idle memory footprint maintained at `~32.5 MiB` Working Set (`< 100 MB` budget).
+- **Verification Evidence**: All 14 unit tests passed (`companion_render::tests`); high-resolution visual evidence for all 10 character expressions (`Neutral`, `Attentive`, `Focused`, `Thinking`, `Curious`, `Happy`, `Confused`, `Concerned`, `Resting`, `WakingUp`) plus dynamic blink transition recorded in `docs/evaluation/screenshots/` (11 PNG previews) and documented in `docs/evaluation/native-expressive-eyes-evolution.md`.
+
 ---
 
 ## 8. Qualification Waiver & Residual Risk Note
