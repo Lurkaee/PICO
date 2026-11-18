@@ -255,6 +255,9 @@ class ContinuousMemorySampler:
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=3.0)
+            if self._thread.is_alive():
+                with self._lock:
+                    self.has_telemetry_error = True
 
     def sample_once(self) -> None:
         """Collect a single synchronous sample of available system RAM and process working set."""
@@ -291,8 +294,10 @@ class ContinuousMemorySampler:
     def get_results(self) -> tuple[float | None, float | None, bool, int]:
         """Return (peak_working_set_mb, min_available_ram_mb, is_valid, samples_count)."""
         with self._lock:
+            thread_finished = self._thread is None or not self._thread.is_alive()
             is_valid = (
                 not self.has_telemetry_error
+                and thread_finished
                 and self.min_available_ram_mb is not None
                 and self.samples_count > 0
             )
@@ -325,8 +330,15 @@ def verify_ollama_model_residency(expected_model_prefix: str = "qwen3.5:2b") -> 
             data = json.loads(resp.read().decode("utf-8"))
             models = data.get("models", [])
             for m in models:
-                m_name = m.get("name", "")
-                if expected_model_prefix.lower() in m_name.lower():
+                m_name = m.get("name", "").strip()
+                m_lower = m_name.lower()
+                prefix_lower = expected_model_prefix.lower()
+                is_match = (
+                    m_lower == prefix_lower
+                    or m_lower.startswith(f"{prefix_lower}:")
+                    or m_lower.startswith(f"{prefix_lower}-")
+                )
+                if is_match:
                     size_vram = m.get("size_vram", 0)
                     if size_vram is not None and size_vram > 0:
                         vram_mb = round(size_vram / (1024 * 1024), 1)
@@ -541,12 +553,13 @@ def evaluate_gate_04(
     if checkpoints is None:
         checkpoints = [("initial", ollama_resident if ollama_resident is not None else False, ollama_info or "")]
 
-    if not checkpoints:
+    if len(checkpoints) < 2:
         return (
             "NOT RUN",
             f"CPU isolation component PASS (0 MiB additional VRAM; initial={vram_initial_mb} MiB, "
             f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
-            "Single-model residency qualification NOT RUN because no Ollama residency checkpoints were recorded.",
+            f"Single-model residency qualification NOT RUN because insufficient checkpoints were recorded "
+            f"({len(checkpoints)} checkpoint observed; multi-checkpoint lifecycle verification required).",
         )
 
     init_name, init_resident, init_info = checkpoints[0]
@@ -558,23 +571,42 @@ def evaluate_gate_04(
             f"Single-model residency qualification NOT RUN because target model 'qwen3.5:2b' was not resident on GPU before benchmark ({init_info}).",
         )
 
-    # Ollama was resident on GPU at start! Verify that it remained resident at every subsequent checkpoint
-    evictions = [ckpt for ckpt in checkpoints[1:] if not ckpt[1]]
-    if evictions:
-        evict_name, _, evict_info = evictions[0]
+    # Check subsequent checkpoints: distinguish confirmed evictions from failed/unavailable telemetry queries
+    unverified_queries: list[tuple[str, bool, str]] = []
+    confirmed_evictions: list[tuple[str, bool, str]] = []
+    for ckpt in checkpoints[1:]:
+        ckpt_name, ckpt_resident, ckpt_info = ckpt
+        if not ckpt_resident:
+            info_lower = ckpt_info.lower()
+            if any(err_term in info_lower for err_term in ["unreachable", "timed out", "timeout", "connection refused", "error"]):
+                unverified_queries.append(ckpt)
+            else:
+                confirmed_evictions.append(ckpt)
+
+    if confirmed_evictions:
+        evict_name, _, evict_info = confirmed_evictions[0]
         return (
             "FAIL",
             f"Target model 'qwen3.5:2b' was evicted from GPU during STT execution (residency lost at checkpoint '{evict_name}': {evict_info}). "
             f"CPU isolation observed 0 MiB VRAM delta, but co-residency was violated.",
         )
 
+    if unverified_queries:
+        unv_name, _, unv_info = unverified_queries[0]
+        return (
+            "NOT RUN",
+            f"CPU isolation component PASS (0 MiB additional VRAM; initial={vram_initial_mb} MiB, "
+            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+            f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified at checkpoint '{unv_name}' ({unv_info}).",
+        )
+
     # All checkpoints resident on GPU!
     final_info = checkpoints[-1][2]
     return (
         "PASS",
-        f"VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across entire benchmark interval ({final_info}). "
-        f"CPU-only isolation verified (initial={vram_initial_mb} MiB, peak={max_vram_observed_mb} MiB, "
-        f"final={vram_final_mb} MiB across {vram_observations_count} observations).",
+        f"VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across sampled checkpoints ({final_info}). "
+        f"CPU isolation observed (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
+        f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations).",
     )
 
 
@@ -596,18 +628,13 @@ def evaluate_gate_05(
     Returns (status, measured_text).
     """
     if not ram_telemetry_valid or peak_working_set_mb is None or min_available_ram_mb is None:
+        breaches: list[str] = []
         if peak_working_set_mb is not None and peak_working_set_mb >= ws_threshold_mb:
-            return (
-                "FAIL",
-                f"Peak Working Set: {peak_working_set_mb} MB exceeds {ws_threshold_mb} MB ceiling "
-                "(system available RAM telemetry unavailable)",
-            )
+            breaches.append(f"Peak Working Set: {peak_working_set_mb} MB exceeds {ws_threshold_mb} MB ceiling")
         if min_available_ram_mb is not None and min_available_ram_mb <= avail_threshold_mb:
-            return (
-                "FAIL",
-                f"Minimum Available RAM: {min_available_ram_mb} MB <= {avail_threshold_mb} MB (1.5 GB) threshold "
-                "(process memory telemetry unavailable)",
-            )
+            breaches.append(f"Minimum Available RAM: {min_available_ram_mb} MB <= {avail_threshold_mb} MB (1.5 GB) threshold")
+        if breaches:
+            return "FAIL", "; ".join(breaches) + " (telemetry flagged incomplete or error encountered)"
         return "NOT RUN", "Required process or system RAM monitoring could not be completed"
 
     ws_pass = peak_working_set_mb < ws_threshold_mb

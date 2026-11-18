@@ -26,6 +26,7 @@ import pytest
 
 from pico.core.errors import ValidationError
 from pico.perception.audio.adapter import LocalWhisperSpeechToTextAdapter
+from tools.bench import voice_bench
 from tools.bench.voice_bench import (
     ContinuousMemorySampler,
     calculate_cer,
@@ -353,7 +354,7 @@ class TestNativeEngineIntegration:
 class TestGate04Evaluation:
     """Verifies GATE-VOICE-04 (Single-Model GPU VRAM & Ollama Residency)."""
 
-    def test_gate_04_pass_with_resident_llm(self):
+    def test_gate_04_single_checkpoint_not_run(self):
         status, text = evaluate_gate_04(
             vram_max_delta_mb=0,
             vram_readings_valid=True,
@@ -364,8 +365,8 @@ class TestGate04Evaluation:
             vram_final_mb=1000,
             vram_observations_count=10,
         )
-        assert status == "PASS"
-        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM" in text
+        assert status == "NOT RUN"
+        assert "insufficient checkpoints were recorded" in text
 
     def test_gate_04_pass_with_multi_checkpoint_resident_llm(self):
         checkpoints = [
@@ -384,7 +385,26 @@ class TestGate04Evaluation:
             vram_observations_count=10,
         )
         assert status == "PASS"
-        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across entire benchmark interval" in text
+        assert "VRAM Delta = 0 MiB with target model 'qwen3.5:2b' verified resident in GPU VRAM across sampled checkpoints" in text
+
+    def test_gate_04_not_run_on_telemetry_failure_during_inference(self):
+        checkpoints = [
+            ("pre_init", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("post_init", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+            ("sample_jfk.wav", False, "Ollama local API unreachable: connection timed out"),
+            ("post_final", True, "Model 'qwen3.5:2b' resident in GPU VRAM (1400 MiB)"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_readings_valid=True,
+            ollama_checkpoints=checkpoints,
+            vram_initial_mb=1000,
+            max_vram_observed_mb=1000,
+            vram_final_mb=1000,
+            vram_observations_count=10,
+        )
+        assert status == "NOT RUN"
+        assert "Ollama residency telemetry could not be verified at checkpoint 'sample_jfk.wav'" in text
 
     def test_gate_04_fail_on_model_eviction_during_inference(self):
         checkpoints = [
@@ -540,6 +560,36 @@ class TestOllamaResidencyVerification:
         assert resident is False
         assert "Different model(s) resident: llama3:8b (expected qwen3.5:2b)" in info
 
+    def test_verify_ollama_substring_model_rejected(self, monkeypatch):
+        fake_response = {
+            "models": [
+                {
+                    "name": "not-qwen3.5:2b",
+                    "size_vram": 1500000000,
+                }
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            def read(self):
+                import json
+                return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout=2.0: MockResponse(),
+        )
+
+        resident, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert resident is False
+        assert "Different model(s) resident: not-qwen3.5:2b (expected qwen3.5:2b)" in info
+
     def test_verify_ollama_no_models(self, monkeypatch):
         fake_response = {"models": []}
 
@@ -577,11 +627,22 @@ class TestOllamaResidencyVerification:
 class TestContinuousMemorySampler:
     """Verifies ContinuousMemorySampler background sampling thread and error handling."""
 
-    def test_sampler_lifecycle_and_sampling(self):
-        sampler = ContinuousMemorySampler(sample_interval_seconds=0.02)
+    def test_sampler_lifecycle_and_sampling(self, monkeypatch):
+        first_sample_event = threading.Event()
+        original_query = voice_bench.query_system_memory_mb
+
+        def mock_query():
+            total, avail = original_query()
+            first_sample_event.set()
+            return total, avail
+
+        monkeypatch.setattr("tools.bench.voice_bench.query_system_memory_mb", mock_query)
+        sampler = ContinuousMemorySampler(sample_interval_seconds=0.01)
         sampler.start()
-        time.sleep(0.06)
-        sampler.stop()
+        try:
+            assert first_sample_event.wait(timeout=3.0), "Sampler did not record first sample within timeout"
+        finally:
+            sampler.stop()
 
         peak_ws, min_avail, is_valid, count = sampler.get_results()
         assert not sampler._thread.is_alive()
