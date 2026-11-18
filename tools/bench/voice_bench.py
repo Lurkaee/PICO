@@ -221,6 +221,20 @@ def query_gpu_vram_mb() -> int | None:
         return None
 
 
+def query_git_commit() -> str:
+    """Query current repository HEAD commit hash."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+            text=True,
+        )
+        return out.strip()
+    except Exception:
+        return "unknown"
+
+
 class ContinuousMemorySampler:
     """Bounded background sampler thread that monitors system available RAM and process Working Set.
 
@@ -762,6 +776,7 @@ def run_benchmark(
             "cpu_threads_dedicated": n_threads,
             "python": platform.python_version(),
             "process_id": current_pid,
+            "git_commit": query_git_commit(),
             "total_system_ram_mb": total_sys_ram_mb,
             "initial_available_ram_mb": avail_sys_ram_init,
             "initial_working_set_mb": cur_ws_init,
@@ -1298,6 +1313,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
         "",
         f"- **Date**: {report['timestamp']}",
+        f"- **Commit**: `{report['host'].get('git_commit', 'unknown')}`",
         "- **Milestone**: P11.3.2 Stage 2 Native Whisper Qualification Prototype",
         f"- **Status**: {status_line}",
         f"- **Host Hardware**: {report['host']['processor']}",
