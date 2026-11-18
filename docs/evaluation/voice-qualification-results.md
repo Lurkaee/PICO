@@ -60,7 +60,7 @@
 
 ## 4. Hardware & Resource Telemetry
 
-- **Cold Start Initialization Time**: 0.2481s (model mmap and tensor allocation)
+- **Cold Start Initialization Time**: 0.2481s (PicoWhisperEngine.__init__() - model mmap and tensor allocation)
 - **Peak Working Set Memory**: 331.95 MB
 - **Minimum Available System RAM**: 863.1 MB (threshold > 1.5 GB, continuously sampled across 2115 intervals)
 - **Initial GPU VRAM**: 2495 MiB
@@ -77,5 +77,5 @@
 1. **Zero Raw-Audio Disk Retention**: Evaluated in-memory pointer pipeline. 0 audio files found in process temporary directories. Full OS kernel minifilter audit marked NOT RUN.
 2. **Zero Cloud Egress**: Monitored socket connections for PID. Full kernel ETW DNS tracing marked NOT RUN.
 3. **In-Memory Buffer Zeroization**: Best-effort zeroization scrubs mutable application arrays (ctypes float arrays, lists, bytearrays). Immutable Python objects and native C++ heap buffers are freed upon context teardown.
-4. **Fail-Closed Protection**: Verified immediate typed exceptions upon missing model, corrupted digest, and missing runtime in isolated fixtures.
+4. **Fail-Closed Protection**: Verified immediate typed exceptions upon missing model, truncated model header, cryptographic SHA-256 digest mismatch, and missing runtime in isolated fixtures.
 5. **Production Boundary**: Production adapter (`LocalWhisperSpeechToTextAdapter`) remains strictly disabled (`is_available() == False`) and fails closed.

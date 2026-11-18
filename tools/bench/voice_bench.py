@@ -221,18 +221,46 @@ def query_gpu_vram_mb() -> int | None:
         return None
 
 
-def query_git_commit() -> str:
-    """Query current repository HEAD commit hash."""
+def query_git_commit(repo_root: Path | None = None) -> tuple[str, bool]:
+    """Query current repository HEAD commit hash and working tree cleanliness.
+
+    Strips GIT_* environment overrides to ensure local repository inspection,
+    executing strictly with cwd set to repo_root.
+
+    Returns:
+        (commit_hash, is_clean)
+    """
+    target_dir = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
+    clean_env = os.environ.copy()
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"]:
+        clean_env.pop(var, None)
+
     try:
-        out = subprocess.check_output(
+        commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],
+            cwd=target_dir,
+            env=clean_env,
             stderr=subprocess.DEVNULL,
             timeout=5.0,
             text=True,
-        )
-        return out.strip()
+        ).strip()
     except Exception:
-        return "unknown"
+        commit = "unknown"
+
+    try:
+        status_out = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=target_dir,
+            env=clean_env,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+            text=True,
+        ).strip()
+        is_clean = len(status_out) == 0
+    except Exception:
+        is_clean = False
+
+    return commit, is_clean
 
 
 class ContinuousMemorySampler:
@@ -338,6 +366,16 @@ class OllamaResidencyState(str, enum.Enum):
     QUERY_ERROR = "QUERY_ERROR"
 
 
+class OllamaResidencyResult(tuple):
+    """2-tuple (state, info) with optional model digest attribute for continuity checking."""
+    def __new__(cls, state: OllamaResidencyState, info: str, digest: str | None = None):
+        obj = super().__new__(cls, (state, info))
+        obj.state = state
+        obj.info = info
+        obj.digest = digest
+        return obj
+
+
 # Explicit allowlist of supported Ollama model tags for PICO local-small LLM.
 # Only canonical or documented necessary aliases are permitted:
 # - 'qwen3.5:2b': Canonical local-small LLM model tag in PICO architecture.
@@ -352,28 +390,29 @@ SUPPORTED_OLLAMA_MODELS: dict[str, str] = {
 
 def verify_ollama_model_residency(
     expected_model: str = "qwen3.5:2b",
-) -> tuple[OllamaResidencyState, str]:
+) -> OllamaResidencyResult:
     """Inspect local Ollama running model state to verify single-model GPU residency.
 
     Requires positive GPU residency evidence (size_vram > 0) for an exact supported model from SUPPORTED_OLLAMA_MODELS.
 
     Returns:
-        (residency_state, model_info_or_error_string)
+        OllamaResidencyResult(residency_state, model_info_or_error_string, digest)
         where residency_state is one of:
           - OllamaResidencyState.GPU_RESIDENT (size_vram > 0 and exact match in allowlist)
           - OllamaResidencyState.NOT_RESIDENT (no models, cpu-only, or non-matching model)
-          - OllamaResidencyState.QUERY_ERROR (API unreachable, network error, malformed JSON)
+          - OllamaResidencyState.QUERY_ERROR (API unreachable, network error, malformed JSON, invalid telemetry)
     """
     try:
         req = urllib.request.Request("http://127.0.0.1:11434/api/ps")
         with urllib.request.urlopen(req, timeout=2.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if not isinstance(data, dict):
-                return OllamaResidencyState.QUERY_ERROR, f"Malformed Ollama response: expected dict, got {type(data).__name__}"
+                return OllamaResidencyResult(OllamaResidencyState.QUERY_ERROR, f"Malformed Ollama response: expected dict, got {type(data).__name__}")
             models = data.get("models")
             if not isinstance(models, list):
-                return OllamaResidencyState.QUERY_ERROR, "Malformed Ollama response: 'models' field is missing or not a list"
+                return OllamaResidencyResult(OllamaResidencyState.QUERY_ERROR, "Malformed Ollama response: 'models' field is missing or not a list")
 
+            matching_entries: list[dict[str, Any]] = []
             for m in models:
                 if not isinstance(m, dict):
                     continue
@@ -384,28 +423,50 @@ def verify_ollama_model_residency(
 
                 # Exact allowlist match only - reject arbitrary variants or substring matches
                 if m_clean in SUPPORTED_OLLAMA_MODELS:
+                    matching_entries.append(m)
+
+            if matching_entries:
+                # Validate telemetry types first: reject None, bool, or non-numeric size_vram as QUERY_ERROR
+                for m in matching_entries:
+                    m_name = m.get("name", "unknown")
                     size_vram = m.get("size_vram")
-                    if size_vram is not None and isinstance(size_vram, (int, float)) and size_vram > 0:
+                    if size_vram is None or isinstance(size_vram, bool) or not isinstance(size_vram, (int, float)):
+                        return OllamaResidencyResult(
+                            OllamaResidencyState.QUERY_ERROR,
+                            f"Model '{m_name}' has invalid size_vram telemetry: {size_vram!r} (expected int or float)",
+                        )
+
+                # Prioritize any GPU-resident matching entry
+                for m in matching_entries:
+                    m_name = m.get("name", "unknown")
+                    size_vram = m.get("size_vram")
+                    digest = m.get("digest")
+                    if size_vram > 0:
                         vram_mb = round(size_vram / (1024 * 1024), 1)
-                        desc = SUPPORTED_OLLAMA_MODELS[m_clean]
-                        return (
+                        desc = SUPPORTED_OLLAMA_MODELS.get(m_name.strip().lower(), "Supported model")
+                        return OllamaResidencyResult(
                             OllamaResidencyState.GPU_RESIDENT,
                             f"Model '{m_name}' ({desc}) resident in GPU VRAM ({vram_mb} MiB)",
+                            digest=digest,
                         )
-                    return (
-                        OllamaResidencyState.NOT_RESIDENT,
-                        f"Model '{m_name}' is loaded on CPU only (size_vram={size_vram}), not GPU-resident",
-                    )
+
+                # If all matching entries have size_vram == 0, confirmed CPU-only
+                first_m = matching_entries[0]
+                return OllamaResidencyResult(
+                    OllamaResidencyState.NOT_RESIDENT,
+                    f"Model '{first_m.get('name')}' is loaded on CPU only (size_vram=0), not GPU-resident",
+                    digest=first_m.get("digest"),
+                )
 
             if models:
                 resident_names = [str(m.get("name", "unknown")) for m in models if isinstance(m, dict)]
-                return (
+                return OllamaResidencyResult(
                     OllamaResidencyState.NOT_RESIDENT,
                     f"Different model(s) resident: {', '.join(resident_names)} (expected one of: {', '.join(SUPPORTED_OLLAMA_MODELS.keys())})",
                 )
-            return OllamaResidencyState.NOT_RESIDENT, "No models currently resident in Ollama memory"
+            return OllamaResidencyResult(OllamaResidencyState.NOT_RESIDENT, "No models currently resident in Ollama memory")
     except Exception as exc:
-        return OllamaResidencyState.QUERY_ERROR, f"Ollama local API unreachable (http://127.0.0.1:11434): {exc}"
+        return OllamaResidencyResult(OllamaResidencyState.QUERY_ERROR, f"Ollama local API unreachable (http://127.0.0.1:11434): {exc}")
 
 
 def audit_active_process_sockets(pid: int | None = None) -> list[dict[str, Any]]:
@@ -517,16 +578,36 @@ def verify_fail_closed_behavior(runtime_dir: Path) -> dict[str, Any]:
     except Exception as exc:
         logger.error("Test 1 (missing model) raised unexpected exception: %s", exc)
 
-    # Test 2: Corrupted model file in isolated TemporaryDirectory
+    # Test 2: Corrupted model file in isolated TemporaryDirectory (truncated size & cryptographic digest mismatch)
     with tempfile.TemporaryDirectory(prefix="pico_corrupt_test_") as tmp_dir:
+        # 2a: Truncated header (size mismatch)
         corrupt_path = Path(tmp_dir) / "ggml-base.en-q8_0.bin"
         corrupt_path.write_bytes(b"corrupted truncated header")
+        t2a_pass = False
         try:
             verify_model_artifact(corrupt_path)
         except WhisperModelVerificationError:
-            subtests["corrupted_model_fails_closed"] = True
+            t2a_pass = True
         except Exception as exc:
-            logger.error("Test 2 (corrupted model) raised unexpected exception: %s", exc)
+            logger.error("Test 2a (truncated model) raised unexpected exception: %s", exc)
+
+        # 2b: Matching size with invalid SHA-256 (cryptographic digest mismatch)
+        t2b_pass = False
+        dummy_exact_path = Path(tmp_dir) / "custom.bin"
+        dummy_exact_path.write_bytes(b"\x00" * 1024)
+        try:
+            verify_model_artifact(
+                dummy_exact_path,
+                expected_sha256="0" * 64,
+                expected_size=1024,
+            )
+        except WhisperModelVerificationError:
+            t2b_pass = True
+        except Exception as exc:
+            logger.error("Test 2b (digest mismatch) raised unexpected exception: %s", exc)
+
+        if t2a_pass and t2b_pass:
+            subtests["corrupted_model_fails_closed"] = True
 
     # Test 3: Missing runtime directory with a valid model fixture
     with tempfile.TemporaryDirectory(prefix="pico_runtime_test_") as tmp_dir:
@@ -606,13 +687,14 @@ def evaluate_gate_04(
             f"final={vram_final_mb} MiB across {vram_observations_count} observations)",
         )
 
-    # Normalize checkpoints to list of (name, OllamaResidencyState, info)
-    normalized_ckpts: list[tuple[str, OllamaResidencyState, str]] = []
+    # Normalize checkpoints to list of (name, OllamaResidencyState, info, digest)
+    normalized_ckpts: list[tuple[str, OllamaResidencyState, str, str | None]] = []
     if ollama_checkpoints is not None:
         for item in ollama_checkpoints:
             name = item[0]
             val = item[1]
             info = item[2] if len(item) > 2 else ""
+            digest = item[3] if len(item) > 3 else getattr(val, "digest", None)
             if isinstance(val, OllamaResidencyState):
                 state = val
             elif isinstance(val, bool):
@@ -626,17 +708,17 @@ def evaluate_gate_04(
                         state = OllamaResidencyState.NOT_RESIDENT
             else:
                 state = OllamaResidencyState.QUERY_ERROR
-            normalized_ckpts.append((name, state, info))
+            normalized_ckpts.append((name, state, info, digest))
     elif ollama_resident is not None:
         st = OllamaResidencyState.GPU_RESIDENT if ollama_resident else (
             OllamaResidencyState.QUERY_ERROR if any(err in (ollama_info or "").lower() for err in ["unreachable", "timed out", "timeout", "connection refused", "error", "malformed"]) else OllamaResidencyState.NOT_RESIDENT
         )
-        normalized_ckpts = [("initial", st, ollama_info or "")]
+        normalized_ckpts = [("initial", st, ollama_info or "", None)]
 
     # Check for required lifecycle phases: pre_init, during_workload, post_final
-    has_pre_init = any(name == "pre_init" or name.startswith("pre_") for name, _, _ in normalized_ckpts)
-    has_workload = any(name.startswith("sample_") or "workload" in name for name, _, _ in normalized_ckpts)
-    has_post_final = any(name == "post_final" or "final" in name for name, _, _ in normalized_ckpts)
+    has_pre_init = any(name == "pre_init" or name.startswith("pre_") for name, _, _, _ in normalized_ckpts)
+    has_workload = any(name.startswith("sample_") or "workload" in name for name, _, _, _ in normalized_ckpts)
+    has_post_final = any(name == "post_final" for name, _, _, _ in normalized_ckpts)
 
     if not (has_pre_init and has_workload and has_post_final):
         observed_phases = [c[0] for c in normalized_ckpts]
@@ -648,32 +730,33 @@ def evaluate_gate_04(
             f"(requires pre_init, during_workload, and post_final checkpoints; observed: {observed_phases}).",
         )
 
-    # Find the initial checkpoint
+    # Check pre-run baseline checkpoints (pre_init, pre_init_stability_check)
     pre_ckpts = [c for c in normalized_ckpts if c[0] == "pre_init" or c[0].startswith("pre_")]
-    init_name, init_state, init_info = pre_ckpts[0]
+    for p_name, p_state, p_info, _ in pre_ckpts:
+        if p_state == OllamaResidencyState.NOT_RESIDENT:
+            status_desc = "was not stable on GPU before benchmark" if "stability" in p_name else "was not resident on GPU before benchmark"
+            return (
+                "NOT RUN",
+                f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
+                f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+                f"Single-model residency qualification NOT RUN because target model 'qwen3.5:2b' {status_desc} ({p_info}).",
+            )
+        elif p_state == OllamaResidencyState.QUERY_ERROR:
+            return (
+                "NOT RUN",
+                f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
+                f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
+                f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified before benchmark ({p_info}).",
+            )
 
-    if init_state == OllamaResidencyState.NOT_RESIDENT:
-        return (
-            "NOT RUN",
-            f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
-            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
-            f"Single-model residency qualification NOT RUN because target model 'qwen3.5:2b' was not resident on GPU before benchmark ({init_info}).",
-        )
-    elif init_state == OllamaResidencyState.QUERY_ERROR:
-        return (
-            "NOT RUN",
-            f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
-            f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
-            f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified before benchmark ({init_info}).",
-        )
-
-    # Initial state was GPU_RESIDENT! Now inspect subsequent checkpoints
-    subsequent_ckpts = [c for c in normalized_ckpts if c is not pre_ckpts[0]]
+    # Baseline was GPU_RESIDENT! Now inspect subsequent checkpoints
+    baseline_digest = pre_ckpts[0][3] if pre_ckpts else None
+    subsequent_ckpts = [c for c in normalized_ckpts if c not in pre_ckpts]
     confirmed_evictions = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.NOT_RESIDENT]
     query_errors = [c for c in subsequent_ckpts if c[1] == OllamaResidencyState.QUERY_ERROR]
 
     if confirmed_evictions:
-        evict_name, _, evict_info = confirmed_evictions[0]
+        evict_name, _, evict_info, _ = confirmed_evictions[0]
         return (
             "FAIL",
             f"Target model 'qwen3.5:2b' was evicted from GPU during STT execution (residency lost at checkpoint '{evict_name}': {evict_info}). "
@@ -681,13 +764,23 @@ def evaluate_gate_04(
         )
 
     if query_errors:
-        unv_name, _, unv_info = query_errors[0]
+        unv_name, _, unv_info, _ = query_errors[0]
         return (
             "NOT RUN",
             f"CPU isolation component PASS (0 MiB additional VRAM at sampled checkpoints; initial={vram_initial_mb} MiB, "
             f"peak={max_vram_observed_mb} MiB, final={vram_final_mb} MiB across {vram_observations_count} observations). "
             f"Single-model residency qualification NOT RUN because Ollama residency telemetry could not be verified at checkpoint '{unv_name}' ({unv_info}).",
         )
+
+    # Verify model digest continuity across subsequent checkpoints
+    if baseline_digest:
+        for c_name, _, _, c_digest in subsequent_ckpts:
+            if c_digest and c_digest != baseline_digest:
+                return (
+                    "FAIL",
+                    f"Target model 'qwen3.5:2b' digest changed during STT execution (baseline: {baseline_digest}, at '{c_name}': {c_digest}). "
+                    f"Model substitution or re-loading detected.",
+                )
 
     # All lifecycle checkpoints verified GPU_RESIDENT!
     final_info = normalized_ckpts[-1][2]
@@ -767,6 +860,7 @@ def run_benchmark(
     total_sys_ram_mb, avail_sys_ram_init = query_system_memory_mb()
     sockets_initial = audit_active_process_sockets(current_pid)
 
+    git_commit, is_clean = query_git_commit()
     report: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "host": {
@@ -776,7 +870,8 @@ def run_benchmark(
             "cpu_threads_dedicated": n_threads,
             "python": platform.python_version(),
             "process_id": current_pid,
-            "git_commit": query_git_commit(),
+            "git_commit": git_commit,
+            "git_clean": is_clean,
             "total_system_ram_mb": total_sys_ram_mb,
             "initial_available_ram_mb": avail_sys_ram_init,
             "initial_working_set_mb": cur_ws_init,
@@ -792,13 +887,13 @@ def run_benchmark(
     # Start continuous background physical RAM and process Working Set sampler
     sampler = ContinuousMemorySampler(sample_interval_seconds=0.05, pid=current_pid)
     sampler.start()
-    ollama_checkpoints: list[tuple[str, OllamaResidencyState, str]] = []
+    ollama_checkpoints: list[tuple[str, OllamaResidencyState, str, str | None]] = []
     engine: PicoWhisperEngine | None = None
 
     try:
         # Step 1: Verify intended model is positively GPU-resident before establishing baseline
         ollama_pre_state, ollama_pre_info = verify_ollama_model_residency("qwen3.5:2b")
-        ollama_checkpoints.append(("pre_init", ollama_pre_state, ollama_pre_info))
+        ollama_checkpoints.append(("pre_init", ollama_pre_state, ollama_pre_info, getattr(ollama_pre_state, "digest", None)))
         report["host"]["ollama_llm_resident"] = (ollama_pre_state == OllamaResidencyState.GPU_RESIDENT)
         report["host"]["ollama_llm_details"] = ollama_pre_info
 
@@ -808,7 +903,7 @@ def run_benchmark(
             ollama_stable_state, ollama_stable_info = verify_ollama_model_residency("qwen3.5:2b")
             if ollama_stable_state != OllamaResidencyState.GPU_RESIDENT:
                 logger.warning("Ollama residency unstable during baseline setup: %s -> %s", ollama_pre_info, ollama_stable_info)
-                ollama_checkpoints.append(("pre_init_stability_check", ollama_stable_state, ollama_stable_info))
+                ollama_checkpoints.append(("pre_init_stability_check", ollama_stable_state, ollama_stable_info, getattr(ollama_stable_state, "digest", None)))
 
         # Step 3: Capture VRAM baseline only AFTER verifying Ollama residency state
         vram_initial = query_gpu_vram_mb()
@@ -834,7 +929,7 @@ def run_benchmark(
 
         # Step 5: Record post-initialization residency
         ollama_post_init_state, ollama_post_init_info = verify_ollama_model_residency("qwen3.5:2b")
-        ollama_checkpoints.append(("post_init", ollama_post_init_state, ollama_post_init_info))
+        ollama_checkpoints.append(("post_init", ollama_post_init_state, ollama_post_init_info, getattr(ollama_post_init_state, "digest", None)))
 
         sample_results: list[dict[str, Any]] = []
         max_vram_observed = vram_initial if vram_initial is not None else 0
@@ -994,11 +1089,11 @@ def run_benchmark(
 
             # Checkpoint: Check Ollama residency during workload after each audio file
             res_ckpt, info_ckpt = verify_ollama_model_residency("qwen3.5:2b")
-            ollama_checkpoints.append((f"sample_{filename}", res_ckpt, info_ckpt))
+            ollama_checkpoints.append((f"sample_{filename}", res_ckpt, info_ckpt, getattr(res_ckpt, "digest", None)))
 
         # Checkpoint: Check Ollama residency post-final inference iteration
         res_post_final, info_post_final = verify_ollama_model_residency("qwen3.5:2b")
-        ollama_checkpoints.append(("post_final", res_post_final, info_post_final))
+        ollama_checkpoints.append(("post_final", res_post_final, info_post_final, getattr(res_post_final, "digest", None)))
 
         # 5. Final Telemetry
         peak_ws_final, cur_ws_final, priv_final = query_process_memory_mb()
@@ -1309,11 +1404,18 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     else:
         status_line = "Stage 2 Prototype — Incomplete / Partial Qualification"
 
+    git_commit_str = report['host'].get('git_commit', 'unknown')
+    if report['host'].get('git_clean') is not None:
+        clean_str = " (Clean)" if report['host']['git_clean'] else " (Modified)"
+        git_commit_display = f"`{git_commit_str}`{clean_str}"
+    else:
+        git_commit_display = f"`{git_commit_str}`"
+
     lines: list[str] = [
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
         "",
         f"- **Date**: {report['timestamp']}",
-        f"- **Commit**: `{report['host'].get('git_commit', 'unknown')}`",
+        f"- **Commit**: {git_commit_display}",
         "- **Milestone**: P11.3.2 Stage 2 Native Whisper Qualification Prototype",
         f"- **Status**: {status_line}",
         f"- **Host Hardware**: {report['host']['processor']}",
@@ -1380,7 +1482,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## 4. Hardware & Resource Telemetry",
         "",
-        f"- **Cold Start Initialization Time**: {summary.get('cold_init_seconds')}s (model mmap and tensor allocation)",
+        f"- **Cold Start Initialization Time**: {summary.get('cold_init_seconds')}s (PicoWhisperEngine.__init__() - model mmap and tensor allocation)",
         f"- **Peak Working Set Memory**: {summary.get('peak_working_set_mb')} MB",
         f"- **Minimum Available System RAM**: {summary.get('min_available_ram_mb')} MB"
         + (
@@ -1402,7 +1504,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "1. **Zero Raw-Audio Disk Retention**: Evaluated in-memory pointer pipeline. 0 audio files found in process temporary directories. Full OS kernel minifilter audit marked NOT RUN.",
         "2. **Zero Cloud Egress**: Monitored socket connections for PID. Full kernel ETW DNS tracing marked NOT RUN.",
         "3. **In-Memory Buffer Zeroization**: Best-effort zeroization scrubs mutable application arrays (ctypes float arrays, lists, bytearrays). Immutable Python objects and native C++ heap buffers are freed upon context teardown.",
-        "4. **Fail-Closed Protection**: Verified immediate typed exceptions upon missing model, corrupted digest, and missing runtime in isolated fixtures.",
+        "4. **Fail-Closed Protection**: Verified immediate typed exceptions upon missing model, truncated model header, cryptographic SHA-256 digest mismatch, and missing runtime in isolated fixtures.",
         "5. **Production Boundary**: Production adapter (`LocalWhisperSpeechToTextAdapter`) remains strictly disabled (`is_available() == False`) and fails closed.",
     ])
 

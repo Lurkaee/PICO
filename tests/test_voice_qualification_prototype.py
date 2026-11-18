@@ -38,7 +38,9 @@ from tools.bench.voice_bench import (
     evaluate_gate_05,
     format_metric_pct,
     normalize_text,
+    query_git_commit,
     render_markdown_report,
+    run_benchmark,
     verify_fail_closed_behavior,
     verify_ollama_model_residency,
 )
@@ -782,6 +784,58 @@ class TestOllamaResidencyVerification:
         assert state == OllamaResidencyState.QUERY_ERROR
         assert "'models' field is missing" in info
 
+    @pytest.mark.parametrize("invalid_vram", [None, True, False, "invalid", [123], {"a": 1}])
+    def test_verify_ollama_invalid_vram_types_rejected(self, monkeypatch, invalid_vram):
+        import json
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": invalid_vram,
+                    "digest": "sha256:abc1234",
+                }
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        state, info = verify_ollama_model_residency("qwen3.5:2b")
+        assert state == OllamaResidencyState.QUERY_ERROR
+        assert "invalid size_vram telemetry" in info
+
+    def test_verify_ollama_cpu_entry_before_gpu_entry_returns_gpu_resident(self, monkeypatch):
+        import json
+        fake_response = {
+            "models": [
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": 0,
+                    "digest": "sha256:cpu_instance",
+                },
+                {
+                    "name": "qwen3.5:2b",
+                    "size_vram": 1024 * 1024 * 1500,
+                    "digest": "sha256:gpu_instance",
+                },
+            ]
+        }
+
+        class MockResponse:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(fake_response).encode("utf-8")
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=2.0: MockResponse())
+        res = verify_ollama_model_residency("qwen3.5:2b")
+        state, info = res
+        assert state == OllamaResidencyState.GPU_RESIDENT
+        assert res.digest == "sha256:gpu_instance"
+        assert "resident in GPU VRAM" in info
+
 
 class TestContinuousMemorySampler:
     """Verifies ContinuousMemorySampler background sampling thread and error handling."""
@@ -933,16 +987,96 @@ class TestGate05Evaluation:
         assert status == "FAIL"
         assert "Peak Working Set: 500.0 MB exceeds 450.0 MB ceiling" in text
 
-    def test_synchronous_reading_breach_detected_even_if_sampler_min_higher(self):
-        # Even if sampler observed a higher minimum (e.g. 2500 MB), if a synchronous reading
-        # detected a dip below 1536 MB (e.g. 1200 MB), the merged minimum is 1200 MB,
-        # which must result in Gate 05 FAIL.
+    def test_synchronous_reading_breach_detected_even_if_sampler_min_higher(self, monkeypatch, tmp_path):
+        # 1. Direct evaluate_gate_05 evaluation test
         status, text = evaluate_gate_05(
             peak_working_set_mb=300.0,
             min_available_ram_mb=1200.0,
         )
         assert status == "FAIL"
         assert "Min Available System RAM 1200.0 MB <= 1536.0 MB" in text
+
+        # 2. Integration test exercising run_benchmark RAM merge:
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.query_system_memory_mb",
+            lambda: (16000.0, 1200.0),
+        )
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.query_process_memory_mb",
+            lambda pid=None: (200.0, 200.0, 200.0),
+        )
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.query_gpu_vram_mb",
+            lambda: 1000,
+        )
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.audit_active_process_sockets",
+            lambda pid=None: [],
+        )
+
+        class MockSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+            def start(self):
+                pass
+            def stop(self):
+                pass
+            def get_results(self):
+                # Sampler observed a high minimum of 2500 MB
+                return 250.0, 2500.0, True, 10
+
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        class MockEngine:
+            def __init__(self, *args, **kwargs):
+                self.version = "1.0"
+                self.system_info = "AVX2"
+            def transcribe_wav_bytes(self, *args, return_breakdown=False, **kwargs):
+                if return_breakdown:
+                    return (
+                        "hello",
+                        0.1,
+                        0.1,
+                        {
+                            "wav_parse_seconds": 0.001,
+                            "pcm_norm_seconds": 0.001,
+                            "c_buf_prep_seconds": 0.001,
+                            "native_inference_seconds": 0.097,
+                        },
+                    )
+                return ("hello", 0.1, 0.1)
+            def close(self):
+                pass
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", MockEngine)
+
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        dummy_wav = corpus_dir / "sample.wav"
+        import wave
+        with wave.open(str(dummy_wav), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 1600)
+
+        report = run_benchmark(
+            model_path=fake_model,
+            runtime_dir=tmp_path,
+            corpus_dir=corpus_dir,
+            iterations=1,
+        )
+
+        # Verified that 1200.0 MB was retained as min_available_ram_mb despite sampler returning 2500.0 MB
+        assert report["host"]["min_available_ram_mb"] == 1200.0
+        assert report["gates"]["GATE-VOICE-05"]["status"] == "FAIL"
 
 
 class TestThreadDefaultsAndResolution:
@@ -1154,10 +1288,13 @@ class TestEngineSetupAndCleanupRobustness:
         with pytest.raises(WhisperModelVerificationError, match="Model size mismatch"):
             PicoWhisperEngine(fake_model)
 
-    def test_simulated_init_failure_preserves_exception_and_stops_sampler(self):
+    def test_simulated_init_failure_preserves_exception_and_stops_sampler(self, monkeypatch, tmp_path):
         sampler_stopped = threading.Event()
 
         class MockSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
             def start(self):
                 pass
 
@@ -1167,15 +1304,75 @@ class TestEngineSetupAndCleanupRobustness:
             def get_results(self):
                 return 100.0, 4000.0, True, 1
 
-        # Verify that in a setup failure pattern, the original exception is preserved
-        try:
-            sampler = MockSampler()
-            sampler.start()
-            try:
-                raise WhisperRuntimeError("Native DLL failed to allocate context")
-            finally:
-                sampler.stop()
-        except WhisperRuntimeError as exc:
-            assert "Native DLL failed to allocate context" in str(exc)
+        monkeypatch.setattr("tools.bench.voice_bench.ContinuousMemorySampler", MockSampler)
+        monkeypatch.setattr(
+            "tools.bench.voice_bench.verify_model_artifact",
+            lambda p: {"filename": "fake_model.bin", "size_bytes": 5, "sha256": "abc"},
+        )
+
+        def raise_engine_init(*args, **kwargs):
+            raise WhisperRuntimeError("Native DLL failed to allocate context")
+
+        monkeypatch.setattr("tools.bench.voice_bench.PicoWhisperEngine", raise_engine_init)
+
+        fake_model = tmp_path / "fake_model.bin"
+        fake_model.write_bytes(b"dummy")
+
+        with pytest.raises(WhisperRuntimeError, match="Native DLL failed to allocate context"):
+            run_benchmark(
+                model_path=fake_model,
+                runtime_dir=tmp_path,
+                corpus_dir=tmp_path,
+            )
 
         assert sampler_stopped.is_set()
+
+    def test_git_provenance_query_cleans_environment(self):
+        # Verify that query_git_commit cleans GIT_DIR from child env and returns (commit, is_clean)
+        res = query_git_commit()
+        assert isinstance(res, tuple)
+        assert len(res) == 2
+        commit, is_clean = res
+        assert isinstance(commit, str)
+        assert len(commit) > 0
+        assert isinstance(is_clean, bool)
+
+    def test_gate_04_model_digest_continuity_failure(self):
+        # If the target model changes digest during STT execution, Gate 04 must return FAIL
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:baseline123"),
+            ("sample_test.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:different456"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:different456"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_initial_mb=2000,
+            vram_final_mb=2000,
+            max_vram_observed_mb=2000,
+            vram_observations_count=10,
+            vram_readings_valid=True,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "FAIL"
+        assert "digest changed during STT execution" in text
+
+    def test_gate_04_pre_init_instability_returns_not_run(self):
+        # If model residency is unstable during pre_init_stability_check, Gate 04 must return NOT RUN (unstable baseline),
+        # not a false workload eviction FAIL
+        ckpts = [
+            ("pre_init", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:abc"),
+            ("pre_init_stability_check", OllamaResidencyState.NOT_RESIDENT, "unloaded before STT", None),
+            ("sample_test.wav", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:abc"),
+            ("post_final", OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b", "sha256:abc"),
+        ]
+        status, text = evaluate_gate_04(
+            vram_max_delta_mb=0,
+            vram_initial_mb=2000,
+            vram_final_mb=2000,
+            max_vram_observed_mb=2000,
+            vram_observations_count=10,
+            vram_readings_valid=True,
+            ollama_checkpoints=ckpts,
+        )
+        assert status == "NOT RUN"
+        assert "was not stable on GPU before benchmark" in text
