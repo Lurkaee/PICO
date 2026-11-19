@@ -245,7 +245,7 @@ To eliminate operational ambiguity between project planning and physical qualifi
 │       Validate fail-closed exceptions on missing/corrupt models & bad headers.  │
 │                                                                                 │
 │   STEP E: PRODUCTION ACTIVATION                                                 │
-│   └── Verify all Stage 3 conditions (GATE-01 through 07, 09, and STT licensing) │
+│   └── Verify Stage 3 conditions (GATE-01, 02, 04-07, 08-interim, 09, licensing) │
 │       are documented in results report. Flip is_available() == True under       │
 │       Policy A authorization.                                                   │
 │                                                                                 │
@@ -285,7 +285,7 @@ To eliminate operational ambiguity between project planning and physical qualifi
      4. `GATE-VOICE-05`: System RAM Ceiling (Peak STT $< 450\text{ MB}$, Available RAM $> 1,536.0\text{ MB}$ under load) — **PASS**
      5. `GATE-VOICE-06`: Zero Raw-Audio Disk Retention & Buffer Zeroization — **PASS**
      6. `GATE-VOICE-07`: Zero Outbound Network & DNS Egress Isolation — **PASS**
-     7. `GATE-VOICE-08`: Interim STT Packaging Measurement ($\le 350\text{ MB}$ overall allowance) — **INFORMATIONAL (HIGH)**
+     7. `GATE-VOICE-08`: Interim STT Packaging Measurement ($< 350\text{ MB}$ overall allowance) — **INFORMATIONAL (HIGH)**
      8. `GATE-VOICE-09`: Integrated Adapter Fail-Closed Verification — **PASS**
      9. `STT Component Licensing`: Permissive MIT license verification under ADR 0005 §2.7 — **VERIFIED**
 
