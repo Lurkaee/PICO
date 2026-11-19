@@ -25,8 +25,8 @@ Crucially, this proposal establishes a strict distinction across the five sequen
 - **Step A — Owner Decision & Normative Approval**: Owner decisions must be incorporated into normative documents via a reviewed, merged amendment PR before any implementation authorization.
 - **Step B — Stage 2 Qualification Closure**: Hardware pre-qualification gates (`GATE-VOICE-02`, `04`, `05`, `06`, `07`) must be satisfied on host hardware. Owner approval alone cannot bypass Stage 2 qualification.
 - **Step C — Stage 3 Development Authorization**: Adapter implementation begins only after normative amendments are merged and Stage 2 pre-qualification is closed. The adapter remains disabled (`is_available() == False`) and fails closed.
-- **Step D — Integrated Adapter Qualification**: `GATE-VOICE-09` fail-closed safety is validated on the completed production adapter code before activation.
-- **Step E — Production Activation**: Enabling production STT (`is_available() == True`) requires verifying all Stage 3 conditions, including STT component licensing under ADR 0005 §2.7.
+- **Step D — Integrated Adapter & Privacy Qualification**: Re-verifies privacy and fail-closed safety on the completed production adapter and capture pipeline (`GATE-VOICE-06` zero disk retention & buffer zeroization, `GATE-VOICE-07` zero network egress, `GATE-VOICE-09` typed fail-closed safety) prior to activation.
+- **Step E — Production Activation**: Enabling production STT (`is_available() == True`) requires verifying all Stage 3 conditions (Step B baseline evidence accepted, Step D integrated privacy and fail-closed checks passed, all approved Stage 3 gates, and STT component licensing under ADR 0005 §2.7).
 
 ---
 
@@ -161,8 +161,8 @@ Before promoting PICO to **Milestone P11.3 Stage 3** (activating `LocalWhisperSp
 | **`GATE-VOICE-02`** | STT $\text{WER} \le 12.0\%$ on conversational English commands | **BLOCKER** | Word Error Rate evaluation across canonical command clips | **Mandatory Precondition**. Currently `NOT RUN`. Requires owner selection between Option A and Option B below. |
 | **`GATE-VOICE-04`** | GPU $\Delta\text{VRAM} = 0\text{ MiB}$; single-model Ollama LLM residency preserved with zero eviction | **BLOCKER** | `nvidia-smi` telemetry with resident `qwen3.5:2b` | **Mandatory Precondition**. Currently `NOT RUN`. Requires pre-warmed Ollama LLM during test. |
 | **`GATE-VOICE-05`** | STT peak Working Set $< 450\text{ MB}$; System Available RAM $> 1,536.0\text{ MB}$ under load | **BLOCKER** | Continuous memory sampler during simultaneous LLM + STT load | **Mandatory Precondition**. Currently `FAIL` (863.1 MB recorded under historical test load). |
-| **`GATE-VOICE-06`** | Zero audio bytes written to persistent storage; mutable capture buffers zeroized | **BLOCKER** | Process file handle monitoring & buffer inspection | **Mandatory Precondition**. Currently `NOT RUN` (verified in prototype; elevated kernel audit required). |
-| **`GATE-VOICE-07`** | Zero outbound socket connections and zero DNS queries during transcription | **BLOCKER** | Socket inspection & DNS event monitoring during inference | **Mandatory Precondition**. Currently `NOT RUN` (verified 0 sockets; elevated ETW trace required). |
+| **`GATE-VOICE-06`** | Zero audio bytes written to persistent storage; mutable capture buffers zeroized | **BLOCKER** | Process file handle monitoring & buffer inspection | **Dual Verification Gate**. Step B host pre-qualification baseline; Step D integrated verification on production audio path before activation. Currently `NOT RUN` (verified in prototype; elevated kernel audit required). |
+| **`GATE-VOICE-07`** | Zero outbound socket connections and zero DNS queries during transcription | **BLOCKER** | Socket inspection & DNS event monitoring during inference | **Dual Verification Gate**. Step B host pre-qualification baseline; Step D integrated verification on production audio path before activation. Currently `NOT RUN` (verified 0 sockets; elevated ETW trace required). |
 | **`GATE-VOICE-08`** *(Interim Measurement)* | Total combined voice packaging $< 350\text{ MB}$. At Stage 3: interim footprint measurement of STT slice. | **HIGH** | Directory size check of STT bundle components | **Informational Interim Measurement**. Retains canonical `HIGH` severity. Measured prototype STT footprint is **80.92 MB** (informational evidence against eventual $< 350\text{ MB}$ budget; see §3.3). |
 | **`GATE-VOICE-09`** | Deterministic typed exceptions on missing binary or corrupted model in integrated adapter | **BLOCKER** | Unit & integration tests asserting fail-closed behavior on the actual integrated adapter | **Integrated Qualification Gate**. Validated in prototype fixtures; must be re-verified on the implemented adapter before production activation (see §3.5). |
 | **STT Component Licensing** *(Derived Prerequisite)* | Permissive open-source license (MIT) for Whisper runtime, shim, and GGML model | **Prerequisite** *(Non-numbered)* | Legal audit of `whisper.cpp` (MIT) and GGML weights | **Component-Level Prerequisite** derived from ADR 0005 §2.7. Prototype STT tooling is 100% MIT. Required for production activation (Step E). `GATE-VOICE-10` remains the formal full gate at Stage 4. |
@@ -240,14 +240,13 @@ To eliminate operational ambiguity between project planning and physical qualifi
 │   └── Author LocalWhisperSpeechToTextAdapter in pico.perception.audio.adapter.  │
 │       CRITICAL: Adapter remains disabled (is_available() == False) & fails closed│
 │                                                                                 │
-│   STEP D: INTEGRATED ADAPTER QUALIFICATION                                      │
-│   └── Verify GATE-VOICE-09 on the implemented production adapter class.         │
-│       Validate fail-closed exceptions on missing/corrupt models & bad headers.  │
+│   STEP D: INTEGRATED ADAPTER & PRIVACY QUALIFICATION                            │
+│   └── Re-verify GATE-06 (Disk/Zeroize), GATE-07 (Zero Egress), and GATE-09      │
+│       (Fail-Closed) against the implemented adapter and live capture path.      │
 │                                                                                 │
 │   STEP E: PRODUCTION ACTIVATION                                                 │
-│   └── Verify Stage 3 conditions (GATE-01, 02, 04-07, 08-interim, 09, licensing) │
-│       are documented in results report. Flip is_available() == True under       │
-│       Policy A authorization.                                                   │
+│   └── Require Step B baseline, Step D integrated privacy & fail-closed passes,  │
+│       all Stage 3 gates, and STT licensing before is_available() == True.       │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -271,23 +270,23 @@ To eliminate operational ambiguity between project planning and physical qualifi
    - This includes authoring the adapter class, wiring the in-memory C-ABI Whisper shim, implementing audio conversion, and adding deterministic unit tests.
    - **Safety Invariant**: Authorizing development does **NOT** authorize processing live production audio. During implementation, the adapter remains strictly disabled (`is_available() == False`) and fails closed with `ValidationError("Speech transcription runtime is unavailable")`.
 
-4. **Step D — Integrated Adapter Qualification (`GATE-VOICE-09`)**:
-   - `GATE-VOICE-09` evaluates fail-closed error handling upon missing binary executables, missing DLLs, corrupted model weights, and invalid audio headers.
-   - While `GATE-VOICE-09` passed on isolated prototype harness fixtures in Stage 2, it must be verified against the **actual implemented production adapter class**.
-   - **Logical Separation**: `GATE-VOICE-09` is an integrated qualification gate verified during Step D prior to production activation. It is not an impossible prerequisite for starting the implementation it is designed to test.
+4. **Step D — Integrated Adapter & Privacy Qualification (`GATE-VOICE-06`, `GATE-VOICE-07`, `GATE-VOICE-09`)**:
+   - Step D exercises the real, implemented `LocalWhisperSpeechToTextAdapter` class and its production audio capture/transcription pipeline, rather than relying solely on isolated prototype fixtures:
+     1. **`GATE-VOICE-06` (Integrated Disk Retention & Buffer Zeroization)**: Verify that the integrated capture and transcription path writes zero raw-audio bytes to persistent storage (audited via file handle monitoring and kernel minifilter inspection) and that mutable capture buffers are deterministically zeroized.
+     2. **`GATE-VOICE-07` (Integrated Network & DNS Egress Isolation)**: Verify zero prohibited outbound network connections and zero DNS queries during active transcription on the integrated pipeline (audited via socket inspection and ETW DNS tracing).
+     3. **`GATE-VOICE-09` (Integrated Fail-Closed Verification)**: Verify typed fail-closed behavior (`ValidationError("Speech transcription runtime is unavailable")`) upon missing DLLs, missing/corrupted models, and malformed audio buffers directly against the implemented adapter class.
+   - **Preservation of Step B Baseline**: Step B hardware pre-qualification establishes host-level baseline compliance. Step D is an additional, mandatory integration-level safety verification on the actual production code, not a replacement for Step B.
 
 5. **Step E — Production Activation**:
-   - Flipping `LocalWhisperSpeechToTextAdapter.is_available()` from `False` to `True` is the final, consequential step.
-   - Production activation is strictly prohibited until **every Stage 3 promotion requirement** has been physically verified, recorded, and accepted in `docs/evaluation/voice-qualification-results.md`:
-     1. `GATE-VOICE-01`: STT Latency ($\text{RTF} \le 0.30$, 5s audio in $\le 1.5\text{s}$) — **PASS**
-     2. `GATE-VOICE-02`: STT Accuracy ($\text{WER} \le 12.0\%$ on approved command corpus) — **PASS**
-     3. `GATE-VOICE-04`: Single-Model GPU VRAM ($\Delta\text{VRAM} = 0\text{ MiB}$ with resident Ollama LLM) — **PASS**
-     4. `GATE-VOICE-05`: System RAM Ceiling (Peak STT $< 450\text{ MB}$, Available RAM $> 1,536.0\text{ MB}$ under load) — **PASS**
-     5. `GATE-VOICE-06`: Zero Raw-Audio Disk Retention & Buffer Zeroization — **PASS**
-     6. `GATE-VOICE-07`: Zero Outbound Network & DNS Egress Isolation — **PASS**
-     7. `GATE-VOICE-08`: Interim STT Packaging Measurement ($< 350\text{ MB}$ overall allowance) — **INFORMATIONAL (HIGH)**
-     8. `GATE-VOICE-09`: Integrated Adapter Fail-Closed Verification — **PASS**
-     9. `STT Component Licensing`: Permissive MIT license verification under ADR 0005 §2.7 — **VERIFIED**
+   - Flipping `LocalWhisperSpeechToTextAdapter.is_available()` from `False` to `True` is the final, consequential step under Policy A authorization.
+   - Production activation is strictly prohibited until **every Stage 3 promotion condition** has been physically verified, recorded, and accepted in `docs/evaluation/voice-qualification-results.md`:
+     1. `Step B Baseline Evidence Accepted`: Stage 2 hardware pre-qualification prerequisites satisfied (`GATE-VOICE-02` $\text{WER} \le 12.0\%$, `GATE-VOICE-04` $\Delta\text{VRAM} = 0\text{ MiB}$, `GATE-VOICE-05` available RAM $> 1,536.0\text{ MB}$, baseline `GATE-VOICE-06`, baseline `GATE-VOICE-07`).
+     2. `GATE-VOICE-01`: STT Latency ($\text{RTF} \le 0.30$, 5s audio in $\le 1.5\text{s}$) — **PASS**
+     3. `GATE-VOICE-06 (Integrated)`: Zero Raw-Audio Disk Retention & Buffer Zeroization on production audio pipeline — **PASS**
+     4. `GATE-VOICE-07 (Integrated)`: Zero Outbound Network & DNS Egress Isolation on production audio pipeline — **PASS**
+     5. `GATE-VOICE-08 (Interim)`: Interim STT Packaging Measurement ($< 350\text{ MB}$ overall allowance) — **INFORMATIONAL (HIGH)**
+     6. `GATE-VOICE-09 (Integrated)`: Integrated Adapter Fail-Closed Verification — **PASS**
+     7. `STT Component Licensing`: Permissive MIT license verification under ADR 0005 §2.7 — **VERIFIED**
 
 ---
 
@@ -341,7 +340,7 @@ The project owner is presented with two explicit, well-defined options for resol
 #### Option B: Require Naturally Spoken Human Recordings of Canonical Commands (RECOMMENDED)
 - **Specification**:
   - Formal qualification of `GATE-VOICE-02` requires recording the **exact text of the four canonical commands** spoken by a natural, consenting human operator through a physical microphone under standard room acoustic conditions.
-  - In accordance with the removal of specification drift, **no arbitrary demographic or multi-speaker minimum (e.g. 5–10 speakers across specific genders/accents) is required**. A clean, verified recording of the four canonical command texts by a consenting human speaker satisfies the formal gate.
+  - In accordance with the removal of specification drift, **no arbitrary demographic or multi-speaker minimum (e.g. 5–10 speakers across specific genders/accents) is required**. Recording the four canonical human command texts with valid provenance by a consenting human speaker satisfies the proposed corpus-input requirement, but does **not** automatically pass `GATE-VOICE-02`. `GATE-VOICE-02` remains `NOT RUN` until the approved corpus is actually benchmarked on host hardware. It becomes **PASS** only if measured $\text{WER} \le 12.0\%$; if measured $\text{WER} > 12.0\%$, the gate is **FAIL**.
   - The four existing SAPI-generated clips are retained in the test suite as deterministic smoke-test fixtures for automated CI runs, but cannot satisfy formal `GATE-VOICE-02` qualification.
 - **Precise Evidentiary Scope**:
   - This benchmark provides empirical evidence strictly for:
@@ -463,8 +462,12 @@ Following project owner approval of this proposal, work proceeds in five strict 
    - Wire the in-memory C-ABI Whisper shim, implement 16 kHz 16-bit mono PCM conversion to float32, and implement buffer zeroization.
    - **Safety Invariant**: The production adapter remains strictly unavailable (`is_available() == False`) and fails closed during this phase. Implementation does not authorize live production audio processing.
 
-4. **Phase 4: Integrated Adapter Qualification (Step D)**:
-   - Execute `GATE-VOICE-09` fail-closed verification against the implemented `LocalWhisperSpeechToTextAdapter` class, confirming deterministic typed exceptions on missing DLLs, missing/corrupted models, and malformed audio buffers.
+4. **Phase 4: Integrated Adapter & Privacy Qualification (Step D)**:
+   - Execute integrated safety and privacy verification directly against the implemented `LocalWhisperSpeechToTextAdapter` and its production audio capture/transcription pipeline:
+     - `GATE-VOICE-06`: Confirm zero raw-audio bytes written to persistent storage and mutable buffer zeroization across the integrated transcription lifecycle.
+     - `GATE-VOICE-07`: Confirm zero outbound socket connections and zero DNS queries during integrated transcription via socket inspection and ETW tracing.
+     - `GATE-VOICE-09`: Confirm deterministic typed exceptions (`ValidationError`) on missing DLLs, missing/corrupted models, and malformed audio buffers.
+   - **Baseline Continuity**: Step D verifies the live production adapter without weakening or replacing Step B's host-level pre-qualification baseline.
 
 5. **Phase 5: Production Activation (Step E)**:
-   - Only after every Stage 3 promotion condition (`GATE-VOICE-01`, `02`, `04`, `05`, `06`, `07`, `08-interim`, `09`, and STT component licensing under ADR 0005 §2.7) has been physically verified, documented in `docs/evaluation/voice-qualification-results.md`, and signed off, flip `LocalWhisperSpeechToTextAdapter.is_available()` to `True`.
+   - Only after Step B Stage 2 baseline evidence is accepted, Step D integrated privacy (`GATE-VOICE-06`, `07`) and fail-closed (`GATE-VOICE-09`) checks pass, `GATE-VOICE-01`, `02`, `04`, `05`, `08-interim` are satisfied, and STT component licensing under ADR 0005 §2.7 is verified and documented in `docs/evaluation/voice-qualification-results.md`, flip `LocalWhisperSpeechToTextAdapter.is_available()` to `True`.
