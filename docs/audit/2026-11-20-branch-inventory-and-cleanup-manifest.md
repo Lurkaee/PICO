@@ -1,0 +1,106 @@
+# PICO Branch Inventory & Consolidation Manifest
+**Execution Date:** 2026-11-20  
+**Repository:** `https://github.com/Lurkaee/PICO`  
+**Agent Role:** Second Antigravity engineering agent (Repository Governance & Stabilization)  
+**Policy Checklist:** [x] Backup Bundle Verified | [x] Remote Archival Tags Pushed | [x] Active Worktrees Preserved | [x] 0 Commits Discarded
+
+## 1. Executive Summary
+The repository originally presented **64 unique branch names** across local and remote tracking references (57 remote branches and 42 local branches).
+- **Retained Branches (15 local / 8 remote):** Canonical `main`, active Phase 11.3 development branches (7 branches), active Phase 11.5 perception branch (`docs/p11-5-desktop-perception-spec` in dedicated worktree), Cline frontend redesign & recovery branches (5 branches), and the dedicated governance branch `chore/repository-stabilization-and-governance`.
+- **Archived & Consolidated Branches (50 branches):** 10 branches with unique commits not in default `main` plus 40 fully merged ancestor branches were anchored with permanent annotated Git tags under `refs/tags/archive/*`. All 50 tags were pushed to `origin` and verified before branch deletion.
+- **Deleted Obsolete Tracking References:** 49 remote branch refs on `origin` and 29 local branch refs were safely deleted. No active worktrees, open PRs, or required development lines were disturbed.
+
+## 2. Classification Criteria
+| Classification | Action | Definition & Criteria |
+| :--- | :--- | :--- |
+| **KEEP** | Retained | Canonical default branch (`main`), active phase branches (Phases 11.3, 11.4, 11.5), active worktrees, and Cline frontend/recovery branches. |
+| **ARCHIVE** | Tagged & Deleted | Branches containing unique commits not present in `main` (e.g. PR closed unmerged, or squash-merged with unique commit graph). Preserved permanently via annotated tag `archive/<branch-name>`. |
+| **DELETE-CANDIDATE** | Tagged & Deleted | Branches whose commits are 100% ancestors of `origin/main` (behind `main`, 0 ahead), with associated PRs merged. Tagged for complete traceability before reference removal. |
+
+---
+
+## 3. Retained Branches (KEEP)
+| Branch Name | Location | Current SHA | Active Owner / Phase | Justification & Safeguards |
+| :--- | :--- | :--- | :--- | :--- |
+| `docs/p11-3-proposal-review-closure` | both | `869a6615` | Phase 11.3 | Active Phase 11.3 review closure branch |
+| `docs/p11-3-voice-engine-qualification` | both | `dd011634` | Phase 11.3 | Active Phase 11.3 voice engine qualification documentation branch |
+| `docs/p11-5-desktop-perception-spec` | local | `c1131991` | Phase 11.5 | Active Phase 11.5 desktop perception specification branch in dedicated worktree |
+| `feat/frontend-chat-redesign` | local | `7b5c48c2` | Cline | Active Cline frontend redesign branch |
+| `feat/frontend-recovery-a258a04` | local | `a258a04c` | Cline | Active Cline frontend recovery branch |
+| `feature/p11-3-1-voice-runtime-and-capture-slice` | both | `f914f171` | Phase 11.3 | Active Phase 11.3 voice runtime implementation branch |
+| `feature/p11-3-2-native-whisper-qualification` | both | `614319cc` | Phase 11.3 | Active Phase 11.3 native whisper qualification prototype branch |
+| `feature/p11-3-stt-qualification-closure` | both | `4ad5a551` | Phase 11.3 | Active Phase 11.3 STT qualification closure branch |
+| `feature/pic0-frontend-redesign` | local | `6a03a932` | Cline | Active Cline frontend redesign branch |
+| `fix/dependabot-windows-runtime-lock-sync-pr` | local | `b611ea25` | Cline | Active local branch associated with working tree stash |
+| `fix/p11-3-1-post-merge-voice-hardening` | both | `693d3570` | Phase 11.3 | Active Phase 11.3 voice hardening branch |
+| `main` | both | `36e0e144` | Canonical | Default canonical branch |
+| `proposal/p11-3-qualification-promotion-rules` | both | `e06d75ba` | Phase 11.3 | Active Phase 11.3 promotion rules branch |
+| `recovery/pico-frontend-redesign` | local | `6ae32844` | Cline | Active local working tree branch for Cline frontend redesign |
+
+---
+
+## 4. Archived Branches (Unique Commits Preserved)
+| Branch Name | Original SHA | Divergence (Ahead/Behind) | Associated PR | Archival Tag | Preserved Content Summary |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `dependabot/pip/fastapi-0.162.2` | `85970c69` | +1 / -59 | PR #83 | `archive/dependabot/pip/fastapi-0.162.2` | Contains 1 unique commit(s) not directly merged to main (PRs: [83]). Must preserve exact commit history via annotated tag before removal. |
+| `docs/readme-brand-refresh` | `7bb9f86f` | +2 / -174 | PR #49 | `archive/docs/readme-brand-refresh` | Contains 2 unique commit(s) not directly merged to main (PRs: [49]). Must preserve exact commit history via annotated tag before removal. |
+| `feature/p1-p4-foundation` | `80d062d2` | +1 / -264 | PR #7, PR #4 | `archive/feature/p1-p4-foundation` | Contains 1 unique commit(s) not directly merged to main (PRs: [7, 4]). Must preserve exact commit history via annotated tag before removal. |
+| `feature/p10-2-3-render-safe-cache-bounds` | `ca85f710` | +1 / -213 | PR #34 | `archive/feature/p10-2-3-render-safe-cache-bounds` | Contains 1 unique commit(s) not directly merged to main (PRs: [34]). Must preserve exact commit history via annotated tag before removal. |
+| `feature/p11-2-4-2-windows-installer-qualification` | `1e42f400` | +2 / -87 | PR #73 | `archive/feature/p11-2-4-2-windows-installer-qualification` | Contains 2 unique commit(s) not directly merged to main (PRs: [73]). Must preserve exact commit history via annotated tag before removal. |
+| `feature/phase-1-slice-2-model-gateway` | `dd5049c0` | +1 / -267 | PR #1 | `archive/feature/phase-1-slice-2-model-gateway` | Contains 1 unique commit(s) not directly merged to main (PRs: [1]). Must preserve exact commit history via annotated tag before removal. |
+| `feature/phase-1.1-privacy-ci` | `36336c4f` | +1 / -266 | PR #2 | `archive/feature/phase-1.1-privacy-ci` | Contains 1 unique commit(s) not directly merged to main (PRs: [2]). Must preserve exact commit history via annotated tag before removal. |
+| `feature/phase-1.1.1-reliability-fixes` | `ac06a1dd` | +1 / -265 | PR #3 | `archive/feature/phase-1.1.1-reliability-fixes` | Contains 1 unique commit(s) not directly merged to main (PRs: [3]). Must preserve exact commit history via annotated tag before removal. |
+| `fix/vercel-static-frontend-deployment` | `212aa96f` | +3 / -36 | PR #92 | `archive/fix/vercel-static-frontend-deployment` | Contains 3 unique commit(s) not directly merged to main (PRs: [92]). Must preserve exact commit history via annotated tag before removal. |
+| `master` | `990efb14` | +1 / -268 | None | `archive/legacy/master` | Contains 1 unique commit(s) not directly merged to main (PRs: []). Must preserve exact commit history via annotated tag before removal. |
+
+---
+
+## 5. Consolidated Fully-Merged Branches (DELETE-CANDIDATE)
+| Branch Name | Original SHA | Behind `main` | Merged PR | Archival Tag | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `dependabot/github_actions/actions/checkout-7` | `e4f923aa` | -120 | PR #62 (merged) | `archive/dependabot/github_actions/actions/checkout-7` | Remote ref deleted; SHA anchored by tag |
+| `dependabot/github_actions/pnpm/action-setup-5` | `d591b77d` | -142 | PR #57 (merged) | `archive/dependabot/github_actions/pnpm/action-setup-5` | Remote ref deleted; SHA anchored by tag |
+| `dependabot/npm_and_yarn/frontend/testing-library/jest-dom-7.0.1` | `449aefb1` | -102 | PR #64 (merged) | `archive/dependabot/npm_and_yarn/frontend/testing-library/jest-dom-7.0.1` | Remote ref deleted; SHA anchored by tag |
+| `dependabot/npm_and_yarn/frontend/vitejs/plugin-react-5.2.0` | `d55aee3d` | -104 | PR #61 (merged) | `archive/dependabot/npm_and_yarn/frontend/vitejs/plugin-react-5.2.0` | Remote ref deleted; SHA anchored by tag |
+| `dependabot/npm_and_yarn/frontend/vitest-5.1.0` | `251897ef` | -58 | PR #84 (merged) | `archive/dependabot/npm_and_yarn/frontend/vitest-5.1.0` | Remote ref deleted; SHA anchored by tag |
+| `dependabot/pip/anyio-4.16.0` | `34bf6213` | -85 | PR #79 (merged) | `archive/dependabot/pip/anyio-4.16.0` | Remote ref deleted; SHA anchored by tag |
+| `dependabot/pip/fastapi-0.162.0` | `f18e2427` | -142 | PR #63 (merged) | `archive/dependabot/pip/fastapi-0.162.0` | Remote ref deleted; SHA anchored by tag |
+| `docs/add-mit-license` | `f215af01` | -150 | PR #54 (merged), PR #52 (merged) | `archive/docs/add-mit-license` | Remote ref deleted; SHA anchored by tag |
+| `docs/open-source-readiness` | `1aa8eb4c` | -144 | PR #53 (merged) | `archive/docs/open-source-readiness` | Remote ref deleted; SHA anchored by tag |
+| `docs/p10-3-3-post-merge-assurance` | `4fd3eb86` | -175 | PR #47 (merged) | `archive/docs/p10-3-3-post-merge-assurance` | Remote ref deleted; SHA anchored by tag |
+| `docs/p11-2-desktop-companion-adr` | `9c2b1ef3` | -153 | PR #51 (merged) | `archive/docs/p11-2-desktop-companion-adr` | Remote ref deleted; SHA anchored by tag |
+| `docs/p11-roadmap-desktop-companion` | `6c588da6` | -169 | PR #48 (merged) | `archive/docs/p11-roadmap-desktop-companion` | Remote ref deleted; SHA anchored by tag |
+| `feature/p10-1-desktop-web-experience` | `4efe6360` | -193 | PR #30 (merged), PR #27 (merged) | `archive/feature/p10-1-desktop-web-experience` | Remote ref deleted; SHA anchored by tag |
+| `feature/p10-3-2-operator-execution-lifecycle` | `a0433576` | -178 | PR #46 (merged) | `archive/feature/p10-3-2-operator-execution-lifecycle` | Remote ref deleted; SHA anchored by tag |
+| `feature/p11-1-conversational-workflow-synthesis` | `66a8d408` | -159 | PR #50 (merged) | `archive/feature/p11-1-conversational-workflow-synthesis` | Remote ref deleted; SHA anchored by tag |
+| `feature/p11-2-1-tauri-desktop-shell` | `f160479f` | -135 | PR #69 (merged) | `archive/feature/p11-2-1-tauri-desktop-shell` | Remote ref deleted; SHA anchored by tag |
+| `feature/p11-2-2-bridge-qualification` | `d359ba56` | -98 | PR #71 (merged) | `archive/feature/p11-2-2-bridge-qualification` | Remote ref deleted; SHA anchored by tag |
+| `feature/p11-2-4-windows-packaging-qualification` | `df20c3db` | -92 | PR #72 (merged) | `archive/feature/p11-2-4-windows-packaging-qualification` | Remote ref deleted; SHA anchored by tag |
+| `feature/p11-native-expressive-eyes` | `173e5503` | -33 | PR #91 (merged) | `archive/feature/p11-native-expressive-eyes` | Remote ref deleted; SHA anchored by tag |
+| `feature/p7-3-commissioning-readiness` | `7fcfce9c` | -246 | PR #14 (merged) | `archive/feature/p7-3-commissioning-readiness` | Remote ref deleted; SHA anchored by tag |
+| `feature/p7-3-verified-test-light` | `701c7be1` | -253 | PR #11 (merged) | `archive/feature/p7-3-verified-test-light` | Remote ref deleted; SHA anchored by tag |
+| `feature/p7-4-2-2-climate-setpoint-actuation` | `c6c31f3d` | -201 | PR #42 (merged) | `archive/feature/p7-4-2-2-climate-setpoint-actuation` | Remote ref deleted; SHA anchored by tag |
+| `feature/p7-4-2-3-readonly-dual-setpoint-planning` | `3d998c21` | -190 | PR #43 (merged) | `archive/feature/p7-4-2-3-readonly-dual-setpoint-planning` | Remote ref deleted; SHA anchored by tag |
+| `feature/p7-4-2-4-dual-setpoint-actuation` | `c30af347` | -187 | PR #44 (merged) | `archive/feature/p7-4-2-4-dual-setpoint-actuation` | Remote ref deleted; SHA anchored by tag |
+| `feature/p7-home-assistant-read-only` | `1288ad07` | -258 | PR #9 (merged) | `archive/feature/p7-home-assistant-read-only` | Remote ref deleted; SHA anchored by tag |
+| `feature/p8-1-os-automation` | `55c1728e` | -242 | PR #16 (merged) | `archive/feature/p8-1-os-automation` | Remote ref deleted; SHA anchored by tag |
+| `feature/p8-3-sandboxed-browser-automation` | `f2739afc` | -227 | PR #23 (merged) | `archive/feature/p8-3-sandboxed-browser-automation` | Remote ref deleted; SHA anchored by tag |
+| `feature/p9-2-single-model-resource-scheduler` | `7a2d1053` | -222 | PR #25 (merged) | `archive/feature/p9-2-single-model-resource-scheduler` | Remote ref deleted; SHA anchored by tag |
+| `feature/p9-3-independent-verification` | `6dd0f1c5` | -220 | PR #26 (merged) | `archive/feature/p9-3-independent-verification` | Remote ref deleted; SHA anchored by tag |
+| `fix/dependabot-windows-runtime-lock-sync` | `15b15416` | -2 | PR #102 (merged) | `archive/fix/dependabot-windows-runtime-lock-sync` | Remote ref deleted; SHA anchored by tag |
+| `fix/frontend-vitest5-typescript7-ci` | `691c109d` | -110 | PR #70 (merged) | `archive/fix/frontend-vitest5-typescript7-ci` | Remote ref deleted; SHA anchored by tag |
+| `fix/p6-security-functional-hardening` | `0640d6cb` | -260 | PR #8 (merged) | `archive/fix/p6-security-functional-hardening` | Remote ref deleted; SHA anchored by tag |
+| `fix/p7-3-atomic-dispatch-claim` | `d11ae891` | -251 | PR #12 (merged) | `archive/fix/p7-3-atomic-dispatch-claim` | Remote ref deleted; SHA anchored by tag |
+| `fix/p7-3-bind-atomic-claim-to-input` | `d131e422` | -249 | PR #13 (merged) | `archive/fix/p7-3-bind-atomic-claim-to-input` | Remote ref deleted; SHA anchored by tag |
+| `fix/p7-home-assistant-readonly-hardening` | `9d331e7e` | -255 | PR #10 (merged) | `archive/fix/p7-home-assistant-readonly-hardening` | Remote ref deleted; SHA anchored by tag |
+| `fix/p8-1-bind-approval-to-launch-profile` | `793ba011` | -240 | PR #17 (merged) | `archive/fix/p8-1-bind-approval-to-launch-profile` | Remote ref deleted; SHA anchored by tag |
+| `fix/p8-2-filesystem-write-boundary` | `42e4bea3` | -235 | PR #19 (merged) | `archive/fix/p8-2-filesystem-write-boundary` | Remote ref deleted; SHA anchored by tag |
+| `fix/p8-2-target-identity-race` | `df5c1af5` | -231 | PR #21 (merged) | `archive/fix/p8-2-target-identity-race` | Remote ref deleted; SHA anchored by tag |
+| `fix/p8-2-temp-handle-identity` | `32fd28f7` | -229 | PR #22 (merged) | `archive/fix/p8-2-temp-handle-identity` | Remote ref deleted; SHA anchored by tag |
+| `test/p7-4-2-4-partial-match-verification` | `5c5a25ad` | -185 | PR #45 (merged) | `archive/test/p7-4-2-4-partial-match-verification` | Remote ref deleted; SHA anchored by tag |
+
+---
+
+## 6. Remote Verification Evidence
+All 50 archival tags were verified on the remote repository via `git ls-remote --tags origin 'archive/*'`. All 50 tag refs and their dereferenced commit objects resolve to the exact SHAs recorded above.
+Remote branch count was reduced from 57 to 8 active development branches.
