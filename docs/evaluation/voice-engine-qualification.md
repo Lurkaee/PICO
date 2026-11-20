@@ -61,11 +61,12 @@ Accuracy qualification requires evaluating Word Error Rate ($\text{WER}$) across
      1. `audio_cmd_short_1s.wav`: `"PICO stop."` ($N=2$ words)
      2. `audio_cmd_query_3s.wav`: `"What tasks are currently waiting for my approval?"` ($N=8$ words)
      3. `audio_cmd_workflow_5s.wav`: `"Summarize the latest system logs and create a new draft task for review."` ($N=13$ words)
-     4. `audio_cmd_dictation_10s.wav`: `"We need to verify the database migrations, ensure all foreign key constraints are enabled, and check that the memory service cleans up expired working memories automatically."` ($N=27$ words)
+     4. `audio_cmd_dictation_10s.wav`: `"We need to verify the database migrations, ensure all foreign key constraints are enabled, and check that the memory service cleans up expired working memories automatically."` ($N=26$ words)
+   - **Canonical Reference Word Count Total**: $N_{\text{total}} = 2 + 8 + 13 + 26 = 49\text{ reference words}$ across the four canonical commands.
    - **Audio Format Specification**: 16 kHz sample rate, 16-bit signed integer linear PCM (little-endian), 1 channel (mono), RIFF/WAVE container.
    - **Ingestion & Provenance Requirements**: Each recording must be registered in `docs/evaluation/voice_corpus_manifest.json` with an immutable SHA-256 cryptographic digest, verified ground-truth reference transcript, consenting speaker identifier, physical microphone model, and recording environment metadata.
    - **No Demographic Quotas**: In accordance with the elimination of specification drift, no arbitrary demographic or multi-speaker minimums (e.g. 5–10 speakers across specific genders or regional accents) are required.
-   - **Acceptance Threshold**: Measured aggregate $\text{WER} \le 12.0\%$ across the four canonical human command recordings is required for **`PASS`**. If measured $\text{WER} > 12.0\%$, the gate is **`FAIL`**.
+   - **Acceptance Threshold**: Measured aggregate $\text{WER} \le 12.0\%$ across the four canonical human command recordings ($N_{\text{total}} = 49$ reference words) is required for **`PASS`**. If measured $\text{WER} > 12.0\%$, the gate is **`FAIL`**.
    - **Current Status**: Formal human recordings have not yet been produced and registered. Until qualifying human recordings are supplied and physically benchmarked, `GATE-VOICE-02` remains **`NOT RUN`**.
    - **Non-Claims Boundary**: Passing this limited four-command corpus provides empirical evidence strictly for the four canonical command texts, the recorded speaker, the tested physical microphone, and the pinned STT model/runtime. It must **not** be described or interpreted as proof of general multi-speaker robustness, regional accent tolerance, or unconstrained conversational robustness.
 
@@ -215,7 +216,7 @@ Before promoting PICO to **Milestone P11.3 Stage 4** (authorizing production act
 | **`GATE-VOICE-03`** | **TTS Latency** | TTFAC $< 500\text{ ms}$; Synthesis $\text{RTF}_{\text{synth}} \le 0.15$ | **BLOCKER** | High-resolution timer measuring audio chunk arrival on benchmark prompt corpus | **Mandatory Precondition for TTS**. Evaluates Piper ONNX or sherpa-onnx. |
 | **`GATE-VOICE-08`** *(Combined Subsystem)* | **Packaging Bounds (Combined Subsystem)** | Combined STT + TTS binaries, DLLs, and models disk footprint $< 350\text{ MB}$ total decimal (`350,000,000 bytes`) | **HIGH** | Installer staging check (`tools/packaging/stage_windows_bundle.py`) | **Release Packaging Gate**. Retains canonical `HIGH` severity. Applies to release packaging and distribution before Windows NSIS distribution. |
 | **`GATE-VOICE-10`** | **License Review** | Resolution of Piper GPL-3.0 redistribution compatibility or adoption of `sherpa-onnx` (Apache 2.0) | **BLOCKER** | Architecture & Legal Review Sign-Off | **Mandatory Precondition for Full Voice System**. Formal gate resolving copyleft redistribution in NSIS bundle. |
-| **Combined Subsystem Re-Verification** | **Resource & Privacy Re-Verification** | Coexistence of STT + TTS + LLM: $\Delta\text{VRAM}=0\text{ MiB}$, Combined Working Set strictly $< 450\text{ MiB}$ (`471,859,200 bytes`), Available RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`), zero disk retention, zero egress | **BLOCKER** | Comprehensive multi-modal benchmark executing simultaneous STT and TTS under resident LLM load | **Mandatory Precondition for Voice System Completion**. Prevents resource regression when both voice runtimes are active. |
+| **Combined Subsystem Re-Verification** | **Resource, Privacy & Fail-Closed Re-Verification** | Coexistence of STT + TTS + LLM: re-verification of `GATE-VOICE-04` ($\Delta\text{VRAM}=0\text{ MiB}$, single-model LLM residency), `GATE-VOICE-05` (Combined Working Set strictly $< 450\text{ MiB}$ [`471,859,200 bytes`], System Available RAM strictly $> 1536\text{ MiB}$ [`1,610,612,736 bytes`]), `GATE-VOICE-06` (zero audio disk retention & mutable buffer zeroization for TTS), `GATE-VOICE-07` (zero TTS outbound network & DNS egress), and `GATE-VOICE-09` (TTS integrated fail-closed safety upon missing binaries, models, or corrupted configurations) | **BLOCKER** | Comprehensive multi-modal benchmark executing simultaneous STT and TTS under resident LLM load, plus unit/integration tests asserting fail-closed behavior directly on the implemented TTS adapter class | **Mandatory Precondition for Voice System Completion**. Prevents resource regression and verifies TTS fail-closed safety directly on the Stage 4 TTS implementation, rather than merely inheriting the STT prototype pass. |
 
 ---
 
@@ -241,12 +242,15 @@ To eliminate ambiguity between project planning, adapter authoring, and physical
 │                                                                                                 │
 │   STEP C: STAGE 3 DEVELOPMENT AUTHORIZATION                                                     │
 │   └── Author LocalWhisperSpeechToTextAdapter in pico.perception.audio.adapter.                  │
-│       CRITICAL: Adapter remains disabled (is_available() == False) & fails closed.              │
-│       Development authorization DOES NOT grant permission to activate speech recognition.       │
+│       CRITICAL: Public adapter remains disabled (is_available() == False) and public            │
+│       transcribe() fails closed. Internal pipeline structured via private test seam             │
+│       (_transcribe_internal) for isolated verification. Zero runtime bypasses.                 │
 │                                                                                                 │
 │   STEP D: INTEGRATED ADAPTER & PRIVACY QUALIFICATION                                            │
-│   └── Re-verify GATE-06 (Disk/Zeroize), GATE-07 (Zero Egress), and GATE-09                      │
-│       (Fail-Closed) against the implemented adapter and live production capture pipeline.       │
+│   └── Dedicated test-only harness exercises _transcribe_internal to verify                      │
+│       GATE-06 (Disk/Zeroize) and GATE-07 (Zero Egress) during actual native execution;          │
+│       asserts public transcribe() fails closed and tests GATE-09 on missing/corrupted inputs.    │
+│       Public is_available() remains strictly False. Zero REST/env-var exposure.                 │
 │                                                                                                 │
 │   STEP E: PRODUCTION ACTIVATION                                                                 │
 │   └── Require Step B baseline, Step D integrated privacy & fail-closed passes,                  │
@@ -271,14 +275,21 @@ To eliminate ambiguity between project planning, adapter authoring, and physical
 
 3. **Step C — Stage 3 Development Authorization**:
    - Only after normative amendments are merged (Step A) **and** applicable Stage 2 pre-qualification prerequisites are satisfied and recorded (Step B), implementation of `LocalWhisperSpeechToTextAdapter` in `pico.perception.audio.adapter` is authorized to begin.
-   - This includes authoring the adapter class, wiring the in-memory C-ABI Whisper shim, implementing audio conversion (16 kHz 16-bit mono PCM to float32), and adding deterministic unit tests.
-   - **Safety Invariant**: Authorizing development does **NOT** authorize processing live production audio. During implementation, the adapter remains strictly disabled (`is_available() == False`) and fails closed with `ValidationError("Speech transcription runtime is unavailable")`.
+   - This includes authoring the adapter class, wiring the in-memory C-ABI Whisper shim, implementing audio conversion (16 kHz 16-bit mono PCM to float32), structuring internal transcription through a private implementation method (e.g. `_transcribe_internal`), and adding deterministic unit tests.
+   - **Safety Invariant**: Authorizing development does **NOT** authorize processing live production audio. During implementation, the public adapter remains strictly disabled (`is_available() == False`) and its public entry point `transcribe()` unconditionally fails closed with `ValidationError("Speech transcription runtime is unavailable")`.
+   - **Architectural Seam Design**: To resolve the testability paradox (where an adapter must be verified prior to production activation without permitting unauthorized public execution), the adapter cleanly decouples the public, availability-gated entry point (`transcribe()`) from the private, internal native transcription pipeline (`_transcribe_internal(...)`).
 
 4. **Step D — Integrated Adapter & Privacy Qualification (`GATE-VOICE-06`, `GATE-VOICE-07`, `GATE-VOICE-09`)**:
-   - Step D exercises the real, implemented `LocalWhisperSpeechToTextAdapter` class and its production audio capture/transcription pipeline, rather than relying solely on isolated prototype fixtures:
-     1. **`GATE-VOICE-06` (Integrated Disk Retention & Buffer Zeroization)**: Verify that the integrated capture and transcription path writes zero raw-audio bytes to persistent storage (audited via file handle monitoring and kernel minifilter inspection) and that mutable capture buffers are deterministically zeroized.
-     2. **`GATE-VOICE-07` (Integrated Network & DNS Egress Isolation)**: Verify zero prohibited outbound network connections and zero DNS queries during active transcription on the integrated pipeline (audited via socket inspection and ETW DNS tracing).
-     3. **`GATE-VOICE-09` (Integrated Fail-Closed Verification)**: Verify typed fail-closed behavior (`ValidationError("Speech transcription runtime is unavailable")`) upon missing DLLs, missing/corrupted models, and malformed audio buffers directly against the implemented adapter class.
+   - Step D exercises the real, implemented `LocalWhisperSpeechToTextAdapter` class directly through a dedicated, test-only qualification harness (located strictly in `tests/integration/` or `tools/bench/`), rather than relying solely on isolated prototype fixtures:
+     1. **`GATE-VOICE-06` (Integrated Disk Retention & Buffer Zeroization)**: Verify that the private native pipeline (`_transcribe_internal`) writes zero raw-audio bytes to persistent storage (audited via file handle monitoring and kernel minifilter inspection) and that mutable capture buffers are deterministically zeroized.
+     2. **`GATE-VOICE-07` (Integrated Network & DNS Egress Isolation)**: Verify zero prohibited outbound network connections and zero DNS queries during active transcription on the integrated native pipeline (audited via socket inspection and ETW DNS tracing).
+     3. **`GATE-VOICE-09` (Integrated Fail-Closed Verification)**: Concurrently verify that the public entry point `transcribe()` unconditionally fails closed (`ValidationError("Speech transcription runtime is unavailable")`) while `is_available() == False`, and verify typed fail-closed behavior upon missing DLLs, missing/corrupted models, and malformed audio buffers directly against the implemented adapter class.
+   - **Testability Invariants & Safety Boundaries**:
+     1. The public `is_available()` property remains strictly `False` throughout Step D.
+     2. The public `transcribe()` entry point unconditionally fails closed for all callers.
+     3. The internal qualification seam (`_transcribe_internal`) is accessible solely within test code and is strictly prohibited from being exposed via REST API endpoints, capability definitions, workflow synthesis, configuration flags, or environment variable toggles.
+     4. No production code path may bypass the `is_available()` check.
+     5. Step E remains the sole gate authorizing production activation (`is_available() == True`).
    - **Preservation of Step B Baseline**: Step B hardware pre-qualification establishes host-level baseline compliance. Step D is an additional, mandatory integration-level safety verification on the actual production code, not a replacement for Step B.
 
 5. **Step E — Production Activation**:

@@ -229,4 +229,4 @@ Per project owner decision on 2026-11-20 (approving Proposal 0006), the qualific
    - Integrated safety and privacy qualification (`GATE-VOICE-06`, `07`, `09`) on the production adapter before production activation.
 3. **Stage 4 (TTS Implementation & Full Voice Subsystem Qualification)**:
    - Implementation of `LocalTextToSpeechAdapter` adhering to `BaseTextToSpeechAdapter`.
-   - Evaluation of `GATE-VOICE-03` (TTS Latency), `GATE-VOICE-08` (full combined package $< 350\text{ MB}$ decimal / `350,000,000 bytes`), `GATE-VOICE-10` (Piper GPL-3.0 vs. Sherpa-ONNX Apache 2.0 license review), and combined voice subsystem re-verification (`GATE-VOICE-04`, `05`, `06`, `07`, `09`).
+   - Evaluation of `GATE-VOICE-03` (TTS Latency), `GATE-VOICE-08` (full combined package $< 350\text{ MB}$ decimal / `350,000,000 bytes`), `GATE-VOICE-10` (Piper GPL-3.0 vs. Sherpa-ONNX Apache 2.0 license review), and combined voice subsystem re-verification (`GATE-VOICE-04`, `05`, `06`, `07`, and `GATE-VOICE-09` TTS integrated fail-closed safety).
