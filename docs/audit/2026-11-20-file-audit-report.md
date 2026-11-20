@@ -1,13 +1,17 @@
-# PICO Complete Repository File Audit Report
-**Execution Date:** 2026-11-20
-**Repository:** `https://github.com/Lurkaee/PICO`
-**Agent Role:** Second Antigravity engineering agent (Repository Governance & Stabilization)
-**Scope:** Exhaustive audit covering the baseline revision (`36e0e14`, 447 files) and current reviewed tree (`fa6eb50`, 453 files), 71 untracked workspace items, and 60 ignored items.
+# PICO Comprehensive File & Security Audit Report
 
-## 1. Inventory Summary & Baseline Accounting
-- **Baseline Tracked Files (`36e0e1448a3f815cd5b031b598c1ea6ecfe436a6`):** 447 files
-- **Governance Documentation Additions (commit `fa6eb50`):** +6 files (`docs/PROJECT_STATE.md`, `docs/audit/file_inventory.json`, and 4 audit reports in `docs/audit/`)
-- **Total Current Tracked Files:** 453 files
+- **Execution Date:** 2026-11-20
+- **Last Reconciled:** 2026-11-20 (Governance Audit Correction)
+- **Repository:** `https://github.com/Lurkaee/PICO`
+- **Scope:** Exhaustive audit covering baseline snapshot (`36e0e14`, 447 tracked files), governance snapshot (`fa6eb50`, 453 tracked files), reviewed PR revision (`68b8696` / HEAD, 453 tracked files), 73 untracked workspace items, and 60 ignored items.
+
+---
+
+## 1. Executive Summary & Inventory Statistics
+
+A full recursive inventory of the PICO repository was conducted using `git ls-files` across all commits. Key findings:
+- **Baseline Tracked Files (`36e0e14`):** 447 files.
+- **Current Tracked Files (`fa6eb50` & `68b8696`):** 453 files (447 baseline files + 6 governance documentation additions).
 - **Classifications Breakdown:**
   - `ACTIVE`: 85 files
   - `REQUIRED`: 307 files
@@ -108,22 +112,34 @@ The table below is generated directly from the component groups in `file_invento
 
 ---
 
+---
+
 ## 3. Untracked Workspace Files Audit (Desktop Checkout)
-In the primary development workspace (`C:\Users\AYUSH\OneDrive\Desktop\PICO`), 71 untracked items were inventoried:
-1. **Cline Engineering Scratch Scripts (30 items):** Scripts like `check_classes.py`, `check_css_braces.py`, `complete_verify.py`, `debug_regex.py`, `write_system_status.py`, `write_chat_css.py`. These were generated during recent UI repair and recovery tasks.
-   - *Disposition:* **RETAIN IN WORKSPACE; DO NOT COMMIT TO MAIN.** They belong to active concurrent UI engineering.
-2. **Design System & Styling Scratch Files (9 items):** `chat-styles.css`, `frontend/src/styles/index_new.css`, `frontend/src/styles/operational-workspaces.css`, `missing_css.txt`, `system_status_part1.tsx`, etc.
-   - *Disposition:* **RETAIN FOR CLINE REVIEW.** Cline owns ongoing frontend recovery.
-3. **Agent Configuration Directories (4 items):** `.agent/`, `.agents/`, `.gemini/`, `.gsd/`.
-   - *Disposition:* **LOCAL-ONLY.** Agent tooling configuration; should remain gitignored or local.
-4. **Repository Search & Validation Scripts (16 items):** Scripts in `scripts/` (e.g. `search_repo.ps1`, `setup_search.ps1`, `validate-agents.ps1`, `validate-all.ps1`).
+
+In the primary development workspace (`C:/Users/AYUSH/OneDrive/Desktop/PICO`), exactly 73 untracked items were inventoried across five explicit categories:
+
+1. **Cline Engineering Scratch Scripts (32 items):** Python scratch scripts located in the root directory:
+   - `check_classes.py`, `check_css_braces.py`, `check_css_errors.py`, `check_git_state.py`, `check_missing.py`, `check_state.py`, `check_voice.py`, `complete_verify.py`, `create_clean_branch.py`, `debug_bytes.py`, `debug_regex.py`, `debug_regex2.py`, `debug_regex3.py`, `find_classes.py`, `fix_all_semicolons.py`, `fix_and_build.py`, `fix_css.py`, `generate_lock.py`, `quick_check.py`, `run_git.py`, `run_test.py`, `test_lock.py`, `test_lock2.py`, `verify_changes.py`, `verify_css.py`, `write_approval_inbox.py`, `write_chat_css.py`, `write_chat_css2.py`, `write_css.py`, `write_inbox.py`, `write_part1.py`, `write_system_status.py`.
+   - *Disposition:* **RETAIN IN WORKSPACE; DO NOT COMMIT TO MAIN.** Active UI repair and recovery scripts generated during concurrent Cline frontend engineering.
+2. **Design System & Styling Scratch Files (11 items):**
+   - `chat-styles.css`, `chat_css_part1.txt`, `chat_css_part2.txt`, `frontend/src/components/status/SystemStatus.tsx.bak`, `frontend/src/components/status/SystemStatus.tsx.bak2`, `frontend/src/styles/index_new.css`, `frontend/src/styles/operational-workspaces.css`, `missing_css.txt`, `system_status_part1.tsx`, `system_status_part2.tsx`, `temp_css.txt`.
+   - *Disposition:* **RETAIN FOR CLINE REVIEW.** Scratch stylesheets and component draft backups owned by Cline.
+3. **Agent Configuration & Meta Directories (6 items):**
+   - `.agent/`, `.agents/`, `.gemini/`, `.gsd/`, `GSD-STYLE.md`, `PROJECT_RULES.md`.
+   - *Disposition:* **LOCAL-ONLY.** Agent tooling configuration and local process guidelines; remain gitignored or local.
+4. **Repository Search & Validation Scripts (16 items):**
+   - `scripts/search_repo.ps1`, `scripts/search_repo.sh`, `scripts/setup_search.ps1`, `scripts/setup_search.sh`, `scripts/validate-agents.ps1`, `scripts/validate-agents.sh`, `scripts/validate-all.ps1`, `scripts/validate-all.sh`, `scripts/validate-encoding.ps1`, `scripts/validate-encoding.sh`, `scripts/validate-skills.ps1`, `scripts/validate-skills.sh`, `scripts/validate-templates.ps1`, `scripts/validate-templates.sh`, `scripts/validate-workflows.ps1`, `scripts/validate-workflows.sh`.
    - *Disposition:* **INVESTIGATION-REQUIRED.** Standalone developer utilities; keep local until formally proposed.
-5. **Root Artifacts (8 items):** `VERSION`, `model_capabilities.yaml`, `package.json`, `adapters/`, `commit_msg.txt`, `new_commit_msg.txt`, `pr_body.md`, `temp_wheels/`.
-   - *Disposition:* **LOCAL-ONLY.** Scratch artifacts from dependency builds and PR submissions.
+5. **Root Artifacts & Workspace Files (8 items):**
+   - `VERSION`, `adapters/`, `commit_msg.txt`, `model_capabilities.yaml`, `new_commit_msg.txt`, `package.json`, `pr_body.md`, `temp_wheels/`.
+   - *Disposition:* **LOCAL-ONLY.** Scratch artifacts from dependency builds, PR submission drafts, and staging wheels.
+
+*Total Untracked Count Reconciled:* 32 + 11 + 6 + 16 + 8 = **73 items** (matching `file_inventory.json`).
 
 ---
 
 ## 4. Ignored Files Audit
+
 60 gitignored items were analyzed across runtime and development directories:
 - **Python Virtual Environment (`.venv/`):** Pinned Python 3.14.7 runtime with 26 installed packages. Properly ignored.
 - **Local Database Instance (`pico.db`, 8.2 MB):** SQLite WAL database with seeded local development records. Ignored by `*.db` rule. Zero production/real user data.
@@ -133,8 +149,9 @@ In the primary development workspace (`C:\Users\AYUSH\OneDrive\Desktop\PICO`), 7
 ---
 
 ## 5. Security & Sensitive Data Audit
-- **Secret Scanning:** All 453 tracked source files were scanned using regex patterns for OpenAI API keys (`sk-...`), GitHub personal access tokens (`ghp_...`), private keys, and hardcoded secrets.
-  - **Findings:** Exactly 0 real production secrets found.
+
+- **Secret Scanning Scope:** All 453 tracked source files at reviewed PR revision (`68b8696` / HEAD) were scanned using regex patterns for OpenAI API keys (`sk-...`), GitHub personal access tokens (`ghp_...`), private keys, and hardcoded secrets.
+  - **Findings:** Exactly 0 real production secrets found across the reviewed tree.
   - **Synthetic Test Tokens (15 occurrences):** All detected matches reside exclusively in test suites (`tests/test_cloud_provider.py`, `tests/test_bridge_proof.py`) or Rust unit test fixtures (`frontend/src-tauri/src/supervisor.rs`, `lib.rs`) with explicit dummy prefixes (`wrong_secret`, `old_secret_0123...`, `canary_secret = CANARY_SECRET_ALPHA...`, `api_key = sk-client-cloud-key`).
 - **Environment Configuration (`.env`):** Only `.env.example` is tracked. All local `.env` and `.env.*` files are strictly gitignored.
 - **Data Classification Enforced:** Zero household telemetry, private conversations, or non-public context was found committed.
@@ -142,6 +159,7 @@ In the primary development workspace (`C:\Users\AYUSH\OneDrive\Desktop\PICO`), 7
 ---
 
 ## 6. Large Binary & Brand Asset Audit
+
 - **Model Weights:** Zero large LLM weights, ONNX models, or GGUF binary files are committed to Git. Models are loaded at runtime from local Ollama (`qwen3.5:2b`).
 - **Brand Asset Inventory (`assets/brand`):**
   - `assets/brand/pico-logo.jpg`: 5,430 bytes (JPEG brand logo preserved from archival tag `archive/docs/readme-brand-refresh`).
