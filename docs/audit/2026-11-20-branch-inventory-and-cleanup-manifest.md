@@ -23,12 +23,12 @@ To ensure complete transparency and traceability, branch counts are distinguishe
    - **Local Deletions:** 29 obsolete local branches deleted (42 initial - 29 deleted = 13 retained initial local branches).
      - *Breakdown of 29 local deletions:* 28 common branches deleted + 1 local-only legacy branch (`master`) deleted = 29.
    - **Archival Tag Anchoring:** 50 annotated tags (`refs/tags/archive/*`) created and pushed to GitHub.
-     - *Breakdown of 50 archival tags:* 49 tags for all deleted remote branches + 1 tag (`archive/master` at `990efb14`) for the deleted local-only legacy `master` branch.
+     - *Breakdown of 50 archival tags:* 49 tags for all deleted remote branches + 1 tag (`archive/legacy/master` at `990efb14`) for the deleted local-only legacy `master` branch.
    - **Local vs Remote Deletion Reconciled:** The arithmetic is exact: 49 remote deletions minus 21 remote-only branches = 28 common branches deleted locally. Adding the 1 deleted local-only branch (`master`) yields exactly 29 local branch deletions. All 5 Cline-owned local branches (`recovery/pico-frontend-redesign`, `feat/frontend-chat-redesign`, `feat/frontend-recovery-a258a04`, `feature/pic0-frontend-redesign`, `fix/dependabot-windows-runtime-lock-sync-pr`) were protected and retained.
 
 3. **Subsequent Branch Creation & Publication:**
    - `chore/repository-stabilization-and-governance` was created locally and pushed to `origin` as the dedicated PR #104 working branch (+1 local, +1 remote).
-   - `docs/p11-5-desktop-perception-spec` was preserved in its active desktop worktree (`C:/Users/AYUSH/OneDrive/Desktop/PICO-p11-5-spec`), committed to, and published to `origin` (+1 local worktree, +1 remote). (Note: This branch was not in the initial bundle's 42 `refs/heads/*` because it was initialized in the separate desktop worktree prior to commit publication).
+   - `docs/p11-5-desktop-perception-spec` was preserved in its active desktop worktree (`<PERCEPTION_SPEC_WORKTREE>`), committed to, and published to `origin` (+1 local worktree, +1 remote). (Note: This branch was not in the initial bundle's 42 `refs/heads/*` because it was initialized in the separate desktop worktree prior to commit publication).
 
 4. **Current Status (Reconciled):**
    - **Current Local Branches:** **15 branches** (13 preserved initial + 1 governance + 1 Phase 11.5).
@@ -50,10 +50,10 @@ To ensure complete transparency and traceability, branch counts are distinguishe
 
 | Branch Name | Location | Local SHA | Remote SHA | Owner / Active Phase | Justification & Safeguards |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `chore/repository-stabilization-and-governance` | both | `68b86963` | `68b86963` | Governance / PR #104 | Dedicated repository stabilization branch (snapshot at `fa6eb50a`, remediation at `68b86963`) |
+| `chore/repository-stabilization-and-governance` | both | `d0b7024a` | `d0b7024a` | Governance / PR #104 | Dedicated repository stabilization branch (snapshot at `fa6eb50a`, remediation at `68b86963`, CI whitespace remediation at `d0b7024a`) |
 | `docs/p11-3-proposal-review-closure` | both | `869a6615` | `869a6615` | Phase 11.3 Voice | Active Phase 11.3 review closure branch |
 | `docs/p11-3-voice-engine-qualification` | both | `dd011634` | `dd011634` | Phase 11.3 Voice | Active Phase 11.3 voice engine qualification documentation branch |
-| `docs/p11-5-desktop-perception-spec` | both | `410d8e02` | `410d8e02` | Phase 11.5 Perception | Active Phase 11.5 perception worktree (draft `c113199`, security fix `35e51ddb`, verified tip `410d8e02`) |
+| `docs/p11-5-desktop-perception-spec` | both | `914cf4bc` | `914cf4bc` | Phase 11.5 Perception | Active Phase 11.5 perception worktree (draft `c113199`, security fix `35e51ddb`, intermediate `410d8e02`, verified tip `914cf4bc`) |
 | `feat/frontend-chat-redesign` | local | `7b5c48c2` | `N/A` | Cline Frontend | Active Cline frontend redesign local branch |
 | `feat/frontend-recovery-a258a04` | local | `a258a04c` | `N/A` | Cline Frontend | Active Cline frontend recovery local branch |
 | `feature/p11-3-1-voice-runtime-and-capture-slice` | both | `f914f171` | `f914f171` | Phase 11.3 Voice | Active Phase 11.3 voice runtime implementation branch |

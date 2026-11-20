@@ -1,7 +1,7 @@
 {
   "baseline_revision": "36e0e1448a3f815cd5b031b598c1ea6ecfe436a6",
   "baseline_tracked_files": 447,
-  "current_revision": "68b8696339108b539ff3d3810fd9e50eac2b40da",
+  "current_revision": "d0b7024aefc1741b1ca19a1b4d4a459e63e7d7e0",
   "current_tracked_files": 453,
   "governance_additions": [
     "docs/PROJECT_STATE.md",
@@ -3828,7 +3828,9 @@
   ],
   "governance_snapshot_revision": "fa6eb50af677e61630deb680ff5a1c533b2fe3fb",
   "governance_snapshot_tracked_files": 453,
-  "reviewed_pr_revision": "68b8696339108b539ff3d3810fd9e50eac2b40da",
+  "remediation_revision": "68b8696339108b539ff3d3810fd9e50eac2b40da",
+  "ci_whitespace_remediation_revision": "d0b7024aefc1741b1ca19a1b4d4a459e63e7d7e0",
+  "reviewed_pr_revision": "d0b7024aefc1741b1ca19a1b4d4a459e63e7d7e0",
   "reviewed_pr_tracked_files": 453,
   "untracked_categories": {
     "cline_scratch_scripts": 32,

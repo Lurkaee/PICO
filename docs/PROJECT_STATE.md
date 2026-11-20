@@ -43,19 +43,19 @@ This document serves as the authoritative, auditable single source of truth for 
 | **P11.3.2** | Native Whisper STT Hardware Qualification | `PARTIALLY IMPLEMENTED` | Voice Agent | `feature/p11-3-2-native-whisper-qualification` | PR #93 (Prototype merged) | `614319c` | P11.3.1 | Native whisper.cpp CPU qualification prototype; 20-case local command corpus benchmarking. | `docs/evaluation/voice-qualification-results.md` | Hardware promotion gate GATE-VOICE-09 |
 | **P11.3.3** | Voice Promotion Rules & Adapter Closure | `IN PROGRESS` | Voice Agent | `docs/p11-3-voice-engine-qualification`, `proposal/p11-3-qualification-promotion-rules` | PR #94, PR #95, PR #96 | `e06d75b` | P11.3.2 | ADR 0006 promotion rules: allow Stage 3 adapter implementation before GATE-VOICE-09, requiring hardware verification before activation. | `docs/decisions/0006-proposal-p11-3-voice-qualification-promotion-rules.md` | Active qualification execution |
 | **P11.4** | End-to-End Multimodal Task Actuation | `IN PROGRESS` | Actuation Agent | Active Roadmap | Implementation in planning | `36e0e14` | P11.1, P11.2, P11.3, P8, P7.4 | Spoken voice commands transcribed locally -> routed through Context Compiler -> synthesized into DAG -> executed via OS/browser/FS capabilities. | Specified in `docs/implementation-plan.md` | Awaiting P11.3 voice promotion closure |
-| **P11.5** | Contextual Desktop Perception & Screen Understanding | `IN PROGRESS` | Perception Agent | `docs/p11-5-desktop-perception-spec` | Active Worktree | `410d8e0` (draft: `c113199`) | P6, P8.1, P11.1, P11.2 | Explicit on-demand screen capture, ephemeral zero-retention RAM frame lifecycle, untrusted data classification (`INTERNAL`/`SENSITIVE`), local visual reasoning. | Architectural specification draft in `docs/decisions/0007-p11-5-contextual-desktop-perception-architecture.md` | Specification under active review |
+| **P11.5** | Contextual Desktop Perception & Screen Understanding | `IN PROGRESS` | Perception Agent | `docs/p11-5-desktop-perception-spec` | Active Worktree | `914cf4b` (draft: `c113199`, intermediate: `410d8e0`) | P6, P8.1, P11.1, P11.2 | Explicit on-demand screen capture, ephemeral zero-retention RAM frame lifecycle, untrusted data classification (`INTERNAL`/`SENSITIVE`), local visual reasoning. | Architectural specification draft in `docs/decisions/0007-p11-5-contextual-desktop-perception-architecture.md` | Specification under active review |
 
 ---
 
 ## 3. Active Agent & Worktree Governance
-- **Cline Workspace (`C:/Users/AYUSH/OneDrive/Desktop/PICO`):**
+- **Cline Workspace (`<LOCAL_WORKSPACE_ROOT>`):**
   - Active Branch: `recovery/pico-frontend-redesign`
   - Scope: Frontend chat workspace design system, SystemStatus component repair, and CSS stylesheet reconstruction.
   - Policy: Protected. Zero resets, checkouts, or file overwrites.
-- **Phase 11.5 Perception Workspace (`C:/Users/AYUSH/OneDrive/Desktop/PICO-p11-5-spec`):**
+- **Phase 11.5 Perception Workspace (`<PERCEPTION_SPEC_WORKTREE>`):**
   - Active Branch: `docs/p11-5-desktop-perception-spec`
   - Scope: Architecture decision record `0007` for contextual desktop perception and screen understanding.
   - Policy: Protected. Active independent worktree.
-- **Governance Workspace (`C:/Users/AYUSH/.gemini/antigravity/scratch/PICO_governance_worktree`):**
+- **Governance Workspace (`<GOVERNANCE_WORKTREE>`):**
   - Active Branch: `chore/repository-stabilization-and-governance`
   - Scope: Branch consolidation, file audit, documentation synchronization, and workflow hardening.

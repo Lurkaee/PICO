@@ -3,7 +3,7 @@
 - **Execution Date:** 2026-11-20
 - **Last Reconciled:** 2026-11-20 (Governance Audit Correction)
 - **Repository:** `https://github.com/Lurkaee/PICO`
-- **Scope:** Exhaustive audit covering baseline snapshot (`36e0e14`, 447 tracked files), governance snapshot (`fa6eb50`, 453 tracked files), reviewed PR revision (`68b8696` / HEAD, 453 tracked files), 73 untracked workspace items, and 60 ignored items.
+- **Scope:** Exhaustive audit covering baseline snapshot (`36e0e14`, 447 tracked files), initial governance snapshot (`fa6eb50`, 453 tracked files), review remediation snapshot (`68b8696`, 453 tracked files), CI whitespace remediation (`d0b7024`), and current PR revision (453 tracked files), 73 untracked workspace items, and 60 ignored items.
 
 ---
 
@@ -11,7 +11,7 @@
 
 A full recursive inventory of the PICO repository was conducted using `git ls-files` across all commits. Key findings:
 - **Baseline Tracked Files (`36e0e14`):** 447 files.
-- **Current Tracked Files (`fa6eb50` & `68b8696`):** 453 files (447 baseline files + 6 governance documentation additions).
+- **Current Tracked Files:** 453 files (447 baseline files + 6 governance documentation additions).
 - **Classifications Breakdown:**
   - `ACTIVE`: 85 files
   - `REQUIRED`: 307 files
@@ -116,7 +116,7 @@ The table below is generated directly from the component groups in `file_invento
 
 ## 3. Untracked Workspace Files Audit (Desktop Checkout)
 
-In the primary development workspace (`C:/Users/AYUSH/OneDrive/Desktop/PICO`), exactly 73 untracked items were inventoried across five explicit categories:
+In the primary development workspace (`<LOCAL_WORKSPACE_ROOT>`), exactly 73 untracked items were inventoried across five explicit categories:
 
 1. **Cline Engineering Scratch Scripts (32 items):** Python scratch scripts located in the root directory:
    - `check_classes.py`, `check_css_braces.py`, `check_css_errors.py`, `check_git_state.py`, `check_missing.py`, `check_state.py`, `check_voice.py`, `complete_verify.py`, `create_clean_branch.py`, `debug_bytes.py`, `debug_regex.py`, `debug_regex2.py`, `debug_regex3.py`, `find_classes.py`, `fix_all_semicolons.py`, `fix_and_build.py`, `fix_css.py`, `generate_lock.py`, `quick_check.py`, `run_git.py`, `run_test.py`, `test_lock.py`, `test_lock2.py`, `verify_changes.py`, `verify_css.py`, `write_approval_inbox.py`, `write_chat_css.py`, `write_chat_css2.py`, `write_css.py`, `write_inbox.py`, `write_part1.py`, `write_system_status.py`.
@@ -150,7 +150,7 @@ In the primary development workspace (`C:/Users/AYUSH/OneDrive/Desktop/PICO`), e
 
 ## 5. Security & Sensitive Data Audit
 
-- **Secret Scanning Scope:** All 453 tracked source files at reviewed PR revision (`68b8696` / HEAD) were scanned using regex patterns for OpenAI API keys (`sk-...`), GitHub personal access tokens (`ghp_...`), private keys, and hardcoded secrets.
+- **Secret Scanning Scope:** All 453 tracked source files at reviewed PR revision (`d0b7024` / current HEAD) were scanned using regex patterns for OpenAI API keys (`sk-...`), GitHub personal access tokens (`ghp_...`), private keys, and hardcoded secrets.
   - **Findings:** Exactly 0 real production secrets found across the reviewed tree.
   - **Synthetic Test Tokens (15 occurrences):** All detected matches reside exclusively in test suites (`tests/test_cloud_provider.py`, `tests/test_bridge_proof.py`) or Rust unit test fixtures (`frontend/src-tauri/src/supervisor.rs`, `lib.rs`) with explicit dummy prefixes (`wrong_secret`, `old_secret_0123...`, `canary_secret = CANARY_SECRET_ALPHA...`, `api_key = sk-client-cloud-key`).
 - **Environment Configuration (`.env`):** Only `.env.example` is tracked. All local `.env` and `.env.*` files are strictly gitignored.
