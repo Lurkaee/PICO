@@ -91,7 +91,7 @@ A comprehensive audit of the current repository (`36e0e1448a3f815cd5b031b598c1ea
 ```
 
 ### 3.1 Accurate Existing VisionAdapter Description & Technical Gaps
-Inspection of `pico/perception/vision/adapter.py` establishes the exact capabilities and limitations of the current implementation:
+Inspection of `pico/perception/vision/adapter.py`, `pico/perception/pipeline.py`, and `pico/repositories/perception_event_repo.py` establishes the exact capabilities and limitations of the current implementation:
 1. **API-Provided Ingestion Only**: `VisionAdapter.ingest_snapshot()` accepts an incoming `VisionCaptureRequest` containing a pre-encoded Base64 image payload. It **does not implement native desktop screenshot acquisition**.
 2. **No OCR or Vision-Language Inference**: `VisionAdapter` does not execute optical character recognition or computer vision models. Its `get_status()` method truthfully reports:
    ```python
@@ -107,12 +107,57 @@ Inspection of `pico/perception/vision/adapter.py` establishes the exact capabili
    - In Python, `del image_bytes` merely decrements the variable reference count; it does **not** perform an active memory overwrite or memory scrub of the underlying heap allocation.
    - The adapter sets `raw_payload_scrubbed=True` in the emitted event without executing an active byte-level overwrite.
    - This discrepancy is an **existing technical gap** in the Milestone P6 codebase that requires separate, explicitly authorized remediation. P11.5 must not duplicate this pattern.
-4. **Event Persistence & Retention Policy Limitation**:
-   - The current `ingest_snapshot` pipeline tags events with `RetentionPolicy.SHORT_TERM_AUDIT`.
-   - In `pico/perception/pipeline.py` and `PerceptionEventRepository.create()`, events with `SHORT_TERM_AUDIT` are persisted to SQLite WAL in the `perception_events` table, writing the full `structured_data` JSON dictionary to disk.
-   - **Critical P11.5 Constraint**: The proposed P11.5 desktop perception pipeline **must not** reuse a retention path that persists OCR text, screen content, window titles, or private application data to disk.
+4. **Verified Event Persistence Behavior vs. Image Handling**:
+   - Trace: `VisionAdapter.ingest_snapshot()` $\to$ `PerceptionPipeline.ingest_vision_snapshot()` $\to$ `PerceptionEventRepository.create()`.
+   - The adapter constructs `NormalizedPerceptionEvent.structured_data` containing only metadata:
+     - `width` and `height` (parsed from binary image headers)
+     - `format` (normalized format string)
+     - `metadata_only`: `True`
+     - `scene_analysis_performed`: `False`
+     - `scene_description`: Honest descriptive placeholder noting local scene understanding is unavailable
+     - `interpretive_confidence`: `0.0`
+     - `purpose`: `request.purpose`
+     - `task_id`: `request.task_id`
+   - `PerceptionEventRepository.create()` persists this normalized event along with its `structured_data` dictionary into the SQLite `perception_events` table under `RetentionPolicy.SHORT_TERM_AUDIT`.
+   - **Crucial Distinction**: The incoming Base64 image payload (`image_base64`) itself is **NOT persisted to SQLite**. Only the event record and its structured metadata dictionary are written to disk.
+   - However, `RetentionPolicy.SHORT_TERM_AUDIT` causes event metadata (purpose, task identifiers, source provenance) to be written to disk. In a desktop capture context, window titles, active application names, and contextual task metadata may be sensitive and require strict minimization.
+   - **Critical P11.5 Constraint**: The proposed P11.5 desktop perception pipeline **must not** reuse a retention path that persists OCR text, screen content, window titles, PIDs, or HWNDs to disk.
 
-### 3.2 Concrete Existing Code References
+### 3.2 Pre-Existing Vision API Endpoint Authorization Gap
+Inspection of `pico/api/perception.py`, `pico/api/operator.py`, `pico/api/bridge.py`, and `pico/perception/contracts.py` reveals an important pre-existing architectural authorization gap:
+1. **Endpoint Implementation**:
+   ```python
+   # pico/api/perception.py
+   @router.post(
+       "/vision/capture",
+       response_model=VisionCaptureResponse,
+       status_code=status.HTTP_201_CREATED,
+       summary="Ingest on-demand visual snapshot (camera or screenshot)",
+   )
+   async def ingest_vision_snapshot(
+       payload: VisionCaptureRequest,
+       db: Session = Depends(get_db),
+   ) -> VisionCaptureResponse:
+       pipeline = PerceptionPipeline(db=db)
+       return await pipeline.ingest_vision_snapshot(payload)
+   ```
+2. **Missing Security Dependencies**:
+   - The `/api/perception/vision/capture` endpoint declares **only** a database session dependency (`db: Session = Depends(get_db)`).
+   - Unlike authenticated operator routes, it does **not** declare operator session dependencies (`get_operator_session_optional`, `require_operator_session`).
+   - Unlike bridge routes or audio delivery routes, it does **not** declare loopback checks (`is_loopback_client`) or bridge proof authentication (`X-Pico-Bridge-Proof: v2`).
+3. **Unauthenticated Caller-Supplied Consent**:
+   - `VisionCaptureRequest.user_consent` is a caller-supplied Boolean in the request JSON body.
+   - The adapter checks `if not request.user_consent: raise AuthorizationError(...)`.
+   - Because `user_consent` is self-attested by the caller and not authenticated by an operator session or cryptographic token, any caller capable of reaching the HTTP port can send `{"user_consent": true, ...}` and invoke the perception pipeline.
+4. **Mandatory P11.5 Architectural Requirements**:
+   - The existing `/api/perception/vision/capture` endpoint is **not an approved authorization boundary** for future P11.5 native desktop capture.
+   - `user_consent=True` supplied by a caller **must not be treated as trusted operator authorization**.
+   - P11.5 must use the established, authenticated desktop/operator boundary (`X-Pico-Bridge-Proof: v2` and/or paired local operator session).
+   - A deliberate user action must be established separately from bridge caller authentication.
+   - Capture must fail closed if either requirement cannot be demonstrated.
+   - *Note*: Remediating the pre-existing `/api/perception/vision/capture` route requires separate, explicitly authorized changes outside P11.5.
+
+### 3.3 Concrete Existing Code References
 1. **Perception Modality & Contracts**:
    - `pico/perception/contracts.py`: Defines `Modality.VISION`, `VisionCaptureState` (`DISABLED`, `READY`, `CAPTURING`, `PROCESSING`, `COMPLETED`, `FAILED`, `UNAVAILABLE`), `RetentionPolicy` (`TRANSIENT_ONLY`, `SHORT_TERM_AUDIT`), and `NormalizedPerceptionEvent`.
    - `pico/perception/classification.py`: Implements `compute_trusted_perception_classification()` and `validate_trusted_source_device()`.
@@ -157,7 +202,7 @@ class LocalAdmissionGate:
 2. **What It Does NOT Do**:
    - It does **not** inspect Ollama's active process list (`/api/ps`) at runtime.
    - It does **not** verify GPU VRAM allocation or model artifact digest continuity.
-   - It does **not** prevent external host processes (e.g. CLI tools or other users) from instructing Ollama to load additional models.
+   - It does **not** enforce global GPU exclusivity or prevent external host processes (e.g. CLI tools or other users) from instructing Ollama to load additional models.
 3. **Core Architectural Distinction**:
    - **PICO Scheduler-Mediated Constraints**: PICO Core dispatches inference requests only for the configured resident model.
    - **Ollama Runtime Residency**: Actual in-memory model presence depends on Ollama's internal lifecycle.
@@ -167,20 +212,20 @@ class LocalAdmissionGate:
 - The target development hardware features an NVIDIA GeForce RTX 3050 Laptop GPU with 4,094 MiB dedicated VRAM.
 - In accordance with ADR 0005, local LLM chat and reasoning are allocated to Ollama running a canonical 2B parameter model (`qwen3.5:2b`).
 - Attempting to load an auxiliary local vision-language model into Ollama would conflict with PICO's scheduler model configuration and risk out-of-memory errors on a 4 GB VRAM GPU.
-- Therefore, a **CPU-based OCR pipeline** is proposed as the primary candidate architecture for initial evaluation. It operates entirely on host CPU threads, avoids scheduler model-residency conflicts, and delivers structured text directly into the text-only `ChatMessage` contract.
-- *Note*: Unmeasured performance claims (such as specific VRAM footprints, model swap latencies, or exact CPU overhead percentages) are explicitly excluded from this specification and must be determined via formal physical benchmarking during a dedicated qualification task.
+- Therefore, a **CPU-based OCR pipeline** is proposed as the primary candidate architecture for initial evaluation. It operates entirely on host CPU threads, consumes 0 MiB GPU VRAM, avoids scheduler model-residency conflicts, and delivers structured text directly into the text-only `ChatMessage` contract.
+- *Note*: CPU OCR-first is a proposed candidate architecture, not a hardware-qualified runtime. Unmeasured performance claims (such as specific VRAM footprints, model swap latencies, or exact CPU overhead percentages) are explicitly excluded from this specification and must be determined via formal physical benchmarking during a dedicated qualification task.
 
 ---
 
 ## 5. Candidate Windows Desktop Capture Mechanisms
 
-Desktop capture on Windows 11 involves distinct OS rendering subsystems. The technical candidates must be evaluated based on their actual architectural characteristics:
+Desktop capture on Windows 11 involves distinct OS rendering subsystems. All capture mechanisms remain candidates for technical feasibility evaluation; **no capture architecture has been selected or approved for production**:
 
 | Capture Primitive | Mechanism | Occlusion & Composition Handling | Client Rect vs. Window Rect | Elevated / UIPI Limits | Preliminary Feasibility Assessment |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Win32 GDI `PrintWindow`** | Sends `WM_PRINT` / `WM_PRINTCLIENT` to target `HWND` into memory DC | Attempts to render target window independently of screen position; application-dependent | Requires mapping `GetClientRect` via `ClientToScreen` or using `PW_CLIENTONLY` | Blocked on elevated windows by UIPI; returns black or transparent frames on modern hardware-accelerated DirectComposition / Chromium surfaces | **CANDIDATE FOR COMPATIBILITY EVALUATION**. Clean window isolation when supported, but unreliable on modern GPU-rendered windows. |
 | **Win32 GDI `BitBlt`** | Raster transfer from window or screen Device Context | Captures current visible pixels on screen; **cannot isolate occluded windows** (captures overlapping windows/tooltips) | Bound to screen coordinates; requires clipping to client area | Subject to UIPI boundaries; captures desktop artifacts if window is covered | **CANDIDATE FOR FALLBACK EVALUATION**. Fast, but risks visual leakage from overlapping surfaces. |
-| **Windows.Graphics.Capture (WGC)** | WinRT Direct3D11 compositor surface capture | Captures native DWM visual tree for specific `HWND`; handles DirectComposition cleanly | Hardware-composed client bounds | Handled via system security boundary; displays persistent system capture yellow/colored border | **CANDIDATE FOR MODERN SURFACE EVALUATION**. Highest rendering fidelity on Windows 10/11, but requires WinRT COM interop and displays a capture border. |
+| **Windows.Graphics.Capture (WGC)** | WinRT Direct3D11 compositor surface capture | Captures native DWM visual tree for specific `HWND`; handles DirectComposition cleanly | Hardware-composed client bounds | Handled via system security boundary; displays persistent system capture yellow/colored border | **CANDIDATE FOR MODERN SURFACE EVALUATION**. Evaluated as a candidate for modern Windows 10/11 surfaces; not approved or selected. Requires WinRT COM interop and displays a system border. |
 
 ### 5.1 Geometry and Coordinate Mapping Requirements
 - `user32.GetWindowRect(hwnd, &rect)` returns the complete bounding box including non-client title bars, window borders, and drop shadows.
@@ -194,24 +239,36 @@ Desktop capture on Windows 11 involves distinct OS rendering subsystems. The tec
 
 ---
 
-## 6. Authentication, Explicit User Consent, and UI Indication
+## 6. Authentication, Explicit User Intent, and ObservationIntent
 
-A fundamental security principle of PICO is that **request authenticity does not equal human consent**.
+A fundamental security principle of PICO is that **caller authenticity does not equal human consent**.
 
 ### 6.1 Two Distinct Security Requirements
-1. **Request Authenticity (Desktop Bridge Contract)**:
+1. **Caller Authenticity (Desktop Bridge Contract)**:
    - All desktop perception requests must arrive over the local loopback interface and present a valid `X-Pico-Bridge-Proof: v2` header.
    - This proves that the caller is the legitimate native Desktop Companion process holding the ephemeral startup secret.
-2. **Explicit Observation Intent (Action-Specific Consent)**:
+2. **Explicit User Intent (ObservationIntent)**:
    - A valid bridge proof alone is **insufficient** to initiate screen capture.
-   - Every capture request must be accompanied by an **action-specific consent token** (PROPOSED) generated strictly in response to an explicit user action (keyboard shortcut or UI click).
-   - This consent token must be:
-     - Bound to exactly one observation request.
-     - Short-lived (valid for $\le 5$ seconds).
-     - Single-use and invalidated immediately upon acquisition, cancellation, or error.
-     - Associated with the active authenticated operator session.
+   - Every capture request must be accompanied by an explicit **ObservationIntent** record.
 
-### 6.2 Demonstrable UI Capture Indication
+### 6.2 ObservationIntent Semantics (PROPOSED)
+To avoid creating an unvetted second authorization or approval system, explicit user capture intent is formalized using the conceptual term **ObservationIntent**:
+- **Nature**: A proposed, ephemeral, single-use record of explicit human intent, **not a bearer permission token**.
+- **Lifecycle & Binding Rules**:
+  - Generated **only** in response to a deliberate companion UI action (e.g. clicking the companion capture button or pressing a registered global hotkey).
+  - Bound to the existing authenticated local operator session.
+  - Bound to exactly one specific observation request.
+  - Short-lived ($\le 5$ seconds).
+  - Single-use and replay-protected (cached and rejected on re-use).
+  - Invalidated immediately upon capture completion, user cancellation, or error.
+- **Strict Limitation Boundaries**:
+  - It **cannot** establish caller identity.
+  - It **cannot** grant capabilities or permissions.
+  - It **cannot** satisfy Policy A authorization gates.
+  - It **cannot** substitute for `APPROVAL_SECRET_TOKEN` or an existing approval ticket.
+- **Authoritative Boundary**: The trusted desktop session and existing Policy A authorization engine remain authoritative.
+
+### 6.3 Demonstrable UI Capture Indication
 - Before any native screen capture call executes, the Desktop Companion must visibly transition to an unambiguous `CAPTURING` visual state (e.g., expressive eye state transition and distinct visual border/badge).
 - The system must verify that the UI indicator has been rendered prior to invoking the native capture API. If the indicator cannot be confirmed visible, **capture must not start**.
 - The user must be provided with an immediate cancellation mechanism (e.g. pressing `Escape` or clicking cancel on the widget) that halts acquisition and discards in-flight buffers.
@@ -294,9 +351,9 @@ class ObserveActiveWindowInput(BaseModel):
         le=8192,
         description="Maximum characters of visible text to extract via local OCR",
     )
-    consent_token: str = Field(
+    observation_intent_id: str = Field(
         ...,
-        description="Single-use consent token proving explicit user capture intent",
+        description="Single-use ObservationIntent record ID proving explicit user capture intent",
     )
 
 class ObserveActiveWindowOutput(BaseModel):
@@ -308,7 +365,7 @@ class ObserveActiveWindowOutput(BaseModel):
 ```
 
 - **Capability ID**: `desktop.observe_active_window` (PROPOSED)
-- **Risk Tier**: `RiskTier.READ_ONLY` (*Note: Read-only does not mean privacy-free; explicit consent remains mandatory*)
+- **Risk Tier**: `RiskTier.READ_ONLY` (*Note: Read-only does not mean privacy-free; explicit ObservationIntent remains mandatory*)
 - **Required Permission**: `desktop:observe` (PROPOSED - not currently registered)
 - **Required Classification**: `INTERNAL`
 - **Consequential**: `False`
@@ -322,7 +379,7 @@ class ObserveActiveWindowOutput(BaseModel):
 
 | Threat ID | Threat Vector | Real Vulnerability | Architectural Defense & Mitigation | Test Strategy |
 | :--- | :--- | :--- | :--- | :--- |
-| **THREAT-01** | Capture without explicit user trigger | Accidental capture or surveillance | Requires action-specific single-use consent token bound to user action | Unit test asserting rejection without consent token |
+| **THREAT-01** | Capture without explicit user trigger | Accidental capture or surveillance | Requires single-use ObservationIntent record bound to verified user action | Unit test asserting rejection without valid ObservationIntent |
 | **THREAT-02** | Missing or forged bridge request | Unauthorized network access | Requires `X-Pico-Bridge-Proof: v2` and local loopback peer verification | Integration test with forged/missing bridge headers |
 | **THREAT-03** | Capture indicator desynchronization | User unaware screen is captured | Companion verifies indicator is rendered before native acquisition call | State machine test asserting strict indicator ordering |
 | **THREAT-04** | Concurrent capture requests | Memory exhaustion or GDI leaks | Pipeline enforces single active capture lease; concurrent requests reject with 429 | Concurrency test rejecting simultaneous capture attempts |
@@ -347,8 +404,8 @@ To adhere to the principle of *Incremental, Reviewable Slices*, implementation m
 ### Slice 1 — Explicit Active-Window Observation & Local CPU OCR (Candidate First Slice)
 - **Scope**:
   - Evaluate native Win32 window capture compatibility across candidate APIs (`PrintWindow`, `BitBlt`, WGC).
-  - Integrate bounded local CPU OCR with strict character ceiling ($\le 4096\text{ chars}$).
-  - Enforce action-specific consent tokens and loopback bridge authentication.
+  - Integrate bounded local CPU OCR candidate with strict character ceiling ($\le 4096\text{ chars}$).
+  - Enforce single-use ObservationIntent records and loopback bridge authentication.
   - Package output into `ContextItem(item_type="untrusted_screen_text", data_classification="INTERNAL")`.
   - Zero application frame buffers immediately; write minimized metadata to ledger.
 - **Deliverables**: Python adapter, Win32 capture module, isolated unit tests with synthetic bitmap fixtures.
@@ -357,7 +414,7 @@ To adhere to the principle of *Incremental, Reviewable Slices*, implementation m
 - **Scope**:
   - Implement Desktop Companion global shortcut and widget button.
   - Implement visual capture indicator state transitions in the desktop shell.
-  - Bind action-specific consent tokens to user click/hotkey events.
+  - Bind ObservationIntent generation to user click/hotkey events.
 
 ### Slice 3 — Unified Multimodal Local Inference Feasibility
 - **Scope**:
