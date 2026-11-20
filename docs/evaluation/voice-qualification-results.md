@@ -20,7 +20,7 @@
 | Gate ID | Area / Gate | Required Threshold | Measured Result | Qualification Status |
 |---|---|---|---|---|
 | `GATE-VOICE-01` | **STT Latency** | RTF <= 0.30 (5s audio in <= 1.5s) | 5s sample 'audio_cmd_workflow_5s.wav': End-to-End P50=1.1992s (RTF=0.2437), P90=1.2432s, P95=1.2432s, Max=1.2432s; Native-only P50=1.1817s (RTF=0.2402), P90=1.2268s, P95=1.2268s, Max=1.2268s [Breakdown: WAV parse=0.06ms, PCM norm=2.56ms, C buf=6.3ms, Native=1154.46ms] | **PASS** |
-| `GATE-VOICE-02` | **STT Accuracy (WER)** | STT WER <= 12.0% on conversational English commands across Option B human corpus ($N_{\text{total}} = 49\text{ reference words}$) | Preliminary real-speech aggregate WER=2.67% (Macro WER=8.33%, CER=6.41%) on JFK speech slices; smoke commands (Windows SAPI) WER=0.0%. Qualification marked NOT RUN because the canonical command corpus ($N_{\text{total}} = 49\text{ words}$) has not been evaluated with human conversational speech and verified reference transcripts under Option B. The 49-word denominator is established, but formal evaluation remains pending until all four human recordings are provided. | NOT RUN |
+| `GATE-VOICE-02` | **STT Accuracy (WER)** | STT WER <= 12.0% on conversational English commands across Option B human corpus ($N_{\text{total}} = 49\text{ reference words}$) | Preliminary real-speech aggregate WER=2.67% (Macro WER=8.33%, CER=6.41%) across historical mixed real-speech fixtures (5 JFK speech slices + 1 Vosk digit sequence; 75 total reference words, 2 edits); smoke commands (Windows SAPI) WER=0.0%. Qualification marked NOT RUN because the canonical command corpus ($N_{\text{total}} = 49\text{ words}$) has not been evaluated with human conversational speech and verified reference transcripts under Option B. The 49-word denominator is established, but formal evaluation remains pending until all four human recordings are provided. | NOT RUN |
 | `GATE-VOICE-03` | **TTS Latency** | TTFAC < 500ms; RTF_synth <= 0.15 | Deferred to Milestone P11.3 Stage 4 (Piper/sherpa-onnx qualification) | NOT RUN |
 | `GATE-VOICE-04` | **Single-Model GPU VRAM** | VRAM Delta = 0 MiB (preserves Ollama LLM residency) | Historical observation: CPU isolation observed (0 MiB additional VRAM at sampled checkpoints; initial=2495 MiB, peak=2495 MiB, final=2495 MiB across 102 observations) and tag 'qwen3.5:2b' was reported GPU-resident (1772.9 MiB). Full co-residency qualification marked NOT RUN because model artifact digest continuity was not established by the historical benchmark run. | NOT RUN |
 | `GATE-VOICE-05` | **System RAM Ceiling** | Peak Working Set strictly < 450 MiB (471,859,200 bytes) and Available System RAM strictly > 1536 MiB (1,610,612,736 bytes) under concurrent load | Min Available System RAM 863.1 MB <= 1536.0 MiB threshold (Private Bytes: 810.29 MB across 2115 continuous samples); Peak WS 331.95 MB (< 450 MiB) | FAIL |
@@ -51,16 +51,16 @@
 
 ## 3. Accuracy Metrics Breakdown
 
-- **Real Speech Aggregate WER**: 2.67% (total edits / total reference words on JFK slices)
-- **Real Speech Macro-Average WER**: 8.33% (unweighted mean across JFK slices)
-- **Real Speech Macro-Average CER**: 6.41%
+- **Historical Mixed Real-Speech Aggregate WER**: 2.67% (2 edits / 75 total reference words across 5 JFK speech slices + 1 vosk_digits.wav numeric recording)
+- **Historical Mixed Real-Speech Macro-Average WER**: 8.33% (unweighted mean across the 6 mixed real-speech fixtures)
+- **Historical Mixed Real-Speech Macro-Average CER**: 6.41%
 - **Synthetic Commands Smoke WER**: 0.0% (Windows SAPI smoke test; reported separately from real speech)
 
 > [!NOTE]
 > **Canonical Option B Corpus & Formal WER Status**:
 > The canonical command reference word count is formally established at exactly **49 reference words** across the four canonical commands ($2 + 8 + 13 + 26 = 49\text{ words}$, with command 4 having 26 words).
 > Formal Word Error Rate ($\text{WER}$) for `GATE-VOICE-02` can **only** be calculated when all four natural human audio recordings are provided under Option B.
-> Historical JFK speech slices (44 reference words, historical presidential address) and synthetic Windows SAPI clips represent distinct evaluation datasets; their edit counts and error metrics must **never** be cross-conflated with or transferred onto the canonical Option B command corpus.
+> Historical mixed real-speech prototype fixtures (5 JFK speech slices + 1 Vosk digit sequence, 75 total reference words) and synthetic Windows SAPI smoke clips represent distinct preliminary evaluation datasets; their edit counts and error metrics must **never** be cross-conflated with or transferred onto the canonical Option B command corpus.
 > Consequently, `GATE-VOICE-02` remains strictly **`NOT RUN`**.
 
 ---

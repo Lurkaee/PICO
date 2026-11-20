@@ -272,7 +272,7 @@ To eliminate operational ambiguity between project planning and physical qualifi
 2. **Step B — Stage 2 Qualification Closure**:
    - In accordance with `docs/implementation-plan.md`, Stage 2 qualification must be completed before Stage 3 implementation begins.
    - The applicable hardware pre-qualification gates must satisfy their approved Stage 3 requirements on target host hardware:
-     - `GATE-VOICE-02` (STT Accuracy): Measured against the approved Option B human command corpus ($\text{WER} \le 12.0\%$, $N_{\text{total}}=49\text{ reference words}$).
+     - `GATE-VOICE-02` (STT Accuracy): Measured against the approved Option B human command corpus ($\text{WER} \le 12.0\%$, $N_{\text{total}}=49\text{ reference words}$), requiring the Option B benchmark tooling prerequisite defined in §7.
      - `GATE-VOICE-04` (Single-Model VRAM): Verified with resident Ollama LLM (`qwen3.5:2b`), proving $\Delta\text{VRAM} = 0\text{ MiB}$ and same-artifact digest continuity.
      - `GATE-VOICE-05` (RAM Ceiling): The historical `FAIL` (863.1 MB available RAM) must be remediated with valid new telemetry proving peak voice Working Set strictly $< 450\text{ MiB}$ (`471,859,200 bytes`) and available system RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`) under concurrent load with local Ollama LLM resident.
      - `GATE-VOICE-06` (Disk Retention) & `GATE-VOICE-07` (Network Egress): Verified via elevated kernel minifilter and ETW DNS trace audits.
@@ -422,7 +422,7 @@ The existing empirical qualification report ([docs/evaluation/voice-qualificatio
 4. **Elevated Privacy Audits (`GATE-VOICE-06` & `GATE-VOICE-07`)**: Kernel ETW DNS and minifilter filesystem monitoring require administrative elevation and remain `NOT RUN`.
 5. **Integrated Adapter Verification (`GATE-VOICE-09`)**: Testing fail-closed safety directly against the implemented production adapter class (Step D). The prototype harness pass does not replace this check.
 6. **STT Component Licensing Verification**: Confirming licensing compliance under ADR 0005 §2.7 before production activation (Step E).
-7. **Stage 2 Qualification Closure (Step B)**: Stage 3 development authorization (Step C) remains strictly blocked until Step B hardware pre-qualification prerequisites (`GATE-VOICE-02`, `04`, `05`, baseline `06`, baseline `07`) are physically satisfied and accepted in `docs/evaluation/voice-qualification-results.md`.
+7. **Stage 2 Qualification Closure (Step B)**: Stage 3 development authorization (Step C) remains strictly blocked until Step B hardware pre-qualification prerequisites (`GATE-VOICE-02`, `04`, `05`, baseline `06`, baseline `07`) are physically satisfied and accepted in `docs/evaluation/voice-qualification-results.md`. Formal execution of `GATE-VOICE-02` requires the Option B benchmark harness tooling update (§7 Phase 2) as a prerequisite.
 8. **Production Safety Boundary**:
    - `LocalWhisperSpeechToTextAdapter` in `pico/perception/audio/adapter.py` remains strictly `is_available() == False`.
    - Production speech recognition fails closed immediately.
@@ -471,8 +471,17 @@ Following project owner approval of this proposal on 2026-11-20 (approving Optio
    - **Crucial Boundary**: Merging the Step A PR ([PR #105](https://github.com/Lurkaee/PICO/pull/105)) completes normative document amendments only; it does **not** close Step B or authorize Stage 3 adapter implementation.
 
 2. **Phase 2: Stage 2 Hardware Pre-Qualification Closure (Step B)**:
+   - **Qualification Tooling Prerequisite**: Before Stage 2 hardware pre-qualification can formally evaluate and close `GATE-VOICE-02`, a separate Option B-aware benchmark harness update (`tools/bench/voice_bench.py`) must be implemented, tested, and merged in a dedicated follow-up PR. That tooling update must:
+     - Consume the formal Option B corpus definitions directly from `docs/evaluation/voice_corpus_manifest.json`.
+     - Require all four canonical human recordings to be present and registered before calculating formal accuracy.
+     - Validate incoming audio specifications (16 kHz, 16-bit mono signed PCM RIFF/WAVE), file provenance, SHA-256 cryptographic digests, and verified reference transcripts.
+     - Calculate aggregate Word Error Rate ($\text{WER}$) across the four canonical commands using the exact 49-word denominator ($\sum \text{edits} / 49$).
+     - Output deterministic qualification status for `GATE-VOICE-02`: `PASS` if aggregate $\text{WER} \le 12.0\%$, `FAIL` if aggregate $\text{WER} > 12.0\%$, or `NOT RUN` if any canonical human recording is missing, incomplete, or unverified.
+     - Maintain strict reporting segregation between historical prototype fixtures (mixed JFK speech slices and Vosk digits) and the canonical Option B human command corpus.
+     - Strictly prohibit inferring or transferring pass status from synthetic Windows SAPI smoke fixtures.
+     - *Boundary Invariant*: Step B hardware pre-qualification acceptance cannot occur until this tooling prerequisite and the physical accuracy qualification on target hardware are completed.
    - Record and register the approved Option B human audio recordings for the four canonical command texts in `docs/evaluation/voice_corpus_manifest.json`.
-   - Run the benchmark harness with resident Ollama LLM (`qwen3.5:2b`) on host hardware to measure `GATE-VOICE-02` (Accuracy, target $\text{WER} \le 12.0\%$) and verify `GATE-VOICE-04` (Single-Model VRAM: $\Delta\text{VRAM} = 0\text{ MiB}$, same-artifact digest continuity).
+   - Run the updated benchmark harness with resident Ollama LLM (`qwen3.5:2b`) on host hardware to measure `GATE-VOICE-02` (Accuracy, target $\text{WER} \le 12.0\%$) and verify `GATE-VOICE-04` (Single-Model VRAM: $\Delta\text{VRAM} = 0\text{ MiB}$, same-artifact digest continuity).
    - Re-measure system RAM headroom under controlled concurrent load to remediate `GATE-VOICE-05` (proving peak voice Working Set strictly $< 450\text{ MiB}$ [`471,859,200 bytes`] and available system RAM strictly $> 1536\text{ MiB}$ [`1,610,612,736 bytes`]).
    - Conduct elevated privacy audits to close `GATE-VOICE-06` (Disk Retention & Buffer Zeroization) and `GATE-VOICE-07` (Zero Network & DNS Egress) host baselines.
    - Document all verified empirical findings in `docs/evaluation/voice-qualification-results.md`.

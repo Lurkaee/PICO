@@ -275,7 +275,7 @@ To eliminate ambiguity between project planning, adapter authoring, and physical
 2. **Step B — Stage 2 Hardware Pre-Qualification Closure**:
    - Stage 2 hardware pre-qualification prerequisites must be satisfied and recorded in `docs/evaluation/voice-qualification-results.md` before Stage 3 implementation begins.
    - The applicable hardware pre-qualification gates must satisfy their approved Stage 3 requirements on target host hardware:
-     - `GATE-VOICE-02` (STT Accuracy): Measured against the approved Option B human command corpus ($\text{WER} \le 12.0\%$).
+     - `GATE-VOICE-02` (STT Accuracy): Measured against the approved Option B human command corpus ($\text{WER} \le 12.0\%$, pending Option B benchmark tooling update and human recordings).
      - `GATE-VOICE-04` (Single-Model VRAM): Verified with resident Ollama LLM (`qwen3.5:2b`), proving $\Delta\text{VRAM} = 0\text{ MiB}$ and same-artifact digest continuity.
      - `GATE-VOICE-05` (RAM Ceiling): The historical `FAIL` (863.1 MB available RAM) must be remediated with valid new telemetry proving available system RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`) and peak voice Working Set strictly $< 450\text{ MiB}$ (`471,859,200 bytes`) under concurrent load.
      - `GATE-VOICE-06` (Disk Retention) & `GATE-VOICE-07` (Network Egress): Verified via elevated kernel minifilter and ETW DNS trace audits.

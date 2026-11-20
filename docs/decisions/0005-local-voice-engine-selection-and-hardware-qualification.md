@@ -225,7 +225,7 @@ Per project owner decision on 2026-11-20 (approving Proposal 0006), the qualific
 
 1. **Stage 2 Hardware Pre-Qualification Closure (Step B)**:
    - Physical hardware pre-qualification on the target host machine to satisfy the baseline prerequisites required before Stage 3 implementation can be authorized:
-     - `GATE-VOICE-02` (STT Accuracy): Word Error Rate evaluation on the approved Option B naturally spoken human command corpus ($\text{WER} \le 12.0\%$). Currently `NOT RUN` (recordings pending).
+     - `GATE-VOICE-02` (STT Accuracy): Word Error Rate evaluation on the approved Option B naturally spoken human command corpus ($\text{WER} \le 12.0\%$). Currently `NOT RUN` (human recordings and Option B benchmark tooling update pending).
      - `GATE-VOICE-04` (Single-Model GPU VRAM): Telemetry verification with resident Ollama LLM (`qwen3.5:2b`), demonstrating $\Delta\text{VRAM} = 0\text{ MiB}$ and same-artifact digest continuity. Currently `NOT RUN`.
      - `GATE-VOICE-05` (RAM Ceiling): Concurrent-load memory verification. Preserves the historical `FAIL` status (863.1 MB available RAM recorded under load) until remediated by valid empirical telemetry proving peak voice Working Set strictly $< 450\text{ MiB}$ (`471,859,200 bytes`) and available system RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`).
      - `GATE-VOICE-06` (Baseline Disk Retention & Buffer Zeroization): Verification that the host capture baseline writes zero raw-audio bytes to persistent storage and mutable buffers are zeroized. Currently `NOT RUN` (kernel minifilter audit pending).
