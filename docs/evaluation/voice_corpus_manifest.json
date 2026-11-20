@@ -1,9 +1,49 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PICO Voice Evaluation Corpus Manifest",
-  "milestone": "P11.3.2 Stage 2",
+  "milestone": "P11.3 Stage 2 / Stage 3 Promotion Baseline",
   "description": "Canonical metadata, provenance, licensing, and ground-truth transcripts for local STT qualification corpora.",
-  "qualification_scope_limitation": "The current corpus does NOT constitute a representative multi-speaker conversational evaluation. Formal accuracy qualification (GATE-VOICE-02) remains NOT RUN until a diverse multi-speaker conversational dataset is evaluated in a future milestone.",
+  "qualification_scope_limitation": "Per project owner approval on 2026-11-20 (Option B, Proposal 0006), formal GATE-VOICE-02 accuracy qualification requires naturally spoken recordings of the four canonical command texts spoken by a consenting human operator using a physical microphone under standard room acoustics (16 kHz 16-bit mono signed PCM WAV). Demographic quotas (5-10 speakers) were removed as specification drift. Formal human command recordings are currently PENDING acquisition and registration. The synthetic SAPI clips in smoke_test_clips remain deterministic automated CI regression fixtures and cannot satisfy formal GATE-VOICE-02 qualification. Passing the four-command human corpus provides empirical evidence strictly for the canonical commands, tested speaker, microphone, and pinned STT model/runtime, and does NOT constitute proof of general multi-speaker, accent, or unconstrained conversational robustness.",
+  "formal_accuracy_corpus": {
+    "status": "PENDING_RECORDINGS",
+    "specification": "Option B — Naturally spoken human recordings of the four canonical command texts",
+    "required_format": "16 kHz, 16-bit mono signed PCM (little-endian) RIFF/WAVE",
+    "target_wer_threshold": 12.0,
+    "provenance_requirements": [
+      "consenting_speaker_id",
+      "physical_microphone_model",
+      "acoustic_environment_description",
+      "ground_truth_transcript",
+      "sha256_digest"
+    ],
+    "canonical_commands": [
+      {
+        "command_id": "cmd_short_1s",
+        "canonical_text": "PICO stop.",
+        "word_count": 2,
+        "description": "Short imperative command"
+      },
+      {
+        "command_id": "cmd_query_3s",
+        "canonical_text": "What tasks are currently waiting for my approval?",
+        "word_count": 8,
+        "description": "Query tasks command"
+      },
+      {
+        "command_id": "cmd_workflow_5s",
+        "canonical_text": "Summarize the latest system logs and create a new draft task for review.",
+        "word_count": 13,
+        "description": "Workflow proposal command"
+      },
+      {
+        "command_id": "cmd_dictation_10s",
+        "canonical_text": "We need to verify the database migrations, ensure all foreign key constraints are enabled, and check that the memory service cleans up expired working memories automatically.",
+        "word_count": 27,
+        "description": "Extended technical dictation"
+      }
+    ],
+    "clips": []
+  },
   "smoke_test_clips": [
     {
       "filename": "audio_cmd_short_1s.wav",

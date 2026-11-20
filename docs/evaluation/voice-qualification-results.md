@@ -20,15 +20,15 @@
 | Gate ID | Area / Gate | Required Threshold | Measured Result | Qualification Status |
 |---|---|---|---|---|
 | `GATE-VOICE-01` | **STT Latency** | RTF <= 0.30 (5s audio in <= 1.5s) | 5s sample 'audio_cmd_workflow_5s.wav': End-to-End P50=1.1992s (RTF=0.2437), P90=1.2432s, P95=1.2432s, Max=1.2432s; Native-only P50=1.1817s (RTF=0.2402), P90=1.2268s, P95=1.2268s, Max=1.2268s [Breakdown: WAV parse=0.06ms, PCM norm=2.56ms, C buf=6.3ms, Native=1154.46ms] | **PASS** |
-| `GATE-VOICE-02` | **STT Accuracy (WER)** | STT WER <= 12.0% on conversational English commands | Preliminary real-speech aggregate WER=2.67% (Macro WER=8.33%, CER=6.41%) on JFK speech slices; smoke commands (Windows SAPI) WER=0.0%. Qualification marked NOT RUN because the canonical command corpus has not been evaluated with human conversational speech and verified reference transcripts. | NOT RUN |
-| `GATE-VOICE-03` | **TTS Latency** | TTFAC < 500ms; RTF_synth <= 0.15 | Deferred to Milestone P11.3.4 (Piper/sherpa-onnx qualification) | NOT RUN |
+| `GATE-VOICE-02` | **STT Accuracy (WER)** | STT WER <= 12.0% on conversational English commands across Option B human corpus | Preliminary real-speech aggregate WER=2.67% (Macro WER=8.33%, CER=6.41%) on JFK speech slices; smoke commands (Windows SAPI) WER=0.0%. Qualification marked NOT RUN because the canonical command corpus has not been evaluated with human conversational speech and verified reference transcripts under Option B. | NOT RUN |
+| `GATE-VOICE-03` | **TTS Latency** | TTFAC < 500ms; RTF_synth <= 0.15 | Deferred to Milestone P11.3 Stage 4 (Piper/sherpa-onnx qualification) | NOT RUN |
 | `GATE-VOICE-04` | **Single-Model GPU VRAM** | VRAM Delta = 0 MiB (preserves Ollama LLM residency) | Historical observation: CPU isolation observed (0 MiB additional VRAM at sampled checkpoints; initial=2495 MiB, peak=2495 MiB, final=2495 MiB across 102 observations) and tag 'qwen3.5:2b' was reported GPU-resident (1772.9 MiB). Full co-residency qualification marked NOT RUN because model artifact digest continuity was not established by the historical benchmark run. | NOT RUN |
-| `GATE-VOICE-05` | **System RAM Ceiling** | Peak Working Set < 450 MB and Available System RAM > 1.5 GB | Min Available System RAM 863.1 MB <= 1536.0 MB (1.5 GB threshold), Private Bytes: 810.29 MB across 2115 continuous samples | FAIL |
+| `GATE-VOICE-05` | **System RAM Ceiling** | Peak Working Set strictly < 450 MiB (471,859,200 bytes) and Available System RAM strictly > 1536 MiB (1,610,612,736 bytes) under concurrent load | Min Available System RAM 863.1 MB <= 1536.0 MiB threshold (Private Bytes: 810.29 MB across 2115 continuous samples); Peak WS 331.95 MB (< 450 MiB) | FAIL |
 | `GATE-VOICE-06` | **Disk Retention** | 0 raw-audio bytes persisted to disk | 0 raw audio files created in process temp/working directories; independent kernel ETW minifilter filesystem audit unavailable without administrative elevation | NOT RUN |
 | `GATE-VOICE-07` | **Network Egress** | 0 outbound socket connections & 0 DNS queries | 0 active socket connections detected for PID 32972; kernel ETW DNS-client activity tracing unavailable without elevation | NOT RUN |
-| `GATE-VOICE-08` | **Packaging Bounds** | Combined voice subsystem footprint < 350 MB | STT Prototype: 80.92 MB (Binaries: 2.92 MB, Model: 77.99 MB). Combined STT+TTS voice subsystem gate deferred to Milestone P11.3.4. | NOT RUN |
-| `GATE-VOICE-09` | **Fail-Closed Safety** | Deterministic typed exception on missing or corrupted artifact | Verified: missing model, truncated header, cryptographic SHA-256 digest mismatch, and missing runtime fail closed in isolated prototype fixtures (does not imply production adapter qualification). | **PASS** |
-| `GATE-VOICE-10` | **License Review** | Resolution of Piper GPL-3.0 redistribution compatibility or adoption of sherpa-onnx (Apache 2.0) | STT prototype components pass MIT review (whisper.cpp engine MIT, OpenAI Whisper weights MIT). Overall GATE-VOICE-10 marked NOT RUN pending resolution of Piper TTS licensing (GPL-3.0 in active fork vs. MIT / Apache-2.0 fallback). | NOT RUN |
+| `GATE-VOICE-08` | **Packaging Bounds** | Combined voice subsystem footprint < 350 MB decimal (350,000,000 bytes) | STT Prototype: 80.92 MiB (~84.85 MB decimal, 84,845,619 bytes; Binaries: 3,063,808 bytes [~2.92 MB], Model: 81,781,811 bytes [~77.99 MiB / ~81.78 MB]). Evaluated as informational interim measurement (~24% of budget) for Stage 3; full combined STT+TTS voice subsystem release packaging gate deferred to Stage 4. | NOT RUN (Interim Compliant) |
+| `GATE-VOICE-09` | **Fail-Closed Safety** | Deterministic typed exception on missing or corrupted artifact | Verified: missing model, truncated header, cryptographic SHA-256 digest mismatch, and missing runtime fail closed in isolated prototype fixtures (prototype pass; does not imply production adapter qualification, which requires Step D integrated testing). | **PASS (Prototype)** |
+| `GATE-VOICE-10` | **License Review** | Resolution of Piper GPL-3.0 redistribution compatibility or adoption of sherpa-onnx (Apache 2.0) | STT prototype components pass MIT review (whisper.cpp engine MIT, OpenAI Whisper weights MIT), satisfying the Stage 3 component licensing prerequisite. Overall GATE-VOICE-10 marked NOT RUN pending resolution of Piper TTS licensing (GPL-3.0 in active fork vs. MIT / Apache-2.0 fallback) for Stage 4. | NOT RUN |
 
 ---
 
@@ -62,7 +62,7 @@
 
 - **Cold Start Initialization Time**: 0.2481s (PicoWhisperEngine.__init__() - full constructor: artifact SHA-256 verification, DLL load, native context prep)
 - **Peak Working Set Memory**: 331.95 MB
-- **Minimum Available System RAM**: 863.1 MB (threshold > 1.5 GB, continuously sampled across 2115 intervals)
+- **Minimum Available System RAM**: 863.1 MB (threshold strictly $> 1536\text{ MiB}$ [`1,610,612,736 bytes`], continuously sampled across 2115 intervals)
 - **Initial GPU VRAM**: 2495 MiB
 - **Peak GPU VRAM Observed**: 2495 MiB (102 observations, sampled per iteration (~every 1s))
 - **Final GPU VRAM**: 2495 MiB
@@ -95,7 +95,7 @@ A non-invasive, read-only preflight inspection of host memory and compute resour
 | Metric | Measured Value | Qualification Threshold | Compliance Assessment |
 |---|---|---|---|
 | **Total System RAM** | 15.64 GB (16,791,048,192 bytes) | 16 GB Physical | Compliant |
-| **Available System RAM** | 2.41 GB (2,472.8 MB, 2,592,919,552 bytes) | > 1,536.0 MB (1.5 GB) | Exceeds idle threshold; however, physical test under load historically dipped to 863.1 MB |
+| **Available System RAM** | 2.41 GB (2,472.8 MB, 2,592,919,552 bytes) | > 1536 MiB (1,610,612,736 bytes) | Exceeds idle threshold; however, physical test under load historically dipped to 863.1 MB |
 | **Dedicated GPU VRAM** | Total: 4,094.0 MiB, Used: 0.0 MiB, Free: 3,892.0 MiB | 0 MiB Voice Consumption | VRAM available; LLM residency unverified |
 | **Ollama Model Residency** | 0 models resident (`/api/ps` returned 0 active instances) | `qwen3.5:2b` resident in VRAM | **NOT MET** (`qwen3.5:2b` installed but not resident) |
 
@@ -109,14 +109,13 @@ A non-invasive, read-only preflight inspection of host memory and compute resour
 ### 6.2 Pre-Requisite Audit for Stage 3
 
 1. **Canonical Command Corpus & STT Accuracy (`GATE-VOICE-02`)**:
-   - Canonical Requirement (ADR 0005 §2.5 & §6; Qualification Protocol §3.1.2 & §7): STT Word Error Rate (WER) $\le 12.0\%$ on conversational English commands across the standard command audio corpus:
+   - Canonical Requirement (ADR 0005 §2.5 & §6; Qualification Protocol §3.1.2 & §7; Proposal 0006 Option B): STT Word Error Rate (WER) $\le 12.0\%$ on conversational English commands across the four canonical human command recordings:
      - `audio_cmd_short_1s.wav` ("PICO stop.")
      - `audio_cmd_query_3s.wav` ("What tasks are currently waiting for my approval?")
      - `audio_cmd_workflow_5s.wav` ("Summarize the latest system logs and create a new draft task for review.")
      - `audio_cmd_dictation_10s.wav` ("We need to verify the database migrations, ensure all foreign key constraints are enabled, and check that the memory service cleans up expired working memories automatically.")
    - Manifest Status (`docs/evaluation/voice_corpus_manifest.json`): The current audio fixtures comprise synthetic Windows SAPI TTS clips for the command corpus, alongside 5 slices of a single historical speech (JFK 1961 inaugural address) and 1 single-speaker numeric digit sequence (`vosk_digits.wav`).
-   - The manifest explicitly records: *"The current corpus does NOT constitute a representative multi-speaker conversational evaluation. Formal accuracy qualification (GATE-VOICE-02) remains NOT RUN until a diverse multi-speaker conversational dataset is evaluated in a future milestone."*
-   - Specification Drift Correction: Demographic minimums (such as 5–10 speakers across specific genders, age groups, or accents) are not stated in ADR 0005 or the qualification protocol and do not constitute formal qualification criteria. A broader multi-speaker dataset may provide supplementary evidence, but it does not replace the canonical requirement for accuracy evaluation against the standard conversational command corpus.
+   - Per approved Option B, the synthetic SAPI clips serve as automated CI regression smoke fixtures and cannot satisfy formal accuracy qualification. Formal human recordings of the four canonical commands remain PENDING.
    - Status: **NOT RUN** (Accuracy qualification on the canonical command corpus with genuine human conversational speech and verified reference transcripts remains incomplete).
 
 2. **Single-Model GPU VRAM & Co-Residency (`GATE-VOICE-04`)**:
@@ -125,7 +124,7 @@ A non-invasive, read-only preflight inspection of host memory and compute resour
    - In accordance with benchmark Gate 04 evaluation rules, missing model residency results in **NOT RUN**.
 
 3. **RAM Ceiling Under Concurrent Load (`GATE-VOICE-05`)**:
-   - While idle available RAM is currently 2,472.8 MB (> 1,536.0 MB), historical benchmark load testing recorded an available RAM minimum of 863.1 MB under concurrent development load.
+   - While idle available RAM is currently 2,472.8 MB (> 1536 MiB), historical benchmark load testing recorded an available RAM minimum of 863.1 MB under concurrent development load, failing the strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`) floor.
    - Status: **FAIL** (Historical qualification failure preserved until full benchmark can be cleanly executed with resident LLM).
 
 4. **Privacy & Elevation Audits (`GATE-VOICE-06` & `GATE-VOICE-07`)**:
@@ -134,26 +133,19 @@ A non-invasive, read-only preflight inspection of host memory and compute resour
    - In accordance with non-negotiable security boundaries, Windows security controls are preserved without modification.
    - Status: **NOT RUN** (Process-level zero sockets and zero temp disk files confirmed).
 
-### 6.3 Unresolved Stage 3 Promotion-Rule Ambiguity
+### 6.3 Resolution of Stage 3 Promotion-Rule Ambiguity
 
-A genuine structural ambiguity exists across canonical project documents:
-- **Implementation Plan Sequencing**: `docs/implementation-plan.md` sequences Milestone P11.3 into distinct vertical stages: Stage 3 implements Local Speech-to-Text (STT) runtime integration, while Stage 4 independently implements Local Text-to-Speech (TTS) runtime integration.
-- **Qualification Protocol Promotion Gates**: `docs/evaluation/voice-engine-qualification.md` §7 specifies a single unified table of ten blocker gates (including `GATE-VOICE-03` TTS Latency and `GATE-VOICE-10` Piper GPL-3.0 vs. Apache-2.0 License Review) that must be physically verified *"Before promoting Milestone P11.3 from Stage 1 (Design) to Stage 3/4 (Runtime Implementation)"*.
-- **Ambiguity Assessment**:
-  - The protocol treats all 10 gates as prerequisites before proceeding to either Stage 3 or Stage 4, whereas the implementation plan decouples STT (Stage 3) from TTS (Stage 4).
-  - This architectural ambiguity has not been formally resolved through an ADR amendment or qualification protocol revision.
-  - However, resolving this ambiguity is **not a blocker for this assessment**: even if TTS-specific gates (`GATE-VOICE-03`, `GATE-VOICE-10`) were scoped exclusively to Stage 4, Stage 3 STT integration remains **NOT AUTHORIZED** because the core STT-specific gates (`GATE-VOICE-02` Accuracy, `GATE-VOICE-04` GPU Co-Residency, `GATE-VOICE-05` RAM Ceiling, and `GATE-VOICE-06`/`07` Privacy) remain failed or incomplete.
+On 2026-11-20, the project owner approved [Proposal 0006](../decisions/0006-proposal-p11-3-voice-qualification-promotion-rules.md), formally resolving the promotion-rule ambiguity:
+- **Promotion Model Reconciliation**: The unified ten-gate matrix has been formally decomposed into sequential milestone stages: Stage 3 (STT Gates 01, 02, 04, 05, 06, 07, 08-interim, 09, and STT component licensing) and Stage 4 (TTS Gates 03, 08-combined, 10, and combined voice re-verification).
+- **Clear Operational Lifecycle**: Milestone P11.3 delivery is structured into Step A (owner decisions and normative amendments), Step B (Stage 2 hardware pre-qualification closure), Step C (Stage 3 adapter development authorization), Step D (integrated adapter and privacy qualification), and Step E (production activation).
+- **Stage 3 Integration Remains Blocked**: Resolving the promotion-rule ambiguity unblocks the governance path, but does **not** authorize Stage 3 development or activation. The core Stage 3 hardware pre-qualification prerequisites (`GATE-VOICE-02` Accuracy, `GATE-VOICE-04` GPU Co-Residency, `GATE-VOICE-05` RAM Ceiling, and `GATE-VOICE-06`/`07` Privacy) remain failed or incomplete on host hardware.
 
 ### 6.4 Stage 3 Authorization Decision
 
 - **DECISION: P11.3 STAGE 3 INTEGRATION IS NOT AUTHORIZED**
 - **Rationale**:
-  - `GATE-VOICE-02` (STT Accuracy): Canonical command corpus has not been verified with genuine human conversational speech and verified reference transcripts.
+  - `GATE-VOICE-02` (STT Accuracy): Canonical command corpus has not been verified with genuine human conversational speech and verified reference transcripts under Option B.
   - `GATE-VOICE-04` (Single-Model GPU VRAM): Ollama LLM was not resident during preflight; same-artifact digest continuity under voice execution was not established.
-  - `GATE-VOICE-05` (RAM Ceiling): Available system RAM dipped to 863.1 MB ($\le 1,536.0\text{ MB}$) during historical physical benchmark load testing, failing the memory headroom ceiling.
+  - `GATE-VOICE-05` (RAM Ceiling): Available system RAM dipped to 863.1 MB ($\le 1536\text{ MiB}$) during historical physical benchmark load testing, failing the memory headroom ceiling.
   - `GATE-VOICE-06` & `GATE-VOICE-07` (Privacy): Elevated Windows kernel ETW DNS-client and filesystem minifilter trace audits were unavailable.
-  - Promotion-Rule Ambiguity: Unresolved tension between unified protocol gates and staged STT/TTS roadmap.
-- **Production Guardrails Maintained**:
-  - `LocalWhisperSpeechToTextAdapter` in `pico/perception/audio/adapter.py` remains strictly disabled (`is_available() == False`).
-  - Production audio delivery endpoints continue to fail closed with `ValidationError("Speech recognition is disabled")`.
-  - Zero model weights or binary DLLs are committed to version control.
+  - Step B Hardware Pre-Qualification: Must be physically satisfied and accepted before Step C development begins.
