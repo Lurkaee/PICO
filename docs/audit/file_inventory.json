@@ -1,0 +1,3842 @@
+{
+  "baseline_revision": "36e0e1448a3f815cd5b031b598c1ea6ecfe436a6",
+  "baseline_tracked_files": 447,
+  "current_revision": "d0b7024aefc1741b1ca19a1b4d4a459e63e7d7e0",
+  "current_tracked_files": 453,
+  "governance_additions": [
+    "docs/PROJECT_STATE.md",
+    "docs/audit/2026-11-20-architecture-and-dependency-audit.md",
+    "docs/audit/2026-11-20-branch-inventory-and-cleanup-manifest.md",
+    "docs/audit/2026-11-20-file-audit-report.md",
+    "docs/audit/2026-11-20-preservation-verification-record.md",
+    "docs/audit/file_inventory.json"
+  ],
+  "total_tracked_files": 453,
+  "stats_by_classification": {
+    "ACTIVE": 85,
+    "SUPPORTING": 61,
+    "REQUIRED": 307
+  },
+  "stats_by_component": {
+    "project/root-config": 13,
+    "ci/workflows": 3,
+    "backend/database-migrations": 12,
+    "assets/brand": 2,
+    "docs/specifications": 8,
+    "docs/audit": 5,
+    "docs/decisions": 6,
+    "docs/evaluation": 18,
+    "frontend/config": 11,
+    "desktop/tauri-rust": 67,
+    "frontend/app-root": 3,
+    "frontend/__tests__": 18,
+    "frontend/api": 4,
+    "frontend/companion": 1,
+    "frontend/components": 11,
+    "frontend/context": 1,
+    "frontend/styles": 1,
+    "frontend/test": 1,
+    "frontend/types": 1,
+    "backend/core": 7,
+    "backend/api": 15,
+    "backend/browser": 7,
+    "backend/capabilities": 25,
+    "backend/cli": 2,
+    "backend/db": 4,
+    "backend/filesystem": 6,
+    "backend/homeassistant": 10,
+    "backend/models": 18,
+    "backend/os_automation": 8,
+    "backend/perception": 11,
+    "backend/providers": 8,
+    "backend/repositories": 16,
+    "backend/scheduler": 7,
+    "backend/schemas": 16,
+    "backend/services": 10,
+    "backend/workflow": 13,
+    "automation/scripts": 3,
+    "testing/backend": 63,
+    "tools/general": 1,
+    "tools/bench": 8,
+    "tools/packaging": 4,
+    "tools/whisper_shim": 5
+  },
+  "untracked_count": 73,
+  "untracked_items": [
+    ".agent/",
+    ".agents/",
+    ".gemini/",
+    ".gsd/",
+    "GSD-STYLE.md",
+    "PROJECT_RULES.md",
+    "VERSION",
+    "adapters/",
+    "chat-styles.css",
+    "chat_css_part1.txt",
+    "chat_css_part2.txt",
+    "check_classes.py",
+    "check_css_braces.py",
+    "check_css_errors.py",
+    "check_git_state.py",
+    "check_missing.py",
+    "check_state.py",
+    "check_voice.py",
+    "commit_msg.txt",
+    "complete_verify.py",
+    "create_clean_branch.py",
+    "debug_bytes.py",
+    "debug_regex.py",
+    "debug_regex2.py",
+    "debug_regex3.py",
+    "find_classes.py",
+    "fix_all_semicolons.py",
+    "fix_and_build.py",
+    "fix_css.py",
+    "frontend/src/components/status/SystemStatus.tsx.bak",
+    "frontend/src/components/status/SystemStatus.tsx.bak2",
+    "frontend/src/styles/index_new.css",
+    "frontend/src/styles/operational-workspaces.css",
+    "generate_lock.py",
+    "missing_css.txt",
+    "model_capabilities.yaml",
+    "new_commit_msg.txt",
+    "package.json",
+    "pr_body.md",
+    "quick_check.py",
+    "run_git.py",
+    "run_test.py",
+    "scripts/search_repo.ps1",
+    "scripts/search_repo.sh",
+    "scripts/setup_search.ps1",
+    "scripts/setup_search.sh",
+    "scripts/validate-agents.ps1",
+    "scripts/validate-agents.sh",
+    "scripts/validate-all.ps1",
+    "scripts/validate-all.sh",
+    "scripts/validate-encoding.ps1",
+    "scripts/validate-encoding.sh",
+    "scripts/validate-skills.ps1",
+    "scripts/validate-skills.sh",
+    "scripts/validate-templates.ps1",
+    "scripts/validate-templates.sh",
+    "scripts/validate-workflows.ps1",
+    "scripts/validate-workflows.sh",
+    "system_status_part1.tsx",
+    "system_status_part2.tsx",
+    "temp_css.txt",
+    "temp_wheels/",
+    "test_lock.py",
+    "test_lock2.py",
+    "verify_changes.py",
+    "verify_css.py",
+    "write_approval_inbox.py",
+    "write_chat_css.py",
+    "write_chat_css2.py",
+    "write_css.py",
+    "write_inbox.py",
+    "write_part1.py",
+    "write_system_status.py"
+  ],
+  "ignored_count": 60,
+  "ignored_items": [
+    ".pytest_cache/",
+    ".ruff_cache/",
+    ".venv/",
+    ".vscode/",
+    "PICO_backup_recoverable/",
+    "PICO_publication/",
+    "alembic/__pycache__/",
+    "alembic/versions/__pycache__/",
+    "bench_reports/",
+    "frontend/dist/",
+    "frontend/node_modules/",
+    "frontend/src-tauri/gen/",
+    "frontend/src-tauri/staged/",
+    "frontend/src-tauri/target/",
+    "frontend/tsconfig.tsbuildinfo",
+    "pico.db",
+    "pico.db.migration.lock",
+    "pico/__pycache__/",
+    "pico/api/__pycache__/",
+    "pico/browser/__pycache__/",
+    "pico/capabilities/__pycache__/",
+    "pico/capabilities/browser/__pycache__/",
+    "pico/capabilities/core/__pycache__/",
+    "pico/capabilities/database/__pycache__/",
+    "pico/capabilities/filesystem/__pycache__/",
+    "pico/capabilities/homeassistant/__pycache__/",
+    "pico/capabilities/os/__pycache__/",
+    "pico/capabilities/perception/__pycache__/",
+    "pico/capabilities/system/__pycache__/",
+    "pico/capabilities/testing/__pycache__/",
+    "pico/cli/__pycache__/",
+    "pico/core/__pycache__/",
+    "pico/db/__pycache__/",
+    "pico/filesystem/__pycache__/",
+    "pico/homeassistant/__pycache__/",
+    "pico/models/__pycache__/",
+    "pico/os_automation/__pycache__/",
+    "pico/perception/__pycache__/",
+    "pico/perception/audio/__pycache__/",
+    "pico/perception/environmental/__pycache__/",
+    "pico/perception/motion/__pycache__/",
+    "pico/perception/vision/__pycache__/",
+    "pico/providers/__pycache__/",
+    "pico/repositories/__pycache__/",
+    "pico/scheduler/__pycache__/",
+    "pico/schemas/__pycache__/",
+    "pico/services/__pycache__/",
+    "pico/workflow/__pycache__/",
+    "pico/workflow/compensation/__pycache__/",
+    "pico/workflow/verification/__pycache__/",
+    "temp_diag.db",
+    "temp_diag.db-shm",
+    "temp_diag.db-wal",
+    "temp_diag2.db-shm",
+    "temp_diag2.db-wal",
+    "tests/__pycache__/",
+    "tests/qualification/__pycache__/",
+    "tools/__pycache__/",
+    "tools/bench/__pycache__/",
+    "tools/packaging/__pycache__/"
+  ],
+  "files": [
+    {
+      "path": ".env.example",
+      "size": 2368,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": ".github/dependabot.yml",
+      "size": 417,
+      "lines": 19,
+      "component": "ci/workflows",
+      "classification": "SUPPORTING",
+      "reason": "CI/CD: GitHub Actions continuous integration and qualification workflows."
+    },
+    {
+      "path": ".github/pull_request_template.md",
+      "size": 1629,
+      "lines": 37,
+      "component": "ci/workflows",
+      "classification": "SUPPORTING",
+      "reason": "CI/CD: GitHub Actions continuous integration and qualification workflows."
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "size": 12082,
+      "lines": 345,
+      "component": "ci/workflows",
+      "classification": "SUPPORTING",
+      "reason": "CI/CD: GitHub Actions continuous integration and qualification workflows."
+    },
+    {
+      "path": ".gitignore",
+      "size": 986,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "AGENTS.md",
+      "size": 7906,
+      "lines": 97,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "CITATION.cff",
+      "size": 683,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "CODE_OF_CONDUCT.md",
+      "size": 2550,
+      "lines": 39,
+      "component": "project/root-config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "size": 7408,
+      "lines": 100,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "LICENSE",
+      "size": 1085,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "README.md",
+      "size": 18223,
+      "lines": 272,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "SECURITY.md",
+      "size": 3244,
+      "lines": 47,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "alembic.ini",
+      "size": 5157,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "alembic/README",
+      "size": 38,
+      "lines": 0,
+      "component": "backend/database-migrations",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "alembic/env.py",
+      "size": 1825,
+      "lines": 60,
+      "component": "backend/database-migrations",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "alembic/script.py.mako",
+      "size": 732,
+      "lines": 0,
+      "component": "backend/database-migrations",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "alembic/versions/2a021f70a1f2_add_memory_subsystem_tables.py",
+      "size": 10779,
+      "lines": 184,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/3c659cf0ae57_initial_core_persistence_schema.py",
+      "size": 5937,
+      "lines": 119,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/3d849fa021bc_add_tool_execution_and_event_ledger_tables.py",
+      "size": 6154,
+      "lines": 101,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/4e195bc031da_add_perception_events_table.py",
+      "size": 3033,
+      "lines": 57,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/5f284da042eb_add_workflow_tables.py",
+      "size": 5678,
+      "lines": 96,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/849ac33a5a7a_add_routing_decisions_table.py",
+      "size": 3321,
+      "lines": 68,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/a1b2c3d4e5f6_add_workflow_verification_and_compensation_tables.py",
+      "size": 6237,
+      "lines": 124,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/b2c3d4e5f6a7_add_operator_pairing_and_session_tables.py",
+      "size": 2769,
+      "lines": 65,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "alembic/versions/c3d4e5f6a7b8_add_voice_session_delivery_unique_index.py",
+      "size": 882,
+      "lines": 36,
+      "component": "backend/database-migrations",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "assets/brand/pico-logo.jpg",
+      "size": 5430,
+      "lines": 0,
+      "component": "assets/brand",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "assets/brand/pico-logo.png",
+      "size": 159003,
+      "lines": 0,
+      "component": "assets/brand",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "docs/PROJECT_STATE.md",
+      "size": 10491,
+      "lines": 60,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/api-contract.md",
+      "size": 96680,
+      "lines": 1584,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/architecture.md",
+      "size": 103222,
+      "lines": 740,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-architecture-and-dependency-audit.md",
+      "size": 9624,
+      "lines": 124,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-branch-inventory-and-cleanup-manifest.md",
+      "size": 14472,
+      "lines": 106,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-file-audit-report.md",
+      "size": 8321,
+      "lines": 130,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-preservation-verification-record.md",
+      "size": 4155,
+      "lines": 61,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/file_inventory.json",
+      "size": 123896,
+      "lines": 3776,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/commissioning-runbook.md",
+      "size": 12378,
+      "lines": 211,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/data-model.md",
+      "size": 29322,
+      "lines": 411,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/decisions/0001-windows-desktop-companion-architecture.md",
+      "size": 50438,
+      "lines": 442,
+      "component": "docs/decisions",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/decisions/0002-p11-2-2-secure-loopback-bridge-qualification.md",
+      "size": 70292,
+      "lines": 455,
+      "component": "docs/decisions",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/decisions/0003-p11-2-2-2-native-proxy-security-architecture.md",
+      "size": 35838,
+      "lines": 421,
+      "component": "docs/decisions",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/decisions/0004-native-idle-companion-and-deferred-command-center.md",
+      "size": 14817,
+      "lines": 180,
+      "component": "docs/decisions",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/decisions/0005-local-voice-engine-selection-and-hardware-qualification.md",
+      "size": 24953,
+      "lines": 224,
+      "component": "docs/decisions",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/decisions/0006-proposal-p11-3-voice-qualification-promotion-rules.md",
+      "size": 51082,
+      "lines": 473,
+      "component": "docs/decisions",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/README.md",
+      "size": 4232,
+      "lines": 83,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/cases/cases.json",
+      "size": 15125,
+      "lines": 365,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/native-expressive-eyes-audit.md",
+      "size": 5240,
+      "lines": 60,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/native-expressive-eyes-evolution.md",
+      "size": 10419,
+      "lines": 119,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/01_neutral.png",
+      "size": 5207,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/02_blink.png",
+      "size": 3343,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/03_focused_verifying.png",
+      "size": 5650,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/04_waking_up_starting.png",
+      "size": 3510,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/05_curious.png",
+      "size": 7889,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/06_attentive.png",
+      "size": 5705,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/07_happy.png",
+      "size": 4902,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/08_confused.png",
+      "size": 7710,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/09_concerned_error.png",
+      "size": 5244,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/10_resting.png",
+      "size": 1673,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/screenshots/11_thinking.png",
+      "size": 5319,
+      "lines": 0,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/voice-engine-qualification.md",
+      "size": 17847,
+      "lines": 197,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/voice-qualification-results.md",
+      "size": 16007,
+      "lines": 159,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/evaluation/voice_corpus_manifest.json",
+      "size": 8675,
+      "lines": 177,
+      "component": "docs/evaluation",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/implementation-plan.md",
+      "size": 94177,
+      "lines": 469,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/model-gateway-design.md",
+      "size": 9586,
+      "lines": 179,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/security-and-risk-register.md",
+      "size": 75038,
+      "lines": 263,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "frontend/.npmrc",
+      "size": 33,
+      "lines": 0,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/DEPLOYMENT.md",
+      "size": 1896,
+      "lines": 32,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/index.html",
+      "size": 649,
+      "lines": 14,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/package.json",
+      "size": 1109,
+      "lines": 38,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/pnpm-lock.yaml",
+      "size": 54136,
+      "lines": 1593,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/pnpm-workspace.yaml",
+      "size": 31,
+      "lines": 2,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/public/sw.js",
+      "size": 10085,
+      "lines": 0,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/src-tauri/.gitignore",
+      "size": 90,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/Cargo.lock",
+      "size": 108669,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/Cargo.toml",
+      "size": 773,
+      "lines": 27,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/build.rs",
+      "size": 43,
+      "lines": 3,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/capabilities/default.json",
+      "size": 375,
+      "lines": 14,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/128x128.png",
+      "size": 18159,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/128x128@2x.png",
+      "size": 53896,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/32x32.png",
+      "size": 2321,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/64x64.png",
+      "size": 6450,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square107x107Logo.png",
+      "size": 13773,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square142x142Logo.png",
+      "size": 21249,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square150x150Logo.png",
+      "size": 23325,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square284x284Logo.png",
+      "size": 63591,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square30x30Logo.png",
+      "size": 2097,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square310x310Logo.png",
+      "size": 72250,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square44x44Logo.png",
+      "size": 3660,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square71x71Logo.png",
+      "size": 7292,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/Square89x89Logo.png",
+      "size": 10446,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/StoreLogo.png",
+      "size": 4459,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-anydpi-v26/ic_launcher.xml",
+      "size": 265,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-hdpi/ic_launcher.png",
+      "size": 6946,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-hdpi/ic_launcher_foreground.png",
+      "size": 26391,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-hdpi/ic_launcher_round.png",
+      "size": 7671,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-mdpi/ic_launcher.png",
+      "size": 3906,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-mdpi/ic_launcher_foreground.png",
+      "size": 13760,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-mdpi/ic_launcher_round.png",
+      "size": 4143,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xhdpi/ic_launcher.png",
+      "size": 10708,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xhdpi/ic_launcher_foreground.png",
+      "size": 41221,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xhdpi/ic_launcher_round.png",
+      "size": 12380,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher.png",
+      "size": 19282,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher_foreground.png",
+      "size": 77482,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher_round.png",
+      "size": 22550,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher.png",
+      "size": 30249,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_foreground.png",
+      "size": 119729,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_round.png",
+      "size": 34812,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/android/values/ic_launcher_background.xml",
+      "size": 121,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/icon.icns",
+      "size": 842361,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/icon.ico",
+      "size": 71328,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/icon.png",
+      "size": 131050,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-20x20@1x.png",
+      "size": 1007,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-20x20@2x-1.png",
+      "size": 2889,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-20x20@2x.png",
+      "size": 2889,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-20x20@3x.png",
+      "size": 5223,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-29x29@1x.png",
+      "size": 1793,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-29x29@2x-1.png",
+      "size": 5038,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-29x29@2x.png",
+      "size": 5038,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-29x29@3x.png",
+      "size": 9032,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-40x40@1x.png",
+      "size": 2889,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-40x40@2x-1.png",
+      "size": 7941,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-40x40@2x.png",
+      "size": 7941,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-40x40@3x.png",
+      "size": 15045,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-512@2x.png",
+      "size": 414148,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-60x60@2x.png",
+      "size": 15045,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-60x60@3x.png",
+      "size": 29097,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-76x76@1x.png",
+      "size": 7404,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-76x76@2x.png",
+      "size": 22036,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/icons/ios/AppIcon-83.5x83.5@2x.png",
+      "size": 25795,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/nsis-hooks.nsh",
+      "size": 449,
+      "lines": 0,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/autostart.rs",
+      "size": 11657,
+      "lines": 394,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/companion_render.rs",
+      "size": 118656,
+      "lines": 3138,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/lib.rs",
+      "size": 87302,
+      "lines": 2184,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/main.rs",
+      "size": 194,
+      "lines": 6,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/ram_qualification.rs",
+      "size": 6578,
+      "lines": 159,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/single_instance.rs",
+      "size": 3465,
+      "lines": 112,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/supervisor.rs",
+      "size": 92515,
+      "lines": 2537,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/src/window_lifecycle.rs",
+      "size": 13001,
+      "lines": 338,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src-tauri/tauri.conf.json",
+      "size": 1832,
+      "lines": 47,
+      "component": "desktop/tauri-rust",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/App.tsx",
+      "size": 6501,
+      "lines": 171,
+      "component": "frontend/app-root",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/approvals.test.tsx",
+      "size": 9861,
+      "lines": 280,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/autostart.test.ts",
+      "size": 2065,
+      "lines": 61,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/chat.test.tsx",
+      "size": 33020,
+      "lines": 843,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/companion_presence.test.tsx",
+      "size": 7858,
+      "lines": 229,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/companion_state_machine.test.ts",
+      "size": 10882,
+      "lines": 256,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/connectivity-context.test.tsx",
+      "size": 27049,
+      "lines": 739,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/connectivity.test.ts",
+      "size": 15730,
+      "lines": 415,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/desktop-shell.test.tsx",
+      "size": 9829,
+      "lines": 274,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/memory.test.tsx",
+      "size": 7502,
+      "lines": 209,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/offline-shell.test.ts",
+      "size": 16748,
+      "lines": 379,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/operator_inbox_recovery.test.tsx",
+      "size": 29528,
+      "lines": 813,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/resilience.test.tsx",
+      "size": 18540,
+      "lines": 509,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/sse.test.ts",
+      "size": 3996,
+      "lines": 104,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/standalone_execution_lifecycle.test.tsx",
+      "size": 16274,
+      "lines": 443,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/tauri_bridge_integration.test.ts",
+      "size": 10766,
+      "lines": 252,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/voice.test.tsx",
+      "size": 13578,
+      "lines": 380,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/workflow_synthesis.test.tsx",
+      "size": 25535,
+      "lines": 661,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/__tests__/workflows.test.tsx",
+      "size": 14699,
+      "lines": 406,
+      "component": "frontend/__tests__",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "size": 17013,
+      "lines": 480,
+      "component": "frontend/api",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/api/connectivity.ts",
+      "size": 11374,
+      "lines": 349,
+      "component": "frontend/api",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/api/errors.ts",
+      "size": 3449,
+      "lines": 107,
+      "component": "frontend/api",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/api/sse.ts",
+      "size": 5561,
+      "lines": 186,
+      "component": "frontend/api",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/companion/stateMachine.ts",
+      "size": 9532,
+      "lines": 262,
+      "component": "frontend/companion",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/approvals/ApprovalInbox.tsx",
+      "size": 70312,
+      "lines": 1640,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/chat/ChatPanel.tsx",
+      "size": 44650,
+      "lines": 1054,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/companion/CompanionEyes.tsx",
+      "size": 7070,
+      "lines": 229,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/companion/CompanionPresence.tsx",
+      "size": 4344,
+      "lines": 133,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/layout/AppLayout.tsx",
+      "size": 11095,
+      "lines": 319,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/layout/ConnectivityBanner.tsx",
+      "size": 3809,
+      "lines": 103,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/memory/MemoryInspector.tsx",
+      "size": 18824,
+      "lines": 433,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/operator/PairingModal.tsx",
+      "size": 8119,
+      "lines": 206,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/status/SystemStatus.tsx",
+      "size": 15114,
+      "lines": 310,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/voice/VoiceControl.tsx",
+      "size": 13799,
+      "lines": 348,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/components/workflows/WorkflowTimeline.tsx",
+      "size": 33279,
+      "lines": 728,
+      "component": "frontend/components",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/context/ConnectivityContext.tsx",
+      "size": 8402,
+      "lines": 250,
+      "component": "frontend/context",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/main.tsx",
+      "size": 1185,
+      "lines": 35,
+      "component": "frontend/app-root",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/styles/index.css",
+      "size": 22843,
+      "lines": 1022,
+      "component": "frontend/styles",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/test/setup.ts",
+      "size": 534,
+      "lines": 12,
+      "component": "frontend/test",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/types/index.ts",
+      "size": 7783,
+      "lines": 296,
+      "component": "frontend/types",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/src/vite-env.d.ts",
+      "size": 71,
+      "lines": 2,
+      "component": "frontend/app-root",
+      "classification": "REQUIRED",
+      "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
+    },
+    {
+      "path": "frontend/tsconfig.json",
+      "size": 529,
+      "lines": 20,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/vercel.json",
+      "size": 182,
+      "lines": 6,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/vite.config.ts",
+      "size": 462,
+      "lines": 23,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "frontend/vitest.config.ts",
+      "size": 282,
+      "lines": 12,
+      "component": "frontend/config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "pico/__init__.py",
+      "size": 84,
+      "lines": 3,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/__init__.py",
+      "size": 645,
+      "lines": 19,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/bridge.py",
+      "size": 8907,
+      "lines": 213,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/chat.py",
+      "size": 14735,
+      "lines": 325,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/conversations.py",
+      "size": 2553,
+      "lines": 90,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/filesystem.py",
+      "size": 6461,
+      "lines": 176,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/health.py",
+      "size": 916,
+      "lines": 34,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/homeassistant.py",
+      "size": 27432,
+      "lines": 671,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/memory.py",
+      "size": 12666,
+      "lines": 389,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/operator.py",
+      "size": 10114,
+      "lines": 281,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/perception.py",
+      "size": 12057,
+      "lines": 343,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/projects.py",
+      "size": 1787,
+      "lines": 69,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/scheduler.py",
+      "size": 1802,
+      "lines": 39,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/tasks.py",
+      "size": 1954,
+      "lines": 79,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/tools.py",
+      "size": 14419,
+      "lines": 386,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/api/workflows.py",
+      "size": 11029,
+      "lines": 311,
+      "component": "backend/api",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/__init__.py",
+      "size": 1128,
+      "lines": 43,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/adapter.py",
+      "size": 864,
+      "lines": 28,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/contracts.py",
+      "size": 2370,
+      "lines": 49,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/fake.py",
+      "size": 8331,
+      "lines": 217,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/manager.py",
+      "size": 1820,
+      "lines": 49,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/playwright_adapter.py",
+      "size": 10986,
+      "lines": 245,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/browser/security.py",
+      "size": 9962,
+      "lines": 264,
+      "component": "backend/browser",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/__init__.py",
+      "size": 5662,
+      "lines": 141,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/base.py",
+      "size": 2944,
+      "lines": 98,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/browser/__init__.py",
+      "size": 206,
+      "lines": 8,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/browser/open_page.py",
+      "size": 5286,
+      "lines": 133,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/core/calculator.py",
+      "size": 4637,
+      "lines": 128,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/core/model_infer.py",
+      "size": 6920,
+      "lines": 191,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/core/validate_json.py",
+      "size": 4330,
+      "lines": 121,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/database/read_project.py",
+      "size": 3098,
+      "lines": 89,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/database/read_task.py",
+      "size": 3133,
+      "lines": 91,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/filesystem/__init__.py",
+      "size": 994,
+      "lines": 37,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/filesystem/apply_staged_diff.py",
+      "size": 12439,
+      "lines": 285,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/filesystem/inspect_diff.py",
+      "size": 3465,
+      "lines": 96,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/filesystem/rollback_staged_diff.py",
+      "size": 10974,
+      "lines": 256,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/filesystem/stage_diff.py",
+      "size": 3651,
+      "lines": 102,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/homeassistant/__init__.py",
+      "size": 1242,
+      "lines": 31,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/homeassistant/ha_actuation.py",
+      "size": 47579,
+      "lines": 1089,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/homeassistant/ha_capabilities.py",
+      "size": 7374,
+      "lines": 216,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/homeassistant/ha_readiness.py",
+      "size": 6678,
+      "lines": 182,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/os/__init__.py",
+      "size": 542,
+      "lines": 21,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/os/inspect_windows.py",
+      "size": 4666,
+      "lines": 113,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/os/launch_application.py",
+      "size": 10929,
+      "lines": 262,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/perception/perception_capabilities.py",
+      "size": 12428,
+      "lines": 334,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/registry.py",
+      "size": 2461,
+      "lines": 55,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/system/diagnostics.py",
+      "size": 2699,
+      "lines": 82,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/capabilities/testing/test_capabilities.py",
+      "size": 7289,
+      "lines": 224,
+      "component": "backend/capabilities",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/cli/__init__.py",
+      "size": 25,
+      "lines": 1,
+      "component": "backend/cli",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/cli/pair.py",
+      "size": 1057,
+      "lines": 35,
+      "component": "backend/cli",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/core/bridge.py",
+      "size": 15071,
+      "lines": 406,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/core/config.py",
+      "size": 6413,
+      "lines": 155,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/core/errors.py",
+      "size": 2113,
+      "lines": 67,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/core/id_gen.py",
+      "size": 281,
+      "lines": 11,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/core/provenance.py",
+      "size": 7685,
+      "lines": 176,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/db/base.py",
+      "size": 141,
+      "lines": 6,
+      "component": "backend/db",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/db/legacy_baseline_manifest.py",
+      "size": 34862,
+      "lines": 646,
+      "component": "backend/db",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/db/seed.py",
+      "size": 2527,
+      "lines": 78,
+      "component": "backend/db",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/db/session.py",
+      "size": 17882,
+      "lines": 413,
+      "component": "backend/db",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/filesystem/__init__.py",
+      "size": 1446,
+      "lines": 53,
+      "component": "backend/filesystem",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/filesystem/adapter.py",
+      "size": 47270,
+      "lines": 1014,
+      "component": "backend/filesystem",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/filesystem/contracts.py",
+      "size": 6583,
+      "lines": 192,
+      "component": "backend/filesystem",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/filesystem/diff_utils.py",
+      "size": 1846,
+      "lines": 54,
+      "component": "backend/filesystem",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/filesystem/roots.py",
+      "size": 7601,
+      "lines": 167,
+      "component": "backend/filesystem",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/filesystem/staging.py",
+      "size": 4425,
+      "lines": 119,
+      "component": "backend/filesystem",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/__init__.py",
+      "size": 3058,
+      "lines": 93,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/actuation.py",
+      "size": 81546,
+      "lines": 1767,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/classification.py",
+      "size": 4240,
+      "lines": 117,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/client.py",
+      "size": 15691,
+      "lines": 366,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/climate.py",
+      "size": 75315,
+      "lines": 1656,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/contracts.py",
+      "size": 12292,
+      "lines": 364,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/readiness.py",
+      "size": 79179,
+      "lines": 1528,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/sanitizer.py",
+      "size": 5207,
+      "lines": 167,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/service.py",
+      "size": 5150,
+      "lines": 118,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/homeassistant/ws_client.py",
+      "size": 22082,
+      "lines": 524,
+      "component": "backend/homeassistant",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/main.py",
+      "size": 10354,
+      "lines": 267,
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/__init__.py",
+      "size": 1442,
+      "lines": 42,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/conversation.py",
+      "size": 1345,
+      "lines": 41,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/episodic_memory.py",
+      "size": 2075,
+      "lines": 54,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/event_ledger.py",
+      "size": 1869,
+      "lines": 51,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/message.py",
+      "size": 1408,
+      "lines": 41,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/operator_session.py",
+      "size": 1948,
+      "lines": 49,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/perception_event.py",
+      "size": 1883,
+      "lines": 39,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/procedural_memory.py",
+      "size": 2110,
+      "lines": 43,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/project.py",
+      "size": 1265,
+      "lines": 37,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/routing_decision.py",
+      "size": 2352,
+      "lines": 51,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/semantic_memory.py",
+      "size": 2344,
+      "lines": 59,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/staged_diff.py",
+      "size": 2383,
+      "lines": 45,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/task.py",
+      "size": 2166,
+      "lines": 63,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/tool_execution.py",
+      "size": 3373,
+      "lines": 67,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/workflow.py",
+      "size": 5323,
+      "lines": 116,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/workflow_compensation.py",
+      "size": 3258,
+      "lines": 79,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/workflow_verification.py",
+      "size": 3157,
+      "lines": 74,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/models/working_memory.py",
+      "size": 2232,
+      "lines": 59,
+      "component": "backend/models",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/__init__.py",
+      "size": 1357,
+      "lines": 45,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/adapter.py",
+      "size": 1111,
+      "lines": 39,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/allowlist.py",
+      "size": 7638,
+      "lines": 213,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/contracts.py",
+      "size": 2847,
+      "lines": 66,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/fake.py",
+      "size": 6872,
+      "lines": 171,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/manager.py",
+      "size": 1561,
+      "lines": 38,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/sanitization.py",
+      "size": 1488,
+      "lines": 61,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/os_automation/windows.py",
+      "size": 10230,
+      "lines": 264,
+      "component": "backend/os_automation",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/__init__.py",
+      "size": 612,
+      "lines": 25,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/audio/adapter.py",
+      "size": 21500,
+      "lines": 520,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/audio/capture.py",
+      "size": 13791,
+      "lines": 350,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/audio/validation.py",
+      "size": 9470,
+      "lines": 234,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/classification.py",
+      "size": 3846,
+      "lines": 93,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/context.py",
+      "size": 3058,
+      "lines": 60,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/contracts.py",
+      "size": 9175,
+      "lines": 281,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/environmental/adapter.py",
+      "size": 5829,
+      "lines": 131,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/motion/adapter.py",
+      "size": 20122,
+      "lines": 458,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/pipeline.py",
+      "size": 9783,
+      "lines": 239,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/perception/vision/adapter.py",
+      "size": 7624,
+      "lines": 185,
+      "component": "backend/perception",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/__init__.py",
+      "size": 1326,
+      "lines": 51,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/base.py",
+      "size": 1558,
+      "lines": 50,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/cloud.py",
+      "size": 10210,
+      "lines": 257,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/errors.py",
+      "size": 2587,
+      "lines": 63,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/factory.py",
+      "size": 1735,
+      "lines": 44,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/mock.py",
+      "size": 3738,
+      "lines": 114,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/ollama.py",
+      "size": 9822,
+      "lines": 237,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/providers/types.py",
+      "size": 2100,
+      "lines": 73,
+      "component": "backend/providers",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/__init__.py",
+      "size": 1327,
+      "lines": 29,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/base.py",
+      "size": 351,
+      "lines": 13,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/conversation_repo.py",
+      "size": 1579,
+      "lines": 48,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/episodic_memory_repo.py",
+      "size": 4928,
+      "lines": 127,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/event_ledger_repo.py",
+      "size": 3557,
+      "lines": 98,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/message_repo.py",
+      "size": 1917,
+      "lines": 59,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/perception_event_repo.py",
+      "size": 4267,
+      "lines": 106,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/procedural_memory_repo.py",
+      "size": 6340,
+      "lines": 164,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/project_repo.py",
+      "size": 2528,
+      "lines": 77,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/routing_decision_repo.py",
+      "size": 4058,
+      "lines": 112,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/semantic_memory_repo.py",
+      "size": 9450,
+      "lines": 245,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/staged_diff_repo.py",
+      "size": 4066,
+      "lines": 123,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/task_repo.py",
+      "size": 4287,
+      "lines": 123,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/tool_execution_repo.py",
+      "size": 8669,
+      "lines": 241,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/workflow_repo.py",
+      "size": 13891,
+      "lines": 364,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/repositories/working_memory_repo.py",
+      "size": 6206,
+      "lines": 163,
+      "component": "backend/repositories",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/__init__.py",
+      "size": 1348,
+      "lines": 48,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/admission.py",
+      "size": 3942,
+      "lines": 92,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/errors.py",
+      "size": 2008,
+      "lines": 55,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/queue.py",
+      "size": 7745,
+      "lines": 185,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/service.py",
+      "size": 16754,
+      "lines": 401,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/telemetry.py",
+      "size": 1394,
+      "lines": 32,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/scheduler/types.py",
+      "size": 3655,
+      "lines": 117,
+      "component": "backend/scheduler",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/__init__.py",
+      "size": 3173,
+      "lines": 119,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/bench.py",
+      "size": 4555,
+      "lines": 129,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/chat.py",
+      "size": 1018,
+      "lines": 23,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/common.py",
+      "size": 453,
+      "lines": 21,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/context.py",
+      "size": 4654,
+      "lines": 98,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/conversation.py",
+      "size": 693,
+      "lines": 24,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/filesystem.py",
+      "size": 1142,
+      "lines": 34,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/memory.py",
+      "size": 8050,
+      "lines": 203,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/message.py",
+      "size": 1192,
+      "lines": 36,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/operator.py",
+      "size": 667,
+      "lines": 29,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/project.py",
+      "size": 1228,
+      "lines": 37,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/routing_decision.py",
+      "size": 1669,
+      "lines": 59,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/task.py",
+      "size": 2015,
+      "lines": 51,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/tools.py",
+      "size": 3424,
+      "lines": 110,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/workflow.py",
+      "size": 6991,
+      "lines": 196,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/schemas/workflow_synthesis.py",
+      "size": 5429,
+      "lines": 158,
+      "component": "backend/schemas",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/__init__.py",
+      "size": 651,
+      "lines": 18,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/context_compiler.py",
+      "size": 39276,
+      "lines": 833,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/conversation_service.py",
+      "size": 5004,
+      "lines": 133,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/execution_engine.py",
+      "size": 53502,
+      "lines": 1070,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/memory_service.py",
+      "size": 11386,
+      "lines": 293,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/operator_session.py",
+      "size": 13877,
+      "lines": 379,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/project_service.py",
+      "size": 3891,
+      "lines": 110,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/routing_service.py",
+      "size": 7924,
+      "lines": 194,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/task_service.py",
+      "size": 7195,
+      "lines": 189,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/services/voice_service.py",
+      "size": 10591,
+      "lines": 221,
+      "component": "backend/services",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/__init__.py",
+      "size": 325,
+      "lines": 11,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/compensation/__init__.py",
+      "size": 499,
+      "lines": 17,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/compensation/registry.py",
+      "size": 2816,
+      "lines": 70,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/compensation/service.py",
+      "size": 11130,
+      "lines": 240,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/resolver.py",
+      "size": 3082,
+      "lines": 84,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/service.py",
+      "size": 39373,
+      "lines": 893,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/synthesis_gate.py",
+      "size": 17488,
+      "lines": 429,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/synthesis_service.py",
+      "size": 17748,
+      "lines": 381,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/validator.py",
+      "size": 7323,
+      "lines": 177,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/verification/__init__.py",
+      "size": 836,
+      "lines": 29,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/verification/policies.py",
+      "size": 26437,
+      "lines": 563,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/verification/service.py",
+      "size": 6107,
+      "lines": 152,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pico/workflow/verification/types.py",
+      "size": 2511,
+      "lines": 70,
+      "component": "backend/workflow",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
+    },
+    {
+      "path": "pyproject.toml",
+      "size": 771,
+      "lines": 38,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "pytest.ini",
+      "size": 95,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "ACTIVE",
+      "reason": "Active project file."
+    },
+    {
+      "path": "requirements.txt",
+      "size": 181,
+      "lines": 0,
+      "component": "project/root-config",
+      "classification": "REQUIRED",
+      "reason": "Project Governance: Core specification, license, or dependency manifest."
+    },
+    {
+      "path": "scripts/pico-benchmark.ps1",
+      "size": 6137,
+      "lines": 168,
+      "component": "automation/scripts",
+      "classification": "SUPPORTING",
+      "reason": "Automation Scripts: PowerShell / Bash preflight, verification, and benchmark orchestrators."
+    },
+    {
+      "path": "scripts/pico-preflight.ps1",
+      "size": 12680,
+      "lines": 282,
+      "component": "automation/scripts",
+      "classification": "SUPPORTING",
+      "reason": "Automation Scripts: PowerShell / Bash preflight, verification, and benchmark orchestrators."
+    },
+    {
+      "path": "scripts/pico-verify.ps1",
+      "size": 5709,
+      "lines": 129,
+      "component": "automation/scripts",
+      "classification": "SUPPORTING",
+      "reason": "Automation Scripts: PowerShell / Bash preflight, verification, and benchmark orchestrators."
+    },
+    {
+      "path": "tests/conftest.py",
+      "size": 2368,
+      "lines": 82,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/qualification/test_bridge_qualification.py",
+      "size": 64548,
+      "lines": 1587,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_automation_scripts.py",
+      "size": 2911,
+      "lines": 77,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_bench_runner.py",
+      "size": 7667,
+      "lines": 209,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_bridge_proof.py",
+      "size": 34404,
+      "lines": 906,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_browser_automation.py",
+      "size": 20913,
+      "lines": 494,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_capability_registry.py",
+      "size": 2586,
+      "lines": 75,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_chat_stream_api.py",
+      "size": 24918,
+      "lines": 654,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_cloud_provider.py",
+      "size": 10249,
+      "lines": 256,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_context_compiler.py",
+      "size": 29850,
+      "lines": 740,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_conversations.py",
+      "size": 2028,
+      "lines": 60,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_database_migrations_startup.py",
+      "size": 45039,
+      "lines": 1055,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_episodic_memory.py",
+      "size": 3610,
+      "lines": 97,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_event_ledger.py",
+      "size": 2522,
+      "lines": 73,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_filesystem_diffs.py",
+      "size": 80187,
+      "lines": 2017,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_foreign_keys.py",
+      "size": 1209,
+      "lines": 34,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_health.py",
+      "size": 473,
+      "lines": 13,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_actuation.py",
+      "size": 50011,
+      "lines": 1059,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_api.py",
+      "size": 5353,
+      "lines": 135,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_capabilities.py",
+      "size": 2328,
+      "lines": 55,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_classification_and_privacy.py",
+      "size": 4676,
+      "lines": 129,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_climate_actuation.py",
+      "size": 86217,
+      "lines": 1906,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_climate_awareness.py",
+      "size": 105327,
+      "lines": 2501,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_config.py",
+      "size": 4420,
+      "lines": 111,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_hardening.py",
+      "size": 17978,
+      "lines": 463,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_readiness.py",
+      "size": 30790,
+      "lines": 706,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_rest_client.py",
+      "size": 5047,
+      "lines": 135,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_switch_actuation.py",
+      "size": 43071,
+      "lines": 915,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_homeassistant_ws_client.py",
+      "size": 9386,
+      "lines": 259,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_memory_api.py",
+      "size": 5934,
+      "lines": 156,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_memory_context_compiler.py",
+      "size": 6183,
+      "lines": 170,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_messages.py",
+      "size": 4293,
+      "lines": 116,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_mock_provider.py",
+      "size": 3033,
+      "lines": 92,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_ollama_provider.py",
+      "size": 13751,
+      "lines": 339,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_operator_session.py",
+      "size": 23877,
+      "lines": 578,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_os_automation.py",
+      "size": 44526,
+      "lines": 1152,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_p10_3_2_operator_execution_lifecycle.py",
+      "size": 28077,
+      "lines": 592,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_api.py",
+      "size": 8550,
+      "lines": 211,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_audio.py",
+      "size": 5577,
+      "lines": 142,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_environmental.py",
+      "size": 3765,
+      "lines": 104,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_hardening.py",
+      "size": 13644,
+      "lines": 353,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_motion.py",
+      "size": 6847,
+      "lines": 170,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_pipeline_integration.py",
+      "size": 5611,
+      "lines": 149,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_perception_vision.py",
+      "size": 4233,
+      "lines": 115,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_persistence_reopen.py",
+      "size": 5052,
+      "lines": 145,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_procedural_memory.py",
+      "size": 2684,
+      "lines": 67,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_projects.py",
+      "size": 2745,
+      "lines": 74,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_resource_scheduler.py",
+      "size": 26576,
+      "lines": 723,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_routing_persistence.py",
+      "size": 1995,
+      "lines": 59,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_routing_service.py",
+      "size": 7404,
+      "lines": 183,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_semantic_memory.py",
+      "size": 6733,
+      "lines": 202,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_tasks.py",
+      "size": 4388,
+      "lines": 123,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_tool_authorization_approval.py",
+      "size": 4788,
+      "lines": 118,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_tool_execution_engine.py",
+      "size": 5230,
+      "lines": 145,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_tools_api.py",
+      "size": 9634,
+      "lines": 237,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_voice_qualification_prototype.py",
+      "size": 94406,
+      "lines": 2239,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_voice_runtime_slice.py",
+      "size": 64894,
+      "lines": 1579,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_windows_packaging.py",
+      "size": 4936,
+      "lines": 116,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_workflow_authorization.py",
+      "size": 10493,
+      "lines": 253,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_workflow_coordination.py",
+      "size": 20116,
+      "lines": 558,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_workflow_synthesis.py",
+      "size": 116984,
+      "lines": 2836,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_workflow_verification.py",
+      "size": 28323,
+      "lines": 756,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tests/test_working_memory.py",
+      "size": 3980,
+      "lines": 109,
+      "component": "testing/backend",
+      "classification": "ACTIVE",
+      "reason": "Test Suite: Automated qualification test and regression fixture."
+    },
+    {
+      "path": "tools/__init__.py",
+      "size": 48,
+      "lines": 1,
+      "component": "tools/general",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/__init__.py",
+      "size": 61,
+      "lines": 1,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/models.py",
+      "size": 590,
+      "lines": 25,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/prompts.py",
+      "size": 11940,
+      "lines": 255,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/runner.py",
+      "size": 39459,
+      "lines": 891,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/telemetry.py",
+      "size": 7901,
+      "lines": 225,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/voice_bench.py",
+      "size": 82557,
+      "lines": 1748,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/whisper_prototype.py",
+      "size": 14795,
+      "lines": 387,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/bench/workflow_synthesis.py",
+      "size": 43281,
+      "lines": 1030,
+      "component": "tools/bench",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/packaging/provision_nsis.ps1",
+      "size": 8634,
+      "lines": 211,
+      "component": "tools/packaging",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/packaging/qualify_windows_installer.ps1",
+      "size": 30978,
+      "lines": 624,
+      "component": "tools/packaging",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/packaging/requirements-windows-runtime.lock",
+      "size": 2849,
+      "lines": 0,
+      "component": "tools/packaging",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/packaging/stage_windows_bundle.py",
+      "size": 18604,
+      "lines": 466,
+      "component": "tools/packaging",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/whisper_shim/CMakeLists.txt",
+      "size": 1783,
+      "lines": 0,
+      "component": "tools/whisper_shim",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/whisper_shim/README.md",
+      "size": 3544,
+      "lines": 90,
+      "component": "tools/whisper_shim",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/whisper_shim/build_shim.ps1",
+      "size": 4363,
+      "lines": 101,
+      "component": "tools/whisper_shim",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/whisper_shim/pico_whisper_shim.cpp",
+      "size": 4791,
+      "lines": 0,
+      "component": "tools/whisper_shim",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    },
+    {
+      "path": "tools/whisper_shim/pico_whisper_shim.h",
+      "size": 3355,
+      "lines": 0,
+      "component": "tools/whisper_shim",
+      "classification": "SUPPORTING",
+      "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
+    }
+  ],
+  "governance_snapshot_revision": "fa6eb50af677e61630deb680ff5a1c533b2fe3fb",
+  "governance_snapshot_tracked_files": 453,
+  "remediation_revision": "68b8696339108b539ff3d3810fd9e50eac2b40da",
+  "ci_whitespace_remediation_revision": "d0b7024aefc1741b1ca19a1b4d4a459e63e7d7e0",
+  "reviewed_pr_revision": "d0b7024aefc1741b1ca19a1b4d4a459e63e7d7e0",
+  "reviewed_pr_tracked_files": 453,
+  "untracked_categories": {
+    "cline_scratch_scripts": 32,
+    "design_system_scratch": 11,
+    "agent_meta_directories": 6,
+    "validation_scripts": 16,
+    "root_workspace_artifacts": 8
+  }
+}
