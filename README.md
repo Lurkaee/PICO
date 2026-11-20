@@ -32,7 +32,7 @@ PICO **is** an orchestrated coordinator designed to operate reliably under stric
 - **Policy & Approval Engine (Policy A)**: Consequential actions (file mutations, external communications, physical smart-home actuation) require explicit human operator approval via single-use CLI challenges and cryptographic input digests.
 - **Sandboxed Execution Adapters**: Dedicated execution engines for host OS accessibility (`pico/os`), reversible filesystem operations (`pico/filesystem`), sandboxed browser navigation (`pico/browser`), and Home Assistant smart-home devices (`pico/homeassistant`).
 - **Independent Verification**: PICO never assumes an action succeeded simply because a tool was invoked. Every consequential execution is independently verified against authoritative postcondition evidence (HTTP responses, DOM landing, device states) before success is reported.
-- **Multi-Surface Experience Layer**: A polished desktop web command centre (Phase 10), complemented by an expressive native Windows desktop companion with animated eyes and local voice interaction (Milestone P11).
+- **Multi-Surface Experience Layer**: A polished desktop web command centre (Phase 10), complemented by an expressive native Windows desktop companion with animated eyes and authenticated loopback IPC bridge (Milestone P11.2; local voice interaction is under active qualification in Milestone P11.3).
 
 ---
 
@@ -90,7 +90,7 @@ The table below reflects verified repository reality. Distinguish operational fe
 | **P6** | Multimodal Audio Perception | **IMPLEMENTED** | Local `AudioSessionManager` lifecycle, mock STT/TTS adapters, visual microphone states, fail-closed audio validation. | `tests/test_audio_session_lifecycle.py` |
 | **P7** | Home Assistant Integration | **IMPLEMENTED** | Read-only entity discovery, single test light actuation (P7.3), allowlisted climate planning/actuation (P7.4). | `tests/test_homeassistant_*.py` (48 tests) |
 | **P8** | OS, Filesystem & Browser Automation | **IMPLEMENTED** | Accessible OS automation, staged filesystem diffs within project root, Playwright sandboxed browser with origin allowlists. | `tests/test_os_automation.py`, `tests/test_filesystem_*.py` |
-| **P9** | Autonomous Workflow Orchestration | **IMPLEMENTED** | Typed DAG execution engine, Kahn acyclicity verification, Stage A–D verifiers, compensation handlers, independent verification. | `tests/test_workflow_engine.py` (68 tests) |
+| **P9** | Autonomous Workflow Orchestration | **IMPLEMENTED** | Typed DAG execution engine, Kahn acyclicity verification, Stage A–D verifiers, compensation handlers, independent verification. | `tests/test_workflow_coordination.py` (18 tests), `tests/test_resource_scheduler.py` (16 tests), `tests/test_workflow_verification.py` (13 tests) |
 | **P10.1** | Desktop Web Command Centre | **IMPLEMENTED** | Local-first React 19 + Vite 8 UI, streaming SSE chat, execution timeline, memory inspector, approval inbox. | 125 Vitest tests in `frontend/src/__tests__/` |
 | **P10.2** | Offline Shell & Safe Recovery | **IMPLEMENTED** | Service worker offline shell, in-memory draft outbox, ambiguous outcome tagging, session revalidation. | `frontend/src/__tests__/resilience.test.tsx` |
 | **P10.3** | Operator Authorization Closure | **IMPLEMENTED** | Policy A pairing challenge CLI, mandatory physical actuation token gate, standalone dispatch lifecycle. | `tests/test_operator_pairing.py`, `frontend/src/__tests__/approvals.test.tsx` |
@@ -148,7 +148,7 @@ PICO/
 
 - **OS:** Windows 11 (tested and supported).
 - **Python:** 3.12, 3.13, or 3.14 (CI exercises 3.12, 3.13, and 3.14).
-- **Node.js:** 22+ & **pnpm:** 10+ or 12+.
+- **Node.js:** 22+ & **pnpm:** 10 (pinned to 10.28.0 via `frontend/package.json`; pnpm 12 is untested and unsupported).
 - **Rust Toolchain:** (Optional) Required only when compiling the native Tauri desktop shell (`frontend/src-tauri`).
 - **Ollama:** (Optional) Required only for live offline local LLM inference (`qwen3.5:2b`).
 
@@ -207,11 +207,11 @@ python -m uvicorn pico.main:app --host 127.0.0.1 --port 8000
 ```
 
 #### Native Windows Desktop Companion (Tauri 2)
-```powershell
-# Run backend first (Terminal 1)
-python -m uvicorn pico.main:app --host 127.0.0.1 --port 8000
 
-# Run native desktop shell in dev mode (Terminal 2)
+The native Windows companion includes an OS-enforced backend process supervisor (`frontend/src-tauri/src/supervisor.rs`). When launched, the supervisor automatically starts, manages, and contains the PICO Python backend within a Windows Job Object on port 8000 using ephemeral loopback authentication and TCP table verification. **Do not pre-launch uvicorn in a separate terminal**, as the supervisor manages backend lifecycle and port ownership itself.
+
+```powershell
+# Launch native desktop companion (supervisor automatically starts and manages the backend)
 pnpm --dir frontend run tauri dev
 ```
 
@@ -227,7 +227,108 @@ pnpm --dir frontend run tauri dev
 
 ---
 
-## 7. Automated Verification & Testing Commands
+## 7. Policy A Operator Authorization & Pairing
+
+Consequential operations (tool executions, approvals, compensations, and physical actuation) require verified authorization under Policy A. The backend strictly distinguishes between local interactive callers and remote/headless callers:
+
+### Local Desktop & Browser Caller (Paired Operator Session)
+Local interactive clients on loopback (`127.0.0.1` / `localhost`) authorize consequential operations by establishing a paired operator session:
+- A human operator generates a single-use 6-digit challenge via the CLI:
+  ```powershell
+  # In a separate terminal with backend running, generate pairing challenge:
+  python -m pico.cli.pair
+  ```
+- The operator enters the 6-digit code into the UI pairing modal.
+- Challenges are persisted in SQLite (`operator_pairing_challenges`), salt-hashed, expire in 300 seconds, and lock out after 5 consecutive failures.
+- Browser-side code minting is strictly prohibited; the approver identity (`local_operator`) is bound to the challenge at CLI creation.
+- Upon successful verification, the backend issues an `HttpOnly; SameSite=Strict` cookie (`pico_operator_session`) and returns a session-bound CSRF token in JSON. Mutating requests require the matching `X-CSRF-Token` header.
+- **The browser never receives or stores `APPROVAL_SECRET_TOKEN`.**
+
+### Remote or Headless Caller (Approval Token Path)
+Remote systems or headless automation authorize consequential operations using the `X-Pico-Approval-Token` header:
+- The token must match the server-side `APPROVAL_SECRET_TOKEN` configuration.
+- Tokens are compared in constant time over UTF-8 bytes (`secrets.compare_digest`), failing closed on missing, malformed, or mismatched credentials.
+- Remote callers presenting only a browser operator-session cookie are strictly rejected.
+- When using the token path, loopback callers are not exempt from token validation.
+
+### Physical Home Assistant Actuation Configuration Gate
+Physical Home Assistant dispatch (`homeassistant.test_light_actuate`) fails closed unless the server-side `APPROVAL_SECRET_TOKEN` is explicitly configured. A valid paired local session can create and approve the proposal, but it does not waive this dispatch gate:
+1. A valid paired local operator session can authorize creation of a consequential proposal (`POST /api/homeassistant/actuation/propose`).
+2. The proposal is created in `awaiting_approval` status bound to a SHA-256 digest.
+3. The paired local operator may approve the proposal using the existing Policy A flow (`POST /api/operator/approvals/{approval_id}`).
+4. The server-side `APPROVAL_SECRET_TOKEN` configuration gate is independently enforced before physical dispatch.
+5. Without that server-side configuration, physical dispatch fails closed with an authorization error.
+
+---
+
+## 8. Local Hardware Benchmarking & Automation Scripts
+
+### Local Hardware Benchmarking (`tools/bench/`)
+PICO includes a local benchmark runner to measure model readiness and system throughput against hardware qualification thresholds:
+
+```powershell
+# Run offline simulated benchmark (exercises runner tooling only; not hardware evidence)
+python -m tools.bench.runner --mock
+
+# Run live hardware benchmark (3 measured iterations + 1 warmup run)
+python -m tools.bench.runner --model qwen3.5:2b --repetitions 3 --output-dir bench_reports
+
+# Run with quality gate thresholds (e.g. minimum 15 tok/s, max 1200ms TTFT)
+python -m tools.bench.runner --model qwen3.5:2b --repetitions 3 --min-tokens-per-sec 15.0 --max-ttft-ms 1200.0
+```
+
+Benchmark reports are saved to `bench_reports/` as Markdown (`bench_<model>_YYYYMMDD_HHMMSS.md`) and JSON (`bench_<model>_YYYYMMDD_HHMMSS.json`).
+
+### Safe Local Automation Scripts (`scripts/`)
+Repeatable PowerShell scripts with strict safety invariants (no automatic downloads, no silent cloud routing):
+
+- **Local Runtime Preflight (`scripts/pico-preflight.ps1`)**:
+  ```powershell
+  # Verify local prerequisites prior to running live inference
+  .\scripts\pico-preflight.ps1
+
+  # Check targeting a specific model
+  .\scripts\pico-preflight.ps1 -Model "qwen3.5:2b"
+
+  # Simulated mock mode (offline testing)
+  .\scripts\pico-preflight.ps1 -Mock
+
+  # Explicitly opt in to starting Ollama if not running (does not auto-download)
+  .\scripts\pico-preflight.ps1 -StartOllama
+  ```
+
+- **Safe Benchmark Wrapper (`scripts/pico-benchmark.ps1`)**:
+  ```powershell
+  # Run offline simulated benchmark
+  .\scripts\pico-benchmark.ps1 -Mock -Repetitions 3
+
+  # Run live hardware benchmark on local Ollama (requires preflight pass)
+  .\scripts\pico-benchmark.ps1 -Model "qwen3.5:2b" -Repetitions 3
+  ```
+
+---
+
+## 9. Troubleshooting & Common Failure Modes
+
+- **`BENCHMARK BLOCKED`**:
+  - *Cause*: Ollama is unreachable at `http://127.0.0.1:11434` or the requested model is missing.
+  - *Fix*: Start Ollama desktop or run `ollama serve`. If the model is missing, pull it manually: `ollama pull qwen3.5:2b`.
+- **`PROVIDER_CONNECTION_ERROR` (503)**:
+  - *Cause*: Ollama is selected (`DEFAULT_PROVIDER=ollama`) but the daemon is not running.
+  - *Fix*: Start Ollama desktop, run `ollama serve`, or use `.\scripts\pico-preflight.ps1 -StartOllama`.
+- **`PROVIDER_MODEL_NOT_FOUND` (404)**:
+  - *Cause*: Ollama is running but `qwen3.5:2b` has not been pulled.
+  - *Fix*: Run `ollama pull qwen3.5:2b` manually. PICO never triggers automatic background model downloads.
+- **`PROVIDER_CONFIG_ERROR` (503)**:
+  - *Cause*: Cloud profile was requested or routed, but `CLOUD_ENABLED` is false or `CLOUD_API_KEY` is missing.
+  - *Fix*: Enable cloud explicitly via `CLOUD_ENABLED=true` and configure `CLOUD_API_KEY`.
+- **`FOREIGN KEY constraint failed` (404/422)**:
+  - *Cause*: Message or task created with a non-existent conversation or project ID.
+  - *Fix*: Create parent conversation or project record first.
+
+---
+
+## 10. Automated Verification & Testing Commands
 
 To verify system integrity before submitting changes, run the project's standard verification commands:
 
@@ -249,7 +350,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pico-verify.ps1
 
 ---
 
-## 8. Development Workflow & Contribution Rules
+## 11. Development Workflow & Contribution Rules
 
 All contributors (human engineers and AI agents) adhere to the **12-Step Standard Development Workflow** documented in [CONTRIBUTING.md](CONTRIBUTING.md):
 
@@ -261,7 +362,7 @@ All contributors (human engineers and AI agents) adhere to the **12-Step Standar
 
 ---
 
-## 9. Security & Governance
+## 12. Security & Governance
 
 For security vulnerability disclosure, review [SECURITY.md](SECURITY.md).
 For architectural invariants and privacy boundaries, review [AGENTS.md](AGENTS.md).

@@ -11,7 +11,7 @@ The currently documented and CI-tested environment is:
 - Windows 11.
 - Python 3.12 or newer; CI currently exercises Python 3.12, 3.13, and 3.14.
 - Node.js 22+ for the frontend.
-- pnpm 10 or 12 for the frontend, matching the current CI setup.
+- pnpm 10 (pinned to 10.28.0 via `frontend/package.json`), matching the CI workflow. pnpm 12 is untested and unsupported.
 - PowerShell 5.1+ or PowerShell 7+ for the repository verification script.
 
 ### Backend setup
@@ -69,7 +69,7 @@ To ensure high quality, auditable traceability, and collision-free collaboration
    - Governance/chores: `chore/<slug>` (e.g. `chore/dependency-sync`)
 4. **Scope to One Logical Task:** Keep each pull request focused on one reviewable slice. Never bundle unrelated UI styling, backend refactoring, or dependency updates.
 5. **Execute Targeted Tests:** Run specific tests corresponding to the modified subsystem early and frequently.
-6. **Execute Full Qualification Suite:** Verify backend (`python -m pytest`) and frontend (`pnpm test`, `pnpm typecheck`, `pnpm build`) regression suites.
+6. **Execute Full Qualification Suite:** Verify backend (`python -m pytest`) and frontend (`pnpm --dir frontend run test`, `pnpm --dir frontend run typecheck`, `pnpm --dir frontend run build`) regression suites.
 7. **Document Architectural & Behavioral Changes:** Update relevant ADRs in `docs/decisions/`, data contracts in `docs/data-model.md`, or API contracts in `docs/api-contract.md`.
 8. **Inspect Repository Diff:** Run `git diff --check` and `git status` to ensure zero stray files, temporary caches, or untracked test scripts are accidentally staged.
 9. **Open Pull Request with Evidence:** Populate the PR template with exact verification commands, test output summaries, and security/privacy review checklists.

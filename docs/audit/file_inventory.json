@@ -1,47 +1,50 @@
 {
-  "total_tracked_files": 447,
+  "baseline_revision": "36e0e1448a3f815cd5b031b598c1ea6ecfe436a6",
+  "baseline_tracked_files": 447,
+  "current_revision": "fa6eb50af677e61630deb680ff5a1c533b2fe3fb",
+  "current_tracked_files": 453,
+  "governance_additions": [
+    "docs/PROJECT_STATE.md",
+    "docs/audit/2026-11-20-architecture-and-dependency-audit.md",
+    "docs/audit/2026-11-20-branch-inventory-and-cleanup-manifest.md",
+    "docs/audit/2026-11-20-file-audit-report.md",
+    "docs/audit/2026-11-20-preservation-verification-record.md",
+    "docs/audit/file_inventory.json"
+  ],
+  "total_tracked_files": 453,
   "stats_by_classification": {
-    "ACTIVE": 171,
-    "SUPPORTING": 55,
-    "REQUIRED": 221
+    "ACTIVE": 85,
+    "SUPPORTING": 61,
+    "REQUIRED": 307
   },
   "stats_by_component": {
     "project/root-config": 13,
     "ci/workflows": 3,
     "backend/database-migrations": 12,
     "assets/brand": 2,
-    "docs/api-contract.md": 1,
-    "docs/architecture.md": 1,
-    "docs/commissioning-runbook.md": 1,
-    "docs/data-model.md": 1,
+    "docs/specifications": 8,
+    "docs/audit": 5,
     "docs/decisions": 6,
     "docs/evaluation": 18,
-    "docs/implementation-plan.md": 1,
-    "docs/model-gateway-design.md": 1,
-    "docs/security-and-risk-register.md": 1,
     "frontend/config": 11,
     "desktop/tauri-rust": 67,
-    "frontend/App.tsx": 1,
+    "frontend/app-root": 3,
     "frontend/__tests__": 18,
     "frontend/api": 4,
     "frontend/companion": 1,
     "frontend/components": 11,
     "frontend/context": 1,
-    "frontend/main.tsx": 1,
     "frontend/styles": 1,
     "frontend/test": 1,
     "frontend/types": 1,
-    "frontend/vite-env.d.ts": 1,
-    "backend/__init__.py": 1,
+    "backend/core": 7,
     "backend/api": 15,
     "backend/browser": 7,
     "backend/capabilities": 25,
     "backend/cli": 2,
-    "backend/core": 5,
     "backend/db": 4,
     "backend/filesystem": 6,
     "backend/homeassistant": 10,
-    "backend/main.py": 1,
     "backend/models": 18,
     "backend/os_automation": 8,
     "backend/perception": 11,
@@ -53,12 +56,12 @@
     "backend/workflow": 13,
     "automation/scripts": 3,
     "testing/backend": 63,
-    "tools/__init__.py": 1,
+    "tools/general": 1,
     "tools/bench": 8,
     "tools/packaging": 4,
     "tools/whisper_shim": 5
   },
-  "untracked_count": 71,
+  "untracked_count": 73,
   "untracked_items": [
     ".agent/",
     ".agents/",
@@ -90,6 +93,7 @@
     "fix_and_build.py",
     "fix_css.py",
     "frontend/src/components/status/SystemStatus.tsx.bak",
+    "frontend/src/components/status/SystemStatus.tsx.bak2",
     "frontend/src/styles/index_new.css",
     "frontend/src/styles/operational-workspaces.css",
     "generate_lock.py",
@@ -130,6 +134,7 @@
     "write_chat_css2.py",
     "write_css.py",
     "write_inbox.py",
+    "write_part1.py",
     "write_system_status.py"
   ],
   "ignored_count": 60,
@@ -262,8 +267,8 @@
     },
     {
       "path": "CONTRIBUTING.md",
-      "size": 5694,
-      "lines": 91,
+      "size": 7408,
+      "lines": 100,
       "component": "project/root-config",
       "classification": "REQUIRED",
       "reason": "Project Governance: Core specification, license, or dependency manifest."
@@ -278,8 +283,8 @@
     },
     {
       "path": "README.md",
-      "size": 38696,
-      "lines": 529,
+      "size": 18223,
+      "lines": 272,
       "component": "project/root-config",
       "classification": "REQUIRED",
       "reason": "Project Governance: Core specification, license, or dependency manifest."
@@ -413,10 +418,18 @@
       "reason": "Active project file."
     },
     {
+      "path": "docs/PROJECT_STATE.md",
+      "size": 10491,
+      "lines": 60,
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
       "path": "docs/api-contract.md",
       "size": 96680,
       "lines": 1584,
-      "component": "docs/api-contract.md",
+      "component": "docs/specifications",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -424,7 +437,47 @@
       "path": "docs/architecture.md",
       "size": 103222,
       "lines": 740,
-      "component": "docs/architecture.md",
+      "component": "docs/specifications",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-architecture-and-dependency-audit.md",
+      "size": 9624,
+      "lines": 124,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-branch-inventory-and-cleanup-manifest.md",
+      "size": 14472,
+      "lines": 106,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-file-audit-report.md",
+      "size": 8321,
+      "lines": 130,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/2026-11-20-preservation-verification-record.md",
+      "size": 4155,
+      "lines": 61,
+      "component": "docs/audit",
+      "classification": "SUPPORTING",
+      "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
+    },
+    {
+      "path": "docs/audit/file_inventory.json",
+      "size": 123896,
+      "lines": 3776,
+      "component": "docs/audit",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -432,7 +485,7 @@
       "path": "docs/commissioning-runbook.md",
       "size": 12378,
       "lines": 211,
-      "component": "docs/commissioning-runbook.md",
+      "component": "docs/specifications",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -440,7 +493,7 @@
       "path": "docs/data-model.md",
       "size": 29322,
       "lines": 411,
-      "component": "docs/data-model.md",
+      "component": "docs/specifications",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -640,7 +693,7 @@
       "path": "docs/implementation-plan.md",
       "size": 94177,
       "lines": 469,
-      "component": "docs/implementation-plan.md",
+      "component": "docs/specifications",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -648,7 +701,7 @@
       "path": "docs/model-gateway-design.md",
       "size": 9586,
       "lines": 179,
-      "component": "docs/model-gateway-design.md",
+      "component": "docs/specifications",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -656,7 +709,7 @@
       "path": "docs/security-and-risk-register.md",
       "size": 75038,
       "lines": 263,
-      "component": "docs/security-and-risk-register.md",
+      "component": "docs/specifications",
       "classification": "SUPPORTING",
       "reason": "Documentation: Architectural decision records, contracts, or evaluation data."
     },
@@ -1256,7 +1309,7 @@
       "path": "frontend/src/App.tsx",
       "size": 6501,
       "lines": 171,
-      "component": "frontend/App.tsx",
+      "component": "frontend/app-root",
       "classification": "REQUIRED",
       "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
     },
@@ -1544,7 +1597,7 @@
       "path": "frontend/src/main.tsx",
       "size": 1185,
       "lines": 35,
-      "component": "frontend/main.tsx",
+      "component": "frontend/app-root",
       "classification": "REQUIRED",
       "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
     },
@@ -1576,7 +1629,7 @@
       "path": "frontend/src/vite-env.d.ts",
       "size": 71,
       "lines": 2,
-      "component": "frontend/vite-env.d.ts",
+      "component": "frontend/app-root",
       "classification": "REQUIRED",
       "reason": "Desktop Shell / Web UI: Core user-facing interaction layer."
     },
@@ -1616,9 +1669,9 @@
       "path": "pico/__init__.py",
       "size": 84,
       "lines": 3,
-      "component": "backend/__init__.py",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/api/__init__.py",
@@ -1745,56 +1798,56 @@
       "size": 1128,
       "lines": 43,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/browser/adapter.py",
       "size": 864,
       "lines": 28,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/browser/contracts.py",
       "size": 2370,
       "lines": 49,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/browser/fake.py",
       "size": 8331,
       "lines": 217,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/browser/manager.py",
       "size": 1820,
       "lines": 49,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/browser/playwright_adapter.py",
       "size": 10986,
       "lines": 245,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/browser/security.py",
       "size": 9962,
       "lines": 264,
       "component": "backend/browser",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/capabilities/__init__.py",
@@ -2001,16 +2054,16 @@
       "size": 25,
       "lines": 1,
       "component": "backend/cli",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/cli/pair.py",
       "size": 1057,
       "lines": 35,
       "component": "backend/cli",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/core/bridge.py",
@@ -2057,168 +2110,168 @@
       "size": 141,
       "lines": 6,
       "component": "backend/db",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/db/legacy_baseline_manifest.py",
       "size": 34862,
       "lines": 646,
       "component": "backend/db",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/db/seed.py",
       "size": 2527,
       "lines": 78,
       "component": "backend/db",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/db/session.py",
       "size": 17882,
       "lines": 413,
       "component": "backend/db",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/filesystem/__init__.py",
       "size": 1446,
       "lines": 53,
       "component": "backend/filesystem",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/filesystem/adapter.py",
       "size": 47270,
       "lines": 1014,
       "component": "backend/filesystem",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/filesystem/contracts.py",
       "size": 6583,
       "lines": 192,
       "component": "backend/filesystem",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/filesystem/diff_utils.py",
       "size": 1846,
       "lines": 54,
       "component": "backend/filesystem",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/filesystem/roots.py",
       "size": 7601,
       "lines": 167,
       "component": "backend/filesystem",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/filesystem/staging.py",
       "size": 4425,
       "lines": 119,
       "component": "backend/filesystem",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/__init__.py",
       "size": 3058,
       "lines": 93,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/actuation.py",
       "size": 81546,
       "lines": 1767,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/classification.py",
       "size": 4240,
       "lines": 117,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/client.py",
       "size": 15691,
       "lines": 366,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/climate.py",
       "size": 75315,
       "lines": 1656,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/contracts.py",
       "size": 12292,
       "lines": 364,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/readiness.py",
       "size": 79179,
       "lines": 1528,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/sanitizer.py",
       "size": 5207,
       "lines": 167,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/service.py",
       "size": 5150,
       "lines": 118,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/homeassistant/ws_client.py",
       "size": 22082,
       "lines": 524,
       "component": "backend/homeassistant",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/main.py",
       "size": 10354,
       "lines": 267,
-      "component": "backend/main.py",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "component": "backend/core",
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/models/__init__.py",
@@ -2369,152 +2422,152 @@
       "size": 1357,
       "lines": 45,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/adapter.py",
       "size": 1111,
       "lines": 39,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/allowlist.py",
       "size": 7638,
       "lines": 213,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/contracts.py",
       "size": 2847,
       "lines": 66,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/fake.py",
       "size": 6872,
       "lines": 171,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/manager.py",
       "size": 1561,
       "lines": 38,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/sanitization.py",
       "size": 1488,
       "lines": 61,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/os_automation/windows.py",
       "size": 10230,
       "lines": 264,
       "component": "backend/os_automation",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/__init__.py",
       "size": 612,
       "lines": 25,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/audio/adapter.py",
       "size": 21500,
       "lines": 520,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/audio/capture.py",
       "size": 13791,
       "lines": 350,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/audio/validation.py",
       "size": 9470,
       "lines": 234,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/classification.py",
       "size": 3846,
       "lines": 93,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/context.py",
       "size": 3058,
       "lines": 60,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/contracts.py",
       "size": 9175,
       "lines": 281,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/environmental/adapter.py",
       "size": 5829,
       "lines": 131,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/motion/adapter.py",
       "size": 20122,
       "lines": 458,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/pipeline.py",
       "size": 9783,
       "lines": 239,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/perception/vision/adapter.py",
       "size": 7624,
       "lines": 185,
       "component": "backend/perception",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/providers/__init__.py",
@@ -2713,184 +2766,184 @@
       "size": 1348,
       "lines": 48,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/scheduler/admission.py",
       "size": 3942,
       "lines": 92,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/scheduler/errors.py",
       "size": 2008,
       "lines": 55,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/scheduler/queue.py",
       "size": 7745,
       "lines": 185,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/scheduler/service.py",
       "size": 16754,
       "lines": 401,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/scheduler/telemetry.py",
       "size": 1394,
       "lines": 32,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/scheduler/types.py",
       "size": 3655,
       "lines": 117,
       "component": "backend/scheduler",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/__init__.py",
       "size": 3173,
       "lines": 119,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/bench.py",
       "size": 4555,
       "lines": 129,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/chat.py",
       "size": 1018,
       "lines": 23,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/common.py",
       "size": 453,
       "lines": 21,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/context.py",
       "size": 4654,
       "lines": 98,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/conversation.py",
       "size": 693,
       "lines": 24,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/filesystem.py",
       "size": 1142,
       "lines": 34,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/memory.py",
       "size": 8050,
       "lines": 203,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/message.py",
       "size": 1192,
       "lines": 36,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/operator.py",
       "size": 667,
       "lines": 29,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/project.py",
       "size": 1228,
       "lines": 37,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/routing_decision.py",
       "size": 1669,
       "lines": 59,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/task.py",
       "size": 2015,
       "lines": 51,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/tools.py",
       "size": 3424,
       "lines": 110,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/workflow.py",
       "size": 6991,
       "lines": 196,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/schemas/workflow_synthesis.py",
       "size": 5429,
       "lines": 158,
       "component": "backend/schemas",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/services/__init__.py",
@@ -2977,104 +3030,104 @@
       "size": 325,
       "lines": 11,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/compensation/__init__.py",
       "size": 499,
       "lines": 17,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/compensation/registry.py",
       "size": 2816,
       "lines": 70,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/compensation/service.py",
       "size": 11130,
       "lines": 240,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/resolver.py",
       "size": 3082,
       "lines": 84,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/service.py",
       "size": 39373,
       "lines": 893,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/synthesis_gate.py",
       "size": 17488,
       "lines": 429,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/synthesis_service.py",
       "size": 17748,
       "lines": 381,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/validator.py",
       "size": 7323,
       "lines": 177,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/verification/__init__.py",
       "size": 836,
       "lines": 29,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/verification/policies.py",
       "size": 26437,
       "lines": 563,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/verification/service.py",
       "size": 6107,
       "lines": 152,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pico/workflow/verification/types.py",
       "size": 2511,
       "lines": 70,
       "component": "backend/workflow",
-      "classification": "ACTIVE",
-      "reason": "Active project file."
+      "classification": "REQUIRED",
+      "reason": "Runtime Core: Active architectural component essential for PICO operation."
     },
     {
       "path": "pyproject.toml",
@@ -3632,7 +3685,7 @@
       "path": "tools/__init__.py",
       "size": 48,
       "lines": 1,
-      "component": "tools/__init__.py",
+      "component": "tools/general",
       "classification": "SUPPORTING",
       "reason": "Developer Tools: Hardware benchmarking, runtime shims, or packaging isolation."
     },

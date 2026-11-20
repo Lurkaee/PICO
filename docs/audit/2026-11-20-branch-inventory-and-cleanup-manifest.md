@@ -1,14 +1,28 @@
 # PICO Branch Inventory & Consolidation Manifest
-**Execution Date:** 2026-11-20  
-**Repository:** `https://github.com/Lurkaee/PICO`  
-**Agent Role:** Second Antigravity engineering agent (Repository Governance & Stabilization)  
+**Execution Date:** 2026-11-20
+**Last Reconciled:** 2026-11-20 (Governance Audit Correction)
+**Repository:** `https://github.com/Lurkaee/PICO`
+**Agent Role:** Second Antigravity engineering agent (Repository Governance & Stabilization)
 **Policy Checklist:** [x] Backup Bundle Verified | [x] Remote Archival Tags Pushed | [x] Active Worktrees Preserved | [x] 0 Commits Discarded
 
-## 1. Executive Summary
-The repository originally presented **64 unique branch names** across local and remote tracking references (57 remote branches and 42 local branches).
-- **Retained Branches (15 local / 8 remote):** Canonical `main`, active Phase 11.3 development branches (7 branches), active Phase 11.5 perception branch (`docs/p11-5-desktop-perception-spec` in dedicated worktree), Cline frontend redesign & recovery branches (5 branches), and the dedicated governance branch `chore/repository-stabilization-and-governance`.
-- **Archived & Consolidated Branches (50 branches):** 10 branches with unique commits not in default `main` plus 40 fully merged ancestor branches were anchored with permanent annotated Git tags under `refs/tags/archive/*`. All 50 tags were pushed to `origin` and verified before branch deletion.
-- **Deleted Obsolete Tracking References:** 49 remote branch refs on `origin` and 29 local branch refs were safely deleted. No active worktrees, open PRs, or required development lines were disturbed.
+## 1. Executive Summary & Evolution Accounting
+To ensure complete transparency and traceability, branch counts are distinguished across four explicit operational milestones:
+
+1. **Initial Inventory:** 64 distinct branch names (42 local branches and 57 remote tracking branches on `origin`).
+2. **Immediate Post-Consolidation State:**
+   - **Remote Deletions:** 49 obsolete remote branches deleted on `origin` (57 initial - 49 deleted = 8 active canonical branches retained: `main` + 7 Phase 11.3 branches).
+   - **Local Deletions:** 29 obsolete local branches deleted (42 initial - 29 deleted = 13 local branches retained).
+   - **Archival Tag Anchoring:** 50 annotated tags (`refs/tags/archive/*`) created and pushed to GitHub. This accounts for all 49 deleted remote branches plus 1 local-only legacy branch (`master` at commit `990efb14f162c346c7bc9687802c6e06de59f98a`).
+   - **Local vs Remote Deletion Reconciled:** The difference between 49 remote deletions and 29 local deletions is that 15 remote branches were never checked out as local tracking branches, 5 Cline local branches were protected, and 1 local-only branch (`master`) was deleted locally.
+3. **Subsequent Branch Creation & Publication:**
+   - `chore/repository-stabilization-and-governance` was created locally and pushed to `origin` as the dedicated PR #104 working branch (+1 local, +1 remote).
+   - `docs/p11-5-desktop-perception-spec` was preserved in its active desktop worktree (`C:/Users/AYUSH/OneDrive/Desktop/PICO-p11-5-spec`), committed to, and published to `origin` (+1 local worktree, +1 remote).
+4. **Current Status (Reconciled):**
+   - **Current Local Branches:** **15 branches** (13 preserved + 1 governance + 1 Phase 11.5).
+   - **Current Remote Branches:** **10 branches** on GitHub (8 preserved + 1 governance + 1 Phase 11.5).
+
+
+---
 
 ## 2. Classification Criteria
 | Classification | Action | Definition & Criteria |
@@ -19,27 +33,28 @@ The repository originally presented **64 unique branch names** across local and 
 
 ---
 
-## 3. Retained Branches (KEEP)
-| Branch Name | Location | Current SHA | Active Owner / Phase | Justification & Safeguards |
-| :--- | :--- | :--- | :--- | :--- |
-| `docs/p11-3-proposal-review-closure` | both | `869a6615` | Phase 11.3 | Active Phase 11.3 review closure branch |
-| `docs/p11-3-voice-engine-qualification` | both | `dd011634` | Phase 11.3 | Active Phase 11.3 voice engine qualification documentation branch |
-| `docs/p11-5-desktop-perception-spec` | local | `c1131991` | Phase 11.5 | Active Phase 11.5 desktop perception specification branch in dedicated worktree |
-| `feat/frontend-chat-redesign` | local | `7b5c48c2` | Cline | Active Cline frontend redesign branch |
-| `feat/frontend-recovery-a258a04` | local | `a258a04c` | Cline | Active Cline frontend recovery branch |
-| `feature/p11-3-1-voice-runtime-and-capture-slice` | both | `f914f171` | Phase 11.3 | Active Phase 11.3 voice runtime implementation branch |
-| `feature/p11-3-2-native-whisper-qualification` | both | `614319cc` | Phase 11.3 | Active Phase 11.3 native whisper qualification prototype branch |
-| `feature/p11-3-stt-qualification-closure` | both | `4ad5a551` | Phase 11.3 | Active Phase 11.3 STT qualification closure branch |
-| `feature/pic0-frontend-redesign` | local | `6a03a932` | Cline | Active Cline frontend redesign branch |
-| `fix/dependabot-windows-runtime-lock-sync-pr` | local | `b611ea25` | Cline | Active local branch associated with working tree stash |
-| `fix/p11-3-1-post-merge-voice-hardening` | both | `693d3570` | Phase 11.3 | Active Phase 11.3 voice hardening branch |
-| `main` | both | `36e0e144` | Canonical | Default canonical branch |
-| `proposal/p11-3-qualification-promotion-rules` | both | `e06d75ba` | Phase 11.3 | Active Phase 11.3 promotion rules branch |
-| `recovery/pico-frontend-redesign` | local | `6ae32844` | Cline | Active local working tree branch for Cline frontend redesign |
+## 3. Retained Branches (KEEP — Exactly 15 Local / 10 Remote)
+| Branch Name | Location | Local SHA | Remote SHA | Owner / Active Phase | Justification & Safeguards |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `chore/repository-stabilization-and-governance` | both | `fa6eb50a` | `fa6eb50a` | Governance / PR #104 | Dedicated repository stabilization and documentation governance branch |
+| `docs/p11-3-proposal-review-closure` | both | `869a6615` | `869a6615` | Phase 11.3 Voice | Active Phase 11.3 review closure branch |
+| `docs/p11-3-voice-engine-qualification` | both | `dd011634` | `dd011634` | Phase 11.3 Voice | Active Phase 11.3 voice engine qualification documentation branch |
+| `docs/p11-5-desktop-perception-spec` | both | `35e51ddb` | `35e51ddb` | Phase 11.5 Perception | Active Phase 11.5 desktop perception specification branch in dedicated worktree |
+| `feat/frontend-chat-redesign` | local | `7b5c48c2` | `N/A` | Cline Frontend | Active Cline frontend redesign local branch |
+| `feat/frontend-recovery-a258a04` | local | `a258a04c` | `N/A` | Cline Frontend | Active Cline frontend recovery local branch |
+| `feature/p11-3-1-voice-runtime-and-capture-slice` | both | `f914f171` | `f914f171` | Phase 11.3 Voice | Active Phase 11.3 voice runtime implementation branch |
+| `feature/p11-3-2-native-whisper-qualification` | both | `711258df` | `614319cc` | Phase 11.3 Voice | Active Phase 11.3 native whisper qualification prototype branch |
+| `feature/p11-3-stt-qualification-closure` | both | `d965299f` | `4ad5a551` | Phase 11.3 Voice | Active Phase 11.3 STT qualification closure branch |
+| `feature/pic0-frontend-redesign` | local | `6a03a932` | `N/A` | Cline Frontend | Active Cline frontend redesign local branch |
+| `fix/dependabot-windows-runtime-lock-sync-pr` | local | `b611ea25` | `N/A` | Cline Frontend | Active local branch associated with working tree stash |
+| `fix/p11-3-1-post-merge-voice-hardening` | both | `693d3570` | `693d3570` | Phase 11.3 Voice | Active Phase 11.3 voice hardening branch |
+| `main` | both | `00b21e8a` | `36e0e144` | Core / Canonical | Default canonical branch and single source of truth |
+| `proposal/p11-3-qualification-promotion-rules` | both | `b9b629d8` | `e06d75ba` | Phase 11.3 Voice | Active Phase 11.3 promotion rules branch |
+| `recovery/pico-frontend-redesign` | local | `6ae32844` | `N/A` | Cline Frontend | Active working tree branch for Cline frontend redesign on Desktop |
 
 ---
 
-## 4. Archived Branches (Unique Commits Preserved)
+## 4. Archived Branches (Unique Commits Preserved — 10 Branches)
 | Branch Name | Original SHA | Divergence (Ahead/Behind) | Associated PR | Archival Tag | Preserved Content Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `dependabot/pip/fastapi-0.162.2` | `85970c69` | +1 / -59 | PR #83 | `archive/dependabot/pip/fastapi-0.162.2` | Contains 1 unique commit(s) not directly merged to main (PRs: [83]). Must preserve exact commit history via annotated tag before removal. |
@@ -55,7 +70,7 @@ The repository originally presented **64 unique branch names** across local and 
 
 ---
 
-## 5. Consolidated Fully-Merged Branches (DELETE-CANDIDATE)
+## 5. Consolidated Fully-Merged Branches (DELETE-CANDIDATE — 40 Branches)
 | Branch Name | Original SHA | Behind `main` | Merged PR | Archival Tag | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `dependabot/github_actions/actions/checkout-7` | `e4f923aa` | -120 | PR #62 (merged) | `archive/dependabot/github_actions/actions/checkout-7` | Remote ref deleted; SHA anchored by tag |
@@ -103,4 +118,4 @@ The repository originally presented **64 unique branch names** across local and 
 
 ## 6. Remote Verification Evidence
 All 50 archival tags were verified on the remote repository via `git ls-remote --tags origin 'archive/*'`. All 50 tag refs and their dereferenced commit objects resolve to the exact SHAs recorded above.
-Remote branch count was reduced from 57 to 8 active development branches.
+Remote branch count was reduced from 57 to 10 active branches (main, governance, Phase 11.5, and 7 Phase 11.3 branches).

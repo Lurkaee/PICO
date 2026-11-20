@@ -1,6 +1,7 @@
 # PICO Mandatory Preservation & Checkpoint Record
-**Execution Date:** 2026-11-20  
-**Repository:** `https://github.com/Lurkaee/PICO`  
+**Execution Date:** 2026-11-20
+**Last Reconciled:** 2026-11-20 (Governance Audit Correction)
+**Repository:** `https://github.com/Lurkaee/PICO`
 **Location:** Preserved externally in `C:\Users\AYUSH\.gemini\antigravity\scratch\` (outside repository working tree)
 
 ---
@@ -23,21 +24,26 @@ In accordance with mandatory Phase B governance protocols:
 | **Working Tree Status** | `C:\Users\AYUSH\.gemini\antigravity\scratch\working_tree_status.txt` | 3,426 bytes | `cac62b785c9f148c89a70113affe75e833c6264a1af931bcf149581cb722cc97` | Exact status snapshot of dirty and untracked files in Desktop repository. |
 | **GitHub PRs Archive** | `C:\Users\AYUSH\.gemini\antigravity\scratch\github_all_prs.json` | 94,438 bytes | `b1182cdc59061054b20d488a32e61f84c5283172172427db4800fea7d9a2738f` | Comprehensive JSON archive of all 102 pull requests across repository history. |
 
+*(Note on Checksum Reconciliation: The actual bundle SHA-256 is `d6d26b437cc633e739ebdff029c34857baa54dffbcc945f93cc4a03612b3b9db`. An earlier draft of the PR description accidentally cited an errant string `65da8fc4c9441113b5ca7f42ef27f67705fe0bbdb26895c1c8ba6c63cfd0726d`. Both the PR description and this record are now reconciled against the verified on-disk artifact).*
+
 ---
 
-## 3. Git Bundle Verification Output
-The Git bundle was generated using `git bundle create <path> --all` and verified using `git bundle verify <path>`.
+## 3. Git Bundle Verification & Namespace Breakdown
+The Git bundle was verified using `git bundle verify <path>` and its references inspected via `git bundle list-heads <path>`.
 
 ```text
-The bundle contains these 118 refs:
+The bundle contains exactly 118 refs:
   - 42 Local branch heads (refs/heads/*)
-  - 57 Remote tracking branch heads (refs/remotes/origin/*)
-  - 2 Historical tags (refs/tags/*)
-  - 1 Active stash ref (refs/stash)
+  - 58 Remote tracking branch refs (refs/remotes/origin/*, including origin/HEAD)
+  -  2 Historical tags (refs/tags/*)
+  -  1 Active stash ref (refs/stash)
   - 14 Cline checkpoints (refs/cline/checkpoints/*)
-  - 1 HEAD reference
+  -  1 HEAD reference (HEAD -> recovery/pico-frontend-redesign)
+Total Sum: 42 + 58 + 2 + 1 + 14 + 1 = 118 refs.
 Status: The bundle records a complete history. Verified OK (Hash algorithm: sha1).
 ```
+
+*(Note on Reference Accounting: An earlier version of this document listed remote tracking branch heads as 57 by counting only named remote branches and omitting `refs/remotes/origin/HEAD`. When `origin/HEAD` is included, the remote tracking reference count is 58, and the namespace items sum to exactly 118).*
 
 ---
 
@@ -57,5 +63,6 @@ Status: The bundle records a complete history. Verified OK (Hash algorithm: sha1
 At the initiation of this assignment:
 - Primary repository working tree at `C:\Users\AYUSH\OneDrive\Desktop\PICO` was on branch `recovery/pico-frontend-redesign` with active Cline uncommitted changes.
 - Secondary worktree at `C:\Users\AYUSH\OneDrive\Desktop\PICO-p11-5-spec` was actively working on Phase 11.5 (`docs/p11-5-desktop-perception-spec`).
-- An isolated governance worktree was established at `C:\Users\AYUSH\.gemini\antigravity\scratch\PICO_governance_worktree` on branch `chore/repository-stabilization-and-governance`.
+- An isolated governance worktree was established at `C:\Users\AYUSH\.geminintigravity\scratch\PICO_governance_worktree` on branch `chore/repository-stabilization-and-governance`.
 - Neither working tree was modified, reset, checked out, or cleaned.
+- Both the uncommitted changes and `stash@{0}` remain completely recoverable from the preserved patch files without modifying active worktrees.
