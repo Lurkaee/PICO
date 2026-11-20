@@ -191,7 +191,15 @@ All original gate definitions, numerical thresholds, and severity classification
 
 ### 7.1 Stage 3 Promotion Matrix (Local Speech-to-Text Runtime Integration)
 
-Before promoting PICO to **Milestone P11.3 Stage 3** (authorizing production activation of `LocalWhisperSpeechToTextAdapter`), the following gates and prerequisites must be satisfied:
+The following matrix defines the **complete Stage 3 production-activation gate set** required before PICO can be promoted to active production speech recognition (authorizing `LocalWhisperSpeechToTextAdapter.is_available() == True` at Step E).
+
+> [!IMPORTANT]
+> **Operational Lifecycle & Phased Verification (Not All Gates Are Pre-Development Blockers)**:
+> This matrix constitutes the comprehensive verification criteria for **Step E production activation**, rather than a list of prerequisites that must all be satisfied prior to Stage 3 development authorization:
+> - **Step B Hardware Pre-Qualification (Authorizes Step C Development)**: Physical hardware pre-qualification gates (`GATE-VOICE-02` Option B accuracy, `GATE-VOICE-04` GPU co-residency, `GATE-VOICE-05` RAM ceiling, baseline `GATE-VOICE-06` disk non-retention, and baseline `GATE-VOICE-07` zero network/DNS egress) must be satisfied and recorded to authorize **Step C development**.
+> - **Step C Development**: Authorizes authoring `LocalWhisperSpeechToTextAdapter` in `pico.perception.audio.adapter` (initially disabled, `is_available() == False`, public `transcribe()` failing closed, private test seam `_transcribe_internal`).
+> - **Step D Integrated Qualification**: After implementation, dedicated test harnesses exercise `_transcribe_internal` to re-verify `GATE-VOICE-06 (Integrated)` and `GATE-VOICE-07 (Integrated)`, and verify `GATE-VOICE-09 (Integrated Fail-Closed Safety)`. Because `GATE-VOICE-09` asserts behavior on the implemented adapter class, it cannot be evaluated before adapter development.
+> - **Step E Production Activation**: Authorizing `is_available() == True` requires the entire gate matrix below (including Step B baseline evidence, `GATE-VOICE-01` historical pass, Step D integrated passes, `GATE-VOICE-08` interim footprint measurement, and STT component licensing).
 
 | Gate ID | Area / Gate | Required Qualification Threshold | Severity | Verification Method | Stage 3 Promotion Applicability |
 | :--- | :--- | :--- | :--- | :--- | :--- |

@@ -221,12 +221,30 @@ The combined footprint is well below the **$< 350\text{ MB}$** ceiling, preservi
 ### 7.3 Milestone Progression
 This decision establishes **Milestone P11.3 Stage 1 as DESIGN COMPLETE — HARDWARE QUALIFICATION PENDING**.
 
-Per project owner decision on 2026-11-20 (approving Proposal 0006), the qualification and implementation of Milestone P11.3 are formally decomposed into decoupled vertical stages:
-1. **Stage 2 (Benchmark Execution & Hardware Qualification Closure)**:
-   - Physical hardware qualification against the approved Stage 3 gate requirements (`GATE-VOICE-01`, `02` Option B human corpus, `04`, `05`, `06`, `07`, `08-interim`, `09`, STT licensing prerequisite).
-2. **Stage 3 (STT Implementation & Production Activation)**:
-   - Implementation of `LocalWhisperSpeechToTextAdapter` adhering to `pico.perception.audio.adapter.BaseSpeechToTextAdapter` (initially disabled, `is_available() == False`).
-   - Integrated safety and privacy qualification (`GATE-VOICE-06`, `07`, `09`) on the production adapter before production activation.
+Per project owner decision on 2026-11-20 (approving Proposal 0006), the qualification and implementation lifecycle of Milestone P11.3 are governed by the canonical five-step operational sequence:
+
+1. **Stage 2 Hardware Pre-Qualification Closure (Step B)**:
+   - Physical hardware pre-qualification on the target host machine to satisfy the baseline prerequisites required before Stage 3 implementation can be authorized:
+     - `GATE-VOICE-02` (STT Accuracy): Word Error Rate evaluation on the approved Option B naturally spoken human command corpus ($\text{WER} \le 12.0\%$). Currently `NOT RUN` (recordings pending).
+     - `GATE-VOICE-04` (Single-Model GPU VRAM): Telemetry verification with resident Ollama LLM (`qwen3.5:2b`), demonstrating $\Delta\text{VRAM} = 0\text{ MiB}$ and same-artifact digest continuity. Currently `NOT RUN`.
+     - `GATE-VOICE-05` (RAM Ceiling): Concurrent-load memory verification. Preserves the historical `FAIL` status (863.1 MB available RAM recorded under load) until remediated by valid empirical telemetry proving peak voice Working Set strictly $< 450\text{ MiB}$ (`471,859,200 bytes`) and available system RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`).
+     - `GATE-VOICE-06` (Baseline Disk Retention & Buffer Zeroization): Verification that the host capture baseline writes zero raw-audio bytes to persistent storage and mutable buffers are zeroized. Currently `NOT RUN` (kernel minifilter audit pending).
+     - `GATE-VOICE-07` (Baseline Network & DNS Egress): Verification of zero outbound socket connections and zero DNS queries during inference. Currently `NOT RUN` (ETW trace pending).
+   - Incomplete gates must **not** be inferred as passing, and owner approval alone does **not** bypass Stage 2 hardware pre-qualification.
+
+2. **Stage 3 Development, Integrated Qualification & Production Activation (Steps C–E)**:
+   - **Step C (Development Authorization)**: Authorized *only* after Step B hardware pre-qualification prerequisites are satisfied and accepted. Permits authoring `LocalWhisperSpeechToTextAdapter` adhering to `BaseSpeechToTextAdapter` in `pico.perception.audio.adapter`. During development, the public adapter remains strictly disabled (`is_available() == False`) and public `transcribe()` unconditionally fails closed. Internal transcription is structured via a private test seam (`_transcribe_internal`) without REST or config toggle exposure.
+   - **Step D (Integrated Adapter & Privacy Qualification)**: Following adapter implementation, a dedicated test harness exercises `_transcribe_internal` to re-verify `GATE-VOICE-06` (disk retention & buffer zeroization) and `GATE-VOICE-07` (zero network/DNS egress) on the integrated native pipeline, asserts public fail-closed behavior, and tests `GATE-VOICE-09` (fail-closed typed exceptions on missing DLLs, missing/corrupted models, and malformed buffers). `GATE-VOICE-09` is an integrated adapter check and is **not** a Stage 2 pre-development prerequisite.
+   - **Step E (Production Activation)**: Authorizing `LocalWhisperSpeechToTextAdapter.is_available() == True` occurs only after all Stage 3 activation conditions are physically satisfied and recorded:
+     - Step B baseline hardware pre-qualification evidence accepted (`GATE-VOICE-02`, `04`, `05`, baseline `06`, baseline `07`).
+     - `GATE-VOICE-01` (STT Latency): Retained as a mandatory Stage 3 activation condition based on its verified historical `PASS` ($\text{RTF}=0.2437 \le 0.30$).
+     - Step D integrated passes accepted: `GATE-VOICE-06 (Integrated)`, `GATE-VOICE-07 (Integrated)`, and `GATE-VOICE-09 (Integrated)`.
+     - `GATE-VOICE-08 (Interim)`: Informational interim measurement of the STT packaging footprint (measured 80.92 MiB / ~84.85 MB decimal, ~24% of the eventual $< 350\text{ MB}$ budget; not a Stage 2 blocker).
+     - `STT Component Licensing`: Permissive MIT license verification (whisper.cpp, shim, GGML weights) verified under ADR 0005 §2.7 as a production-activation prerequisite, not a physical hardware pre-qualification gate.
+
 3. **Stage 4 (TTS Implementation & Full Voice Subsystem Qualification)**:
    - Implementation of `LocalTextToSpeechAdapter` adhering to `BaseTextToSpeechAdapter`.
-   - Evaluation of `GATE-VOICE-03` (TTS Latency), `GATE-VOICE-08` (full combined package $< 350\text{ MB}$ decimal / `350,000,000 bytes`), `GATE-VOICE-10` (Piper GPL-3.0 vs. Sherpa-ONNX Apache 2.0 license review), and combined voice subsystem re-verification (`GATE-VOICE-04`, `05`, `06`, `07`, and `GATE-VOICE-09` TTS integrated fail-closed safety).
+   - Evaluation of `GATE-VOICE-03` (TTS Latency: TTFAC $< 500\text{ ms}$, $\text{RTF}_{\text{synth}} \le 0.15$).
+   - `GATE-VOICE-08 (Combined)`: Full combined package $< 350\text{ MB}$ decimal (`350,000,000 bytes`) evaluated as a release packaging gate before Windows NSIS distribution.
+   - `GATE-VOICE-10`: Piper GPL-3.0 redistribution review vs. Sherpa-ONNX Apache 2.0 fallback.
+   - Combined voice subsystem re-verification under simultaneous STT + TTS + LLM load (`GATE-VOICE-04`, `05`, `06`, `07`, and `GATE-VOICE-09` TTS integrated fail-closed safety).
