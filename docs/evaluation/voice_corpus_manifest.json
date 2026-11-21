@@ -11,12 +11,93 @@
     "target_wer_threshold": 12.0,
     "total_reference_words": 49,
     "provenance_requirements": [
+      "command_id",
+      "filename",
+      "sha256_digest",
+      "size_bytes",
+      "sample_rate_hz",
+      "channels",
+      "sample_format",
+      "duration_seconds",
       "consenting_speaker_id",
       "physical_microphone_model",
       "acoustic_environment_description",
-      "ground_truth_transcript",
-      "sha256_digest"
+      "ground_truth_transcript"
     ],
+    "clip_schema": {
+      "type": "object",
+      "required": [
+        "command_id",
+        "filename",
+        "sha256_digest",
+        "size_bytes",
+        "sample_rate_hz",
+        "channels",
+        "sample_format",
+        "duration_seconds",
+        "consenting_speaker_id",
+        "physical_microphone_model",
+        "acoustic_environment_description",
+        "ground_truth_transcript"
+      ],
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "description": "Identifier mapping 1:1 to canonical_commands[].command_id",
+          "enum": ["cmd_short_1s", "cmd_query_3s", "cmd_workflow_5s", "cmd_dictation_10s"]
+        },
+        "filename": {
+          "type": "string",
+          "description": "Safe relative WAV filename within the local Option B corpus directory"
+        },
+        "sha256_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Cryptographic SHA-256 digest of the raw WAV recording file"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Exact byte size of the WAV recording file"
+        },
+        "sample_rate_hz": {
+          "type": "integer",
+          "const": 16000,
+          "description": "Sample rate in Hz (strictly 16000 Hz)"
+        },
+        "channels": {
+          "type": "integer",
+          "const": 1,
+          "description": "Channel count (strictly 1, mono)"
+        },
+        "sample_format": {
+          "type": "string",
+          "const": "16-bit signed PCM (little-endian)",
+          "description": "PCM sample format"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0.0,
+          "description": "Audio duration in seconds"
+        },
+        "consenting_speaker_id": {
+          "type": "string",
+          "description": "Pseudonymous speaker identifier (consistent across all four recordings)"
+        },
+        "physical_microphone_model": {
+          "type": "string",
+          "description": "Physical microphone hardware make and model description"
+        },
+        "acoustic_environment_description": {
+          "type": "string",
+          "description": "Description of the physical room acoustics"
+        },
+        "ground_truth_transcript": {
+          "type": "string",
+          "description": "Verified verbatim transcript identical to canonical_commands[].canonical_text"
+        }
+      }
+    },
     "canonical_commands": [
       {
         "command_id": "cmd_short_1s",

@@ -48,6 +48,14 @@ from tools.bench.whisper_prototype import (
     WhisperRuntimeError,
     verify_model_artifact,
 )
+from tools.bench.option_b_eval import (
+    OptionBGate02Result,
+    OptionBGateStatus,
+    evaluate_option_b_gate_02,
+    normalize_text_for_option_b,
+    validate_option_b_audio_file,
+    validate_option_b_manifest,
+)
 
 logger = logging.getLogger("voice_bench")
 
@@ -978,9 +986,14 @@ def run_benchmark(
     corpus_dir: Path,
     n_threads: int = 4,
     iterations: int = 10,
+    option_b_corpus_dir: Path | None = None,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """Execute complete qualification benchmark suite with rigorous evidence collection."""
     current_pid = os.getpid()
+
+    if manifest_path is None:
+        manifest_path = REPO_ROOT / "docs" / "evaluation" / "voice_corpus_manifest.json"
 
     # Query initial memory and system state
     peak_ws_init, cur_ws_init, priv_init = query_process_memory_mb()
@@ -1371,20 +1384,22 @@ def run_benchmark(
         gate_01_status = "NOT RUN"
         gate_01_measured = f"Designated 5-second benchmark sample '{DESIGNATED_5S_SAMPLE}' missing from evaluation corpus"
 
-    # GATE-VOICE-02: STT Accuracy (WER)
-    # The current corpus contains only JFK slices and 1 numeric sample.
-    # Marking NOT RUN for full qualification per spec guidelines until multi-speaker corpus is evaluated.
-    if aggregate_real_wer is not None:
-        gate_02_status = "NOT RUN"
-        gate_02_measured = (
-            f"Preliminary real-speech aggregate WER={format_metric_pct(aggregate_real_wer)} "
-            f"(Macro WER={format_metric_pct(macro_real_wer)}, CER={format_metric_pct(macro_real_cer)}). "
-            f"Smoke command WER={format_metric_pct(aggregate_smoke_wer)}. "
-            "Qualification marked NOT RUN pending multi-speaker conversational corpus per manifest."
-        )
-    else:
-        gate_02_status = "NOT RUN"
-        gate_02_measured = "No real-speech samples evaluated"
+    # GATE-VOICE-02: STT Accuracy (WER) - Formal Option B Evaluation
+    gate_02_result = evaluate_option_b_gate_02(
+        engine=engine,
+        manifest_path=manifest_path,
+        corpus_dir=option_b_corpus_dir,
+        n_threads=n_threads,
+        model_meta=report.get("model"),
+    )
+    report["option_b_gate_02"] = gate_02_result.to_dict()
+    gate_02_status = gate_02_result.status
+    gate_02_measured = gate_02_result.format_measured_summary(
+        historical_mixed_wer=aggregate_real_wer,
+        historical_macro_wer=macro_real_wer,
+        historical_macro_cer=macro_real_cer,
+        smoke_wer=aggregate_smoke_wer,
+    )
 
     # GATE-VOICE-03: TTS Latency
     gate_03_status = "NOT RUN"
@@ -1467,10 +1482,10 @@ def run_benchmark(
         },
         "GATE-VOICE-02": {
             "name": "STT Accuracy (WER)",
-            "threshold": "Aggregate WER <= 12.0% on representative multi-speaker real speech corpus",
+            "threshold": "Aggregate WER <= 12.0% across Option B human corpus (N_total = 49 reference words)",
             "measured": gate_02_measured,
             "status": gate_02_status,
-            "method": "Wagner-Fischer dynamic programming edit distance with digit normalization",
+            "method": "Wagner-Fischer dynamic programming edit distance with digit normalization over 49 canonical reference words",
         },
         "GATE-VOICE-03": {
             "name": "TTS Latency",
@@ -1536,10 +1551,13 @@ def run_benchmark(
 def render_markdown_report(report: dict[str, Any]) -> str:
     """Format benchmark report dictionary into clean, truthful Markdown."""
     gate_01_status = report.get("gates", {}).get("GATE-VOICE-01", {}).get("status", "NOT RUN")
+    gate_02_status = report.get("gates", {}).get("GATE-VOICE-02", {}).get("status", "NOT RUN")
     gate_04_status = report.get("gates", {}).get("GATE-VOICE-04", {}).get("status", "NOT RUN")
     gate_05_status = report.get("gates", {}).get("GATE-VOICE-05", {}).get("status", "NOT RUN")
 
-    if gate_01_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
+    if gate_01_status == "PASS" and gate_02_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
+        status_line = "Stage 2 Prototype — Core Latency, Option B Accuracy, VRAM & RAM Qualified; Egress & Disk Retention NOT RUN"
+    elif gate_01_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
         status_line = "Stage 2 Prototype — Core Latency, VRAM & RAM Qualified; Accuracy, Egress & Disk Retention NOT RUN"
     elif gate_01_status == "PASS" and gate_05_status == "PASS" and gate_04_status == "NOT RUN":
         status_line = "Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency, Accuracy, Egress & Disk Retention NOT RUN)"
@@ -1629,10 +1647,57 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## 3. Accuracy Metrics Breakdown",
         "",
-        f"- **Real Speech Aggregate WER**: {format_metric_pct(real_wer)} (total edits / total reference words)",
-        f"- **Real Speech Macro-Average WER**: {format_metric_pct(real_macro_wer)} (unweighted mean across clips)",
+    ])
+
+    opt_b = report.get("option_b_gate_02", {})
+    if opt_b.get("command_results"):
+        lines.extend([
+            "### 3.1 Formal Option B Human Accuracy Results (GATE-VOICE-02)",
+            "",
+            "| Command ID | Reference Text | Words | Emitted Hypothesis | Edits (S/D/I) | Command WER |",
+            "|---|---|---|---|---|---|",
+        ])
+        for cr in opt_b["command_results"]:
+            lines.append(
+                f"| `{cr['command_id']}` | \"{cr['reference_text']}\" | {cr['reference_word_count']} | "
+                f"\"{cr['hypothesis_text']}\" | {cr['edit_distance']} ({cr['substitutions']}/{cr['deletions']}/{cr['insertions']}) | "
+                f"{format_metric_pct(cr['wer_ratio'])} |"
+            )
+        lines.extend([
+            "",
+            f"- **Option B Aggregate Edits**: {opt_b.get('aggregate_edit_count')} edits",
+            f"- **Option B Exact Denominator**: {opt_b.get('exact_reference_denominator', 49)} reference words",
+            f"- **Option B Aggregate WER**: **{opt_b.get('aggregate_wer_pct')}** (Threshold: <= {opt_b.get('target_wer_threshold_pct', 12.0)}%)",
+            f"- **GATE-VOICE-02 Formal Gate Status**: **{opt_b.get('status', 'NOT RUN')}**",
+            "",
+        ])
+    else:
+        opt_b_reason = opt_b.get("reason", "Option B human command corpus pending acquisition and registration.")
+        lines.extend([
+            "### 3.1 Formal Option B Human Accuracy Status (GATE-VOICE-02)",
+            "",
+            f"- **GATE-VOICE-02 Status**: **{opt_b.get('status', 'NOT RUN')}**",
+            f"- **Details**: {opt_b_reason}",
+            "",
+        ])
+
+    lines.extend([
+        "### 3.2 Historical Mixed Real-Speech Prototype Fixtures (Informational Only)",
+        "",
+        f"- **Real Speech Aggregate WER**: {format_metric_pct(real_wer)} (total edits / total reference words across historical mixed real-speech fixtures: 5 JFK speech slices + 1 vosk_digits.wav numeric recording)",
+        f"- **Real Speech Macro-Average WER**: {format_metric_pct(real_macro_wer)} (unweighted mean across the 6 mixed real-speech fixtures)",
         f"- **Real Speech Macro-Average CER**: {format_metric_pct(real_macro_cer)}",
-        f"- **Synthetic Commands Smoke WER**: {format_metric_pct(smoke_wer)} (reported separately from real speech)",
+        "",
+        "### 3.3 Synthetic Commands Smoke Test Fixtures (CI Regression Smoke Only)",
+        "",
+        f"- **Synthetic Commands Smoke WER**: {format_metric_pct(smoke_wer)} (Windows SAPI smoke test; reported separately from real speech)",
+        "",
+        "> [!NOTE]",
+        "> **Canonical Option B Corpus & Formal WER Status**:",
+        "> The canonical command reference word count is formally established at exactly **49 reference words** across the four canonical commands ($2 + 8 + 13 + 26 = 49\\text{ words}$, with command 4 having 26 words).",
+        "> Formal Word Error Rate ($\\text{WER}$) for `GATE-VOICE-02` can **only** be calculated when all four natural human audio recordings are provided under Option B.",
+        "> Historical mixed real-speech prototype fixtures (5 JFK speech slices + 1 Vosk digit sequence, 75 total reference words) and synthetic Windows SAPI smoke clips represent distinct preliminary evaluation datasets; their edit counts and error metrics must **never** be cross-conflated with or transferred onto the canonical Option B command corpus.",
+        f"> Consequently, `GATE-VOICE-02` status is: **`{report.get('gates', {}).get('GATE-VOICE-02', {}).get('status', 'NOT RUN')}`**.",
         "",
         "---",
         "",
@@ -1688,6 +1753,18 @@ def main() -> None:
         help="Directory containing evaluation WAV files",
     )
     parser.add_argument(
+        "--option-b-corpus-dir",
+        type=Path,
+        default=None,
+        help="Directory containing local Option B human command WAV files (GATE-VOICE-02)",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        type=Path,
+        default=REPO_ROOT / "docs" / "evaluation" / "voice_corpus_manifest.json",
+        help="Path to voice corpus manifest JSON",
+    )
+    parser.add_argument(
         "--threads",
         type=int,
         default=4,
@@ -1727,6 +1804,8 @@ def main() -> None:
         corpus_dir=args.corpus_dir,
         n_threads=args.threads,
         iterations=args.iterations,
+        option_b_corpus_dir=args.option_b_corpus_dir,
+        manifest_path=args.manifest_path,
     )
 
     # Save JSON report

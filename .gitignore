@@ -85,3 +85,6 @@ frontend/src-tauri/staged/
 *.bin
 *.onnx
 tools/whisper_shim/build/
+
+# Local Option B Human Voice Recordings (local-only, never committed to git)
+docs/evaluation/option_b_recordings/
