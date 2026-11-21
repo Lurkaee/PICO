@@ -74,7 +74,7 @@ This Architecture Decision Record (ADR 0005) defines the provisional selection o
 | Resource | Host Total | Ollama LLM (`qwen3.5:2b`) | PICO Core & Desktop Companion | Voice STT/TTS Allocation Target | Remaining Headroom | Compliance Assessment |
 |---|---|---|---|---|---|---|
 | **Dedicated GPU VRAM** | 4,094 MiB | 2,200–2,800 MiB | ~100 MiB (Direct3D swap chain) | **0 MiB (Strategy A: CPU)** | **~1,194–1,794 MiB** | **PRESERVED** (Strict single-model residency maintained) |
-| **System RAM** | 16,384 MiB (15.64 GB visible) | ~1,000 MiB (Ollama host process) | ~400 MiB (Python Core + Companion) | **< 450 MiB Working Set** | **~1,500 MiB** (above free threshold) | **QUALIFICATION PENDING** (Physical memory telemetry required in Stage 2) |
+| **System RAM** | 16,384 MiB (15.64 GiB visible) | ~1,000 MiB (Ollama host process) | ~400 MiB (Python Core + Companion) | **< 450 MiB Working Set** (strictly $< 471{,}859{,}200\text{ bytes}$) | **> 1536 MiB available RAM** (strictly $> 1{,}610{,}612{,}736\text{ bytes}$ under concurrent load) | **QUALIFICATION PENDING** (Physical memory telemetry required in Stage 2) |
 | **CPU Utilization** | 12 Threads (4P + 4E) | 0% during audio capture (idle) | 1–3% (FastAPI + loopback bridge) | **Bounded to 4 threads** | 8 logical threads free | **QUALIFICATION PENDING** (Core affinity and latency to be measured in Stage 2) |
 | **Disk Storage** | 5.48 GB free (at snapshot) | Shared host disk | ~500 MB (PICO bundle) | **< 350 MB Total** (Whisper + Piper + Models) | **> 4.5 GB free** | **WITHIN BUDGET** (Measured component sizes total ~190–260 MB) |
 
@@ -188,7 +188,7 @@ The combined footprint is well below the **$< 350\text{ MB}$** ceiling, preservi
 
 | # | Evaluation Criterion | Target / Constraint | whisper.cpp (Selected STT) | Piper ONNX (Selected TTS) | Qualification Status |
 |---|---|---|---|---|---|
-| 1 | **Runtime Memory** | $< 500\text{ MB}$ total peak Working Set | Upstream estimate: ~180 MB | Upstream estimate: ~90 MB | **NOT MEASURED — HARDWARE QUALIFICATION PENDING** |
+| 1 | **Runtime Memory** | Strictly $< 450\text{ MiB}$ peak Working Set (`471,859,200 bytes`); System Available RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`) under concurrent Ollama LLM load | Upstream estimate: ~180 MB | Upstream estimate: ~90 MB | **NOT MEASURED — HARDWARE QUALIFICATION PENDING** |
 | 2 | **GPU VRAM Impact** | $0\text{ MiB}$ (preserves LLM residency) | Target: 0 MiB (CPU AVX2 execution) | Target: 0 MiB (CPU execution) | **NOT MEASURED — HARDWARE QUALIFICATION PENDING** |
 | 3 | **Real-Time Factor (RTF)** | $\le 0.30$ on i5-13420H CPU | Target: $\le 0.30$ (Upstream estimate: ~0.18) | Target: $\le 0.15$ (Upstream estimate: ~0.08) | **NOT MEASURED — HARDWARE QUALIFICATION PENDING** |
 | 4 | **Time to First Audio (TTS)** | $< 500\text{ ms}$ | N/A | Target: $< 500\text{ ms}$ (Upstream estimate: ~120 ms) | **NOT MEASURED — HARDWARE QUALIFICATION PENDING** |
@@ -198,7 +198,7 @@ The combined footprint is well below the **$< 350\text{ MB}$** ceiling, preservi
 | 8 | **Privacy / Zero Egress** | Zero external network transmission | 100% offline; socket/DNS monitoring required | 100% offline; socket/DNS monitoring required | **VERIFICATION PROTOCOL DEFINED — QUALIFICATION PENDING** |
 | 9 | **Memory Zeroization** | Best-effort scrub of application buffers | Mutable audio bytearrays zeroed on exit | Mutable audio bytearrays zeroed on exit | **DESIGN ACCEPTED** (Aligned with `pico.perception.audio.capture`) |
 | 10 | **Fail-Closed Safety** | Refuse unverified execution | Immediate error if binary missing | Immediate error if binary missing | **DESIGN ACCEPTED** (Fails closed with truthful error) |
-| 11 | **License Compatibility** | Permissive open-source or compliant distribution | MIT License | Code: GPL-3.0 (`piper1-gpl`) / MIT (legacy); Voice: Permissive | **PROVISIONAL — LEGAL REVIEW PENDING** (sherpa-onnx Apache 2.0 alternative ready) |
+| 11 | **License Compatibility** | Permissive open-source or compliant distribution; STT component licensing verified for Stage 3; full Piper GPL-3.0 review (GATE-VOICE-10) evaluated for Stage 4 | MIT License (whisper.cpp, shim, weights) | Code: GPL-3.0 (`piper1-gpl`) / MIT (legacy); Voice: Permissive | **STAGE-SPECIFIC GATING**: STT component prerequisite verified (MIT); GATE-VOICE-10 formal gate deferred to Stage 4 (sherpa-onnx Apache 2.0 alternative ready) |
 | 12 | **CPU Multi-Core Impact** | Prevent UI thread starvation | Bounded to 4 threads (P-core target) | Bounded to 2 threads | **QUALIFICATION PENDING** (CPU topology and affinity to be verified in Stage 2) |
 | 13 | **Model Provenance** | Immutable hashes (SHA-256) | Canonical Git LFS SHA-256 recorded | Canonical Git LFS SHA-256 recorded | **VERIFIED REGISTRY DEFINED — LOCAL DIGEST PENDING ACQUISITION** |
 
@@ -220,5 +220,31 @@ The combined footprint is well below the **$< 350\text{ MB}$** ceiling, preservi
 
 ### 7.3 Milestone Progression
 This decision establishes **Milestone P11.3 Stage 1 as DESIGN COMPLETE — HARDWARE QUALIFICATION PENDING**.
-Stage 2 (physical hardware benchmark execution and qualification report generation) will proceed according to the test protocols formalized in `docs/evaluation/voice-engine-qualification.md`.
-Implementation of runtime adapters in `pico.perception.audio` will commence in **P11.3 Stage 3 (STT)** and **P11.3 Stage 4 (TTS)**.
+
+Per project owner decision on 2026-11-20 (approving Proposal 0006), the qualification and implementation lifecycle of Milestone P11.3 are governed by the canonical five-step operational sequence:
+
+1. **Stage 2 Hardware Pre-Qualification Closure (Step B)**:
+   - Physical hardware pre-qualification on the target host machine to satisfy the baseline prerequisites required before Stage 3 implementation can be authorized:
+     - `GATE-VOICE-02` (STT Accuracy): Word Error Rate evaluation on the approved Option B naturally spoken human command corpus ($\text{WER} \le 12.0\%$). Currently `NOT RUN` (human recordings and Option B benchmark tooling update pending).
+     - `GATE-VOICE-04` (Single-Model GPU VRAM): Telemetry verification with resident Ollama LLM (`qwen3.5:2b`), demonstrating $\Delta\text{VRAM} = 0\text{ MiB}$ and same-artifact digest continuity. Currently `NOT RUN`.
+     - `GATE-VOICE-05` (RAM Ceiling): Concurrent-load memory verification. Preserves the historical `FAIL` status (863.1 MB available RAM recorded under load) until remediated by valid empirical telemetry proving peak voice Working Set strictly $< 450\text{ MiB}$ (`471,859,200 bytes`) and available system RAM strictly $> 1536\text{ MiB}$ (`1,610,612,736 bytes`).
+     - `GATE-VOICE-06` (Baseline Disk Retention & Buffer Zeroization): Verification that the host capture baseline writes zero raw-audio bytes to persistent storage and mutable buffers are zeroized. Currently `NOT RUN` (kernel minifilter audit pending).
+     - `GATE-VOICE-07` (Baseline Network & DNS Egress): Verification of zero outbound socket connections and zero DNS queries during inference. Currently `NOT RUN` (ETW trace pending).
+   - Incomplete gates must **not** be inferred as passing, and owner approval alone does **not** bypass Stage 2 hardware pre-qualification.
+
+2. **Stage 3 Development, Integrated Qualification & Production Activation (Steps C–E)**:
+   - **Step C (Development Authorization)**: Authorized *only* after Step B hardware pre-qualification prerequisites are satisfied and accepted. Permits authoring `LocalWhisperSpeechToTextAdapter` adhering to `BaseSpeechToTextAdapter` in `pico.perception.audio.adapter`. During development, the public adapter remains strictly disabled (`is_available() == False`) and public `transcribe()` unconditionally fails closed. Internal transcription is structured via a private test seam (`_transcribe_internal`) without REST or config toggle exposure.
+   - **Step D (Integrated Adapter & Privacy Qualification)**: Following adapter implementation, a dedicated test harness exercises `_transcribe_internal` to re-verify `GATE-VOICE-06` (disk retention & buffer zeroization) and `GATE-VOICE-07` (zero network/DNS egress) on the integrated native pipeline, asserts public fail-closed behavior, and tests `GATE-VOICE-09` (fail-closed typed exceptions on missing DLLs, missing/corrupted models, and malformed buffers). `GATE-VOICE-09` is an integrated adapter check and is **not** a Stage 2 pre-development prerequisite.
+   - **Step E (Production Activation)**: Authorizing `LocalWhisperSpeechToTextAdapter.is_available() == True` occurs only after all Stage 3 activation conditions are physically satisfied and recorded:
+     - Step B baseline hardware pre-qualification evidence accepted (`GATE-VOICE-02`, `04`, `05`, baseline `06`, baseline `07`).
+     - `GATE-VOICE-01` (STT Latency): Retained as a mandatory Stage 3 activation condition based on its verified historical `PASS` ($\text{RTF}=0.2437 \le 0.30$).
+     - Step D integrated passes accepted: `GATE-VOICE-06 (Integrated)`, `GATE-VOICE-07 (Integrated)`, and `GATE-VOICE-09 (Integrated)`.
+     - `GATE-VOICE-08 (Interim)`: Informational interim measurement of the STT packaging footprint (measured 80.92 MiB / ~84.85 MB decimal, ~24% of the eventual $< 350\text{ MB}$ budget; not a Stage 2 blocker).
+     - `STT Component Licensing`: Permissive MIT license verification (whisper.cpp, shim, GGML weights) verified under ADR 0005 §2.7 as a production-activation prerequisite, not a physical hardware pre-qualification gate.
+
+3. **Stage 4 (TTS Implementation & Full Voice Subsystem Qualification)**:
+   - Implementation of `LocalTextToSpeechAdapter` adhering to `BaseTextToSpeechAdapter`.
+   - Evaluation of `GATE-VOICE-03` (TTS Latency: TTFAC $< 500\text{ ms}$, $\text{RTF}_{\text{synth}} \le 0.15$).
+   - `GATE-VOICE-08 (Combined)`: Full combined package $< 350\text{ MB}$ decimal (`350,000,000 bytes`) evaluated as a release packaging gate before Windows NSIS distribution.
+   - `GATE-VOICE-10`: Piper GPL-3.0 redistribution review vs. Sherpa-ONNX Apache 2.0 fallback.
+   - Combined voice subsystem re-verification under simultaneous STT + TTS + LLM load (`GATE-VOICE-04`, `05`, `06`, `07`, and `GATE-VOICE-09` TTS integrated fail-closed safety).
