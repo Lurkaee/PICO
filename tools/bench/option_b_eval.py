@@ -17,16 +17,18 @@ Invariants:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
 import re
+import unicodedata
 import wave
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger("option_b_eval")
 
@@ -73,6 +75,28 @@ REQUIRED_PROVENANCE_FIELDS: tuple[str, ...] = (
     "acoustic_environment_description",
     "ground_truth_transcript",
 )
+
+KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS: frozenset[str] = frozenset({
+    # Synthetic SAPI smoke fixtures
+    "9e54a7c18ea693a189f3bbceeb5e282bfba9d32d3999e1eeafef6b8c94e09cb6",  # audio_cmd_short_1s.wav
+    "c7921a9767f40775a6396b27e80f4955c3c0a520ca4f5d60ee458760fa50787a",  # audio_cmd_query_3s.wav
+    "df600bb94ae27d530ee21fb1549488bb4a2e5d959549f57ebbf25287f9850c99",  # audio_cmd_workflow_5s.wav
+    "ad2ba59c8fa7270e5b7c02b11340fa0fae534f3a2c4e64f7c2250269ff0caaa2",  # audio_cmd_dictation_10s.wav
+    "12981559981be1ff71e626cfb74549f315a6b0c2a7c473c914ebfdce2f8db5a5",  # audio_cmd_negative_noise_1s.wav
+    "876615ae90e4f8dcfc918c541c4efdf979aa7dc02bf17088b200b3f8e582846f",  # audio_cmd_silence_1s.wav
+    # Historical prototype fixtures
+    "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",  # jfk.wav
+    "0e5e19033b3508fb604f1d1f8192ada2d8da26aec726965171937a4038a3b747",  # jfk_short_1s.wav
+    "484d817df898649ca2a02b571969549723b170e1ce7237f83e464a6d49a1778a",  # jfk_query_3s.wav
+    "8487d4aad0452b2a2ee34e61220ebbf7989faa3071a982ceded916cdb2058101",  # jfk_workflow_5s.wav
+    "cd3d359bf2c9c803cd9af596d5c458bfaa58ebd088c035cc1c51a02de9b05d56",  # jfk_dictation_10s.wav
+    "dcfea5712c43a43ba7ae8083afb39d36993e5a69c46e88b68aaa72b65cb615bb",  # vosk_digits.wav
+})
+
+
+class ValidatedAudioClip(NamedTuple):
+    path: Path
+    audio_bytes: bytes
 
 _DIGIT_MAP = {
     "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
@@ -150,6 +174,7 @@ class OptionBGate02Result:
     command_results: list[dict[str, Any]] = field(default_factory=list)
     reason: str = ""
     manifest_status: str = "UNKNOWN"
+    manifest_path: str | None = None
     model_identifier: str | None = None
     model_digest: str | None = None
     errors: list[str] = field(default_factory=list)
@@ -163,6 +188,9 @@ class OptionBGate02Result:
         historical_macro_wer: float | None = None,
         historical_macro_cer: float | None = None,
         smoke_wer: float | None = None,
+        historical_samples_count: int | None = None,
+        historical_words_count: int | None = None,
+        historical_edits_count: int | None = None,
     ) -> str:
         """Format a clear, auditable Gate 02 summary for reports."""
         if self.status in ("PASS", "FAIL"):
@@ -184,9 +212,17 @@ class OptionBGate02Result:
             pct = f"{round(historical_mixed_wer * 100, 2)}%"
             macro_w = f"{round(historical_macro_wer * 100, 2)}%" if historical_macro_wer is not None else "N/A"
             macro_c = f"{round(historical_macro_cer * 100, 2)}%" if historical_macro_cer is not None else "N/A"
+            if (
+                historical_samples_count is not None
+                and historical_words_count is not None
+                and historical_edits_count is not None
+            ):
+                detail = f"{historical_samples_count} historical real-speech fixtures, {historical_words_count} words, {historical_edits_count} edits"
+            else:
+                detail = "5 JFK slices + 1 Vosk digit sequence, 75 words, 2 edits"
             parts.append(
                 f"Preliminary historical mixed real-speech WER={pct} (Macro WER={macro_w}, CER={macro_c}; "
-                "5 JFK slices + 1 Vosk digit sequence, 75 words, 2 edits; informational prototype fixture)."
+                f"{detail}; informational prototype fixture)."
             )
 
         if smoke_wer is not None:
@@ -198,7 +234,16 @@ class OptionBGate02Result:
 def normalize_text_for_option_b(text: str) -> str:
     """Normalize text for WER calculation (casefold, expand digits, remove punctuation, collapse whitespace)."""
     text = text.lower()
-    text = re.sub(r"\d", lambda m: f" {_DIGIT_MAP[m.group(0)]} ", text)
+
+    def _replace_digit(m: re.Match[str]) -> str:
+        ch = m.group(0)
+        try:
+            val = unicodedata.digit(ch)
+            return f" {_DIGIT_MAP[str(val)]} "
+        except (ValueError, KeyError):
+            return f" {ch} "
+
+    text = re.sub(r"\d", _replace_digit, text)
     text = re.sub(r"[^\w\s]", "", text)
     return " ".join(text.split())
 
@@ -347,7 +392,10 @@ def validate_option_b_manifest(
                     f"Clip at index {idx} missing required provenance field '{req_field}'."
                 )
 
-        cid = clip_raw["command_id"]
+        cid = clip_raw.get("command_id")
+        if not isinstance(cid, str):
+            raise OptionBManifestError(f"Clip at index {idx} has invalid non-string command_id: {cid!r}.")
+
         if cid not in canonical_commands:
             raise OptionBManifestError(
                 f"Clip '{clip_raw.get('filename')}' references unknown command_id '{cid}'."
@@ -364,9 +412,16 @@ def validate_option_b_manifest(
             raise OptionBManifestError(f"Clip '{cid}' has invalid or empty filename.")
 
         # Enforce safe relative filename (no path traversal, no absolute paths)
-        if os.path.isabs(fn) or ".." in fn or "/" in fn or "\\" in fn:
+        p = Path(fn)
+        if (
+            p.is_absolute()
+            or ".." in p.parts
+            or fn.startswith("/")
+            or fn.startswith("\\")
+            or bool(re.match(r"^[a-zA-Z]:", fn))
+        ):
             raise OptionBManifestError(
-                f"Clip '{cid}' filename '{fn}' must be a simple, safe relative filename without directory traversal."
+                f"Clip '{cid}' filename '{fn}' must be a safe relative filename without directory traversal."
             )
 
         if fn in seen_filenames:
@@ -461,11 +516,11 @@ def validate_option_b_manifest(
 def validate_option_b_audio_file(
     clip: OptionBClipManifest,
     corpus_dir: Path,
-) -> Path:
+) -> ValidatedAudioClip:
     """Validate local Option B audio file format, safety, size, and cryptographic digest.
 
     Returns:
-        Validated absolute Path to the WAV file.
+        ValidatedAudioClip containing validated absolute Path and verified audio bytes.
 
     Raises:
         OptionBAudioValidationError: If file fails path, format, or cryptographic checks.
@@ -491,33 +546,42 @@ def validate_option_b_audio_file(
             f"Option B audio path is not a regular file: '{target_path}'."
         )
 
+    # Read bytes once to prevent TOCTOU and redundant disk reads
+    try:
+        raw_bytes = target_path.read_bytes()
+    except OSError as exc:
+        raise OptionBAudioValidationError(f"Failed to read audio file '{target_path}': {exc}") from exc
+
     # Size check
-    actual_size = target_path.stat().st_size
+    actual_size = len(raw_bytes)
     if actual_size != clip.size_bytes:
         raise OptionBAudioValidationError(
             f"File size mismatch for '{clip.filename}': actual {actual_size} bytes != manifest {clip.size_bytes} bytes."
         )
 
     # Cryptographic SHA-256 digest check
-    hasher = hashlib.sha256()
-    with target_path.open("rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    actual_sha = hasher.hexdigest().lower()
-
+    actual_sha = hashlib.sha256(raw_bytes).hexdigest().lower()
     if actual_sha != clip.sha256_digest:
         raise OptionBAudioValidationError(
             f"SHA-256 digest mismatch for '{clip.filename}': actual '{actual_sha}' != manifest '{clip.sha256_digest}'."
         )
 
+    # Reject known synthetic smoke and historical prototype fixtures
+    if actual_sha in KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS:
+        raise OptionBAudioValidationError(
+            f"Security rejection: Clip '{clip.filename}' matches known synthetic smoke or historical prototype digest '{actual_sha}'. "
+            "GATE-VOICE-02 strictly requires genuine, naturally spoken human recordings."
+        )
+
     # RIFF/WAVE header and PCM format validation
     try:
-        with wave.open(str(target_path), "rb") as wf:
+        with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
             n_channels = wf.getnchannels()
             sampwidth = wf.getsampwidth()
             framerate = wf.getframerate()
             comptype = wf.getcomptype()
             n_frames = wf.getnframes()
+            frame_bytes = wf.readframes(n_frames)
     except Exception as exc:
         raise OptionBAudioValidationError(
             f"Failed to parse RIFF/WAVE header for '{clip.filename}': {exc}"
@@ -548,7 +612,21 @@ def validate_option_b_audio_file(
             f"Audio payload violation for '{clip.filename}': zero frames found."
         )
 
-    return target_path
+    expected_payload_bytes = n_frames * n_channels * sampwidth
+    if len(frame_bytes) != expected_payload_bytes:
+        raise OptionBAudioValidationError(
+            f"PCM payload incomplete for '{clip.filename}': header declared {n_frames} frames ({expected_payload_bytes} bytes), "
+            f"but payload contains {len(frame_bytes)} bytes."
+        )
+
+    actual_duration = n_frames / framerate
+    if abs(clip.duration_seconds - actual_duration) > 0.1:
+        raise OptionBAudioValidationError(
+            f"Duration mismatch for '{clip.filename}': manifest declared {clip.duration_seconds}s, "
+            f"audio stream contains {actual_duration:.3f}s."
+        )
+
+    return ValidatedAudioClip(path=target_path, audio_bytes=raw_bytes)
 
 
 def evaluate_option_b_gate_02(
@@ -574,6 +652,7 @@ def evaluate_option_b_gate_02(
     result = OptionBGate02Result(
         model_identifier=model_id,
         model_digest=model_sha,
+        manifest_path=str(manifest_path),
     )
 
     # 1. Manifest file existence & load
@@ -581,7 +660,6 @@ def evaluate_option_b_gate_02(
         result.status = OptionBGateStatus.NOT_RUN.value
         result.reason = f"Voice corpus manifest not found at '{manifest_path}'"
         return result
-
     try:
         with manifest_path.open("r", encoding="utf-8") as f:
             manifest_data = json.load(f)
@@ -589,10 +667,7 @@ def evaluate_option_b_gate_02(
         result.status = OptionBGateStatus.NOT_RUN.value
         result.reason = f"Failed to parse manifest JSON at '{manifest_path}': {exc}"
         return result
-
-    result.manifest_status = manifest_data.get("formal_accuracy_corpus", {}).get("status", "UNKNOWN")
-
-    # 2. Manifest structural validation
+    # 2. Manifest structural validation FIRST before extracting status
     try:
         canonical_commands, clips = validate_option_b_manifest(manifest_data)
     except OptionBManifestError as exc:
@@ -601,12 +676,27 @@ def evaluate_option_b_gate_02(
         result.errors.append(str(exc))
         return result
 
+    corpus_section = manifest_data.get("formal_accuracy_corpus", {})
+    if isinstance(corpus_section, dict):
+        result.manifest_status = corpus_section.get("status", "UNKNOWN")
+    else:
+        result.manifest_status = "UNKNOWN"
+
     # If clips array is empty, qualification is PENDING_RECORDINGS
     if not clips:
         result.status = OptionBGateStatus.NOT_RUN.value
         result.reason = (
             "Option B human command corpus has not been recorded; clips array is empty "
             f"(status: {result.manifest_status})"
+        )
+        return result
+
+    # Prevent a pending manifest with clips from producing a formal measured result
+    if result.manifest_status == "PENDING_RECORDINGS":
+        result.status = OptionBGateStatus.NOT_RUN.value
+        result.reason = (
+            "Option B manifest status is PENDING_RECORDINGS despite clips being present; "
+            "manifest status must be updated to RECORDED or EVALUATED to qualify."
         )
         return result
 
@@ -621,13 +711,25 @@ def evaluate_option_b_gate_02(
         result.reason = f"Option B corpus directory '{corpus_dir}' does not exist or is not a directory"
         return result
 
-    # 4. Audio file safety and cryptographic validation
-    validated_files: dict[str, Path] = {}
+    # 4. Audio file safety, cryptographic validation, and physical alias detection
+    validated_files: dict[str, ValidatedAudioClip] = {}
+    seen_resolved_paths: set[Path] = set()
+
     for clip in clips:
         try:
-            file_path = validate_option_b_audio_file(clip, corpus_dir)
-            validated_files[clip.command_id] = file_path
-        except OptionBAudioValidationError as exc:
+            val_clip = validate_option_b_audio_file(clip, corpus_dir)
+            real_path = val_clip.path.resolve()
+            if real_path in seen_resolved_paths:
+                result.status = OptionBGateStatus.NOT_RUN.value
+                result.reason = (
+                    f"Duplicate file alias detected: clip '{clip.filename}' ({clip.command_id}) "
+                    f"resolves to already registered file '{real_path}'"
+                )
+                result.errors.append(result.reason)
+                return result
+            seen_resolved_paths.add(real_path)
+            validated_files[clip.command_id] = val_clip
+        except (OptionBAudioValidationError, OSError) as exc:
             result.status = OptionBGateStatus.NOT_RUN.value
             result.reason = f"Audio validation failed for clip '{clip.filename}': {exc}"
             result.errors.append(str(exc))
@@ -650,14 +752,18 @@ def evaluate_option_b_gate_02(
     )
 
     for clip in ordered_clips:
-        file_path = validated_files[clip.command_id]
+        val_clip = validated_files[clip.command_id]
         cmd_meta = canonical_commands[clip.command_id]
         ref_text = cmd_meta.canonical_text
 
         try:
-            with file_path.open("rb") as f:
-                wav_bytes = f.read()
-            hyp_text = engine.transcribe_wav_bytes(wav_bytes, n_threads=n_threads)
+            engine_out = engine.transcribe_wav_bytes(val_clip.audio_bytes, n_threads=n_threads)
+            if isinstance(engine_out, (tuple, list)):
+                hyp_text = str(engine_out[0])
+            elif isinstance(engine_out, str):
+                hyp_text = engine_out
+            else:
+                hyp_text = str(engine_out)
         except Exception as exc:
             result.status = OptionBGateStatus.NOT_RUN.value
             result.reason = (
@@ -665,7 +771,6 @@ def evaluate_option_b_gate_02(
             )
             result.errors.append(str(exc))
             return result
-
         norm_ref = normalize_text_for_option_b(ref_text)
         norm_hyp = normalize_text_for_option_b(hyp_text)
 

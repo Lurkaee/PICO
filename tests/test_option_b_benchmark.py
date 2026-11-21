@@ -102,10 +102,19 @@ def create_mock_clip_entry(
     audio_bytes: bytes,
     speaker_id: str = "operator_alpha_01",
     ground_truth: str | None = None,
+    duration_s: float | None = None,
 ) -> dict:
     """Helper to generate a valid clip manifest entry matching generated audio bytes."""
     gt = ground_truth or EXPECTED_CANONICAL_COMMANDS[command_id]["canonical_text"]
     sha = hashlib.sha256(audio_bytes).hexdigest().lower()
+    if duration_s is None:
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+                dur = round(wf.getnframes() / wf.getframerate(), 3)
+        except Exception:
+            dur = 1.0
+    else:
+        dur = duration_s
     return {
         "command_id": command_id,
         "filename": filename,
@@ -114,7 +123,7 @@ def create_mock_clip_entry(
         "sample_rate_hz": 16000,
         "channels": 1,
         "sample_format": "16-bit signed PCM (little-endian)",
-        "duration_seconds": 1.5,
+        "duration_seconds": dur,
         "consenting_speaker_id": speaker_id,
         "physical_microphone_model": "Shure SM7B via Focusrite Scarlett 2i2",
         "acoustic_environment_description": "Treated domestic office, background noise < 30 dBA",
@@ -291,6 +300,46 @@ class TestOptionBManifestValidation:
         with pytest.raises(OptionBManifestError, match="safe relative filename without directory traversal"):
             validate_option_b_manifest(manifest_data)
 
+    def test_clip_non_string_command_id_rejected(self):
+        wav = create_test_wav_bytes(1.0)
+        clips_raw = [
+            create_mock_clip_entry("cmd_short_1s", "cmd_short_1s.wav", wav),
+            create_mock_clip_entry("cmd_query_3s", "cmd_query_3s.wav", wav),
+            create_mock_clip_entry("cmd_workflow_5s", "cmd_workflow_5s.wav", wav),
+            create_mock_clip_entry("cmd_dictation_10s", "cmd_dictation_10s.wav", wav),
+        ]
+        clips_raw[0]["command_id"] = ["cmd_short_1s"]  # invalid non-string
+        manifest_data = create_mock_manifest_dict(clips=clips_raw)
+        with pytest.raises(OptionBManifestError, match="invalid non-string command_id"):
+            validate_option_b_manifest(manifest_data)
+
+    def test_safe_nested_relative_filename_accepted(self):
+        wav = create_test_wav_bytes(1.0)
+        clips_raw = [
+            create_mock_clip_entry("cmd_short_1s", "session1/cmd_short_1s.wav", wav),
+            create_mock_clip_entry("cmd_query_3s", "session1/cmd_query_3s.wav", wav),
+            create_mock_clip_entry("cmd_workflow_5s", "session1/cmd_workflow_5s.wav", wav),
+            create_mock_clip_entry("cmd_dictation_10s", "session1/cmd_dictation_10s.wav", wav),
+        ]
+        manifest_data = create_mock_manifest_dict(clips=clips_raw)
+        canonical_cmds, clips = validate_option_b_manifest(manifest_data)
+        assert len(clips) == 4
+        assert clips[0].filename == "session1/cmd_short_1s.wav"
+
+
+class TestOptionBTextNormalization:
+    """Validates normalization rules (casefolding, digit expansion, punctuation removal)."""
+
+    def test_unicode_decimal_digit_normalization(self):
+        norm = normalize_text_for_option_b("PICO stop １")
+        assert norm == "pico stop one"
+        norm2 = normalize_text_for_option_b("count 1 2 3")
+        assert norm2 == "count one two three"
+
+    def test_punctuation_and_whitespace_collapse(self):
+        norm = normalize_text_for_option_b("   What   tasks,   are waiting?   ")
+        assert norm == "what tasks are waiting"
+
 
 # ==============================================================================
 # 2. Audio File Safety, Format, and Cryptographic Checks
@@ -324,10 +373,11 @@ class TestOptionBAudioFileValidation:
         return corpus_dir, clip_meta, wav_bytes
 
     def test_valid_audio_file_accepted(self, corpus_env):
-        corpus_dir, clip_meta, _ = corpus_env
-        path = validate_option_b_audio_file(clip_meta, corpus_dir)
-        assert path.exists()
-        assert path.name == "valid_clip.wav"
+        corpus_dir, clip_meta, wav_bytes = corpus_env
+        val = validate_option_b_audio_file(clip_meta, corpus_dir)
+        assert val.path.exists()
+        assert val.path.name == "valid_clip.wav"
+        assert len(val.audio_bytes) == len(wav_bytes)
 
     def test_missing_file_rejected(self, corpus_env):
         corpus_dir, clip_meta, _ = corpus_env
@@ -471,6 +521,81 @@ class TestOptionBAudioFileValidation:
         )
         with pytest.raises(OptionBAudioValidationError, match="resolves outside corpus root"):
             validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_rejection_of_known_synthetic_smoke_or_historical_digest(self, tmp_path: Path, monkeypatch):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        from tools.bench.option_b_eval import KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS
+        known_digest = next(iter(KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS))
+        wav_bytes = create_test_wav_bytes(1.0)
+        (corpus_dir / "jfk_fake.wav").write_bytes(wav_bytes)
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="jfk_fake.wav",
+            sha256_digest=known_digest,
+            size_bytes=len(wav_bytes),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        mock_hasher = MagicMock()
+        mock_hasher.hexdigest.return_value = known_digest
+        monkeypatch.setattr("hashlib.sha256", lambda *args, **kwargs: mock_hasher)
+        with pytest.raises(OptionBAudioValidationError, match="Security rejection.*matches known synthetic smoke or historical prototype digest"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_pcm_payload_incomplete_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 16000)
+        data = bytearray(buf.getvalue())
+        data = data[:-100]  # truncate payload
+        (corpus_dir / "truncated.wav").write_bytes(bytes(data))
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="truncated.wav",
+            sha256_digest=hashlib.sha256(data).hexdigest().lower(),
+            size_bytes=len(data),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="PCM payload incomplete|Failed to parse"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_duration_mismatch_rejected(self, corpus_env):
+        corpus_dir, clip_meta, wav_bytes = corpus_env
+        mismatched_clip = OptionBClipManifest(
+            command_id=clip_meta.command_id,
+            filename=clip_meta.filename,
+            sha256_digest=clip_meta.sha256_digest,
+            size_bytes=clip_meta.size_bytes,
+            sample_rate_hz=clip_meta.sample_rate_hz,
+            channels=clip_meta.channels,
+            sample_format=clip_meta.sample_format,
+            duration_seconds=3.0,  # manifest claims 3.0s vs 1.5s actual
+            consenting_speaker_id=clip_meta.consenting_speaker_id,
+            physical_microphone_model=clip_meta.physical_microphone_model,
+            acoustic_environment_description=clip_meta.acoustic_environment_description,
+            ground_truth_transcript=clip_meta.ground_truth_transcript,
+        )
+        with pytest.raises(OptionBAudioValidationError, match="Duration mismatch"):
+            validate_option_b_audio_file(mismatched_clip, corpus_dir)
 
 
 # ==============================================================================
@@ -695,6 +820,60 @@ class TestOptionBGate02Evaluation:
         assert res.status == OptionBGateStatus.NOT_RUN.value
         assert "Inference execution failed" in res.reason
         assert "Native segmentation fault" in res.reason
+
+    def test_pending_recordings_with_clips_returns_not_run(self, setup_corpus):
+        manifest_path, corpus_dir = setup_corpus
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest_data = json.load(f)
+        manifest_data["formal_accuracy_corpus"]["status"] = "PENDING_RECORDINGS"
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+        res = evaluate_option_b_gate_02(
+            engine=MagicMock(),
+            manifest_path=manifest_path,
+            corpus_dir=corpus_dir,
+        )
+        assert res.status == OptionBGateStatus.NOT_RUN.value
+        assert "status is PENDING_RECORDINGS despite clips being present" in res.reason
+
+    def test_duplicate_physical_file_alias_rejected(self, setup_corpus):
+        manifest_path, corpus_dir = setup_corpus
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest_data = json.load(f)
+        # Point command 4 to the same physical file as command 1 via relative path alias
+        clips = manifest_data["formal_accuracy_corpus"]["clips"]
+        clips[3]["filename"] = "./" + clips[0]["filename"]
+        clips[3]["size_bytes"] = clips[0]["size_bytes"]
+        clips[3]["sha256_digest"] = clips[0]["sha256_digest"]
+        manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8")
+
+        res = evaluate_option_b_gate_02(
+            engine=MagicMock(),
+            manifest_path=manifest_path,
+            corpus_dir=corpus_dir,
+        )
+        assert res.status == OptionBGateStatus.NOT_RUN.value
+        assert "Duplicate file alias detected" in res.reason
+
+    def test_tuple_engine_return_unpacked_properly(self, setup_corpus):
+        manifest_path, corpus_dir = setup_corpus
+        mock_engine = MagicMock()
+        # PicoWhisperEngine.transcribe_wav_bytes returns (transcript, elapsed, duration)
+        mock_engine.transcribe_wav_bytes.side_effect = [
+            ("PICO stop.", 0.1, 1.0),
+            ("What tasks are currently waiting for my approval?", 0.2, 1.0),
+            ("Summarize the latest system logs and create a new draft task for review.", 0.3, 1.0),
+            ("We need to verify the database migrations, ensure all foreign key constraints are enabled, and check that the memory service cleans up expired working memories automatically.", 0.5, 1.0),
+        ]
+
+        res = evaluate_option_b_gate_02(
+            engine=mock_engine,
+            manifest_path=manifest_path,
+            corpus_dir=corpus_dir,
+        )
+        assert res.status == OptionBGateStatus.PASS.value
+        assert res.aggregate_edit_count == 0
+        assert res.aggregate_wer_pct == "0.0%"
 
 
 # ==============================================================================

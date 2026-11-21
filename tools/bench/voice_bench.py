@@ -1029,6 +1029,7 @@ def run_benchmark(
     sampler.start()
     ollama_checkpoints: list[tuple[str, OllamaResidencyState, str, str | None]] = []
     engine: PicoWhisperEngine | None = None
+    gate_02_result: OptionBGate02Result | None = None
 
     try:
         # Step 1: Verify intended model is positively GPU-resident before establishing baseline
@@ -1230,6 +1231,15 @@ def run_benchmark(
             res_ckpt = verify_ollama_model_residency("qwen3.5:2b")
             ollama_checkpoints.append((f"sample_{filename}", res_ckpt.state, res_ckpt.info, res_ckpt.digest))
 
+        # Checkpoint: Run Option B STT evaluation while engine is alive and sampler is active
+        gate_02_result = evaluate_option_b_gate_02(
+            engine=engine,
+            manifest_path=manifest_path,
+            corpus_dir=option_b_corpus_dir,
+            n_threads=n_threads,
+            model_meta=report.get("model"),
+        )
+
         # Checkpoint: Check Ollama residency post-final inference iteration
         res_post_final = verify_ollama_model_residency("qwen3.5:2b")
         ollama_checkpoints.append(("post_final", res_post_final.state, res_post_final.info, res_post_final.digest))
@@ -1385,13 +1395,14 @@ def run_benchmark(
         gate_01_measured = f"Designated 5-second benchmark sample '{DESIGNATED_5S_SAMPLE}' missing from evaluation corpus"
 
     # GATE-VOICE-02: STT Accuracy (WER) - Formal Option B Evaluation
-    gate_02_result = evaluate_option_b_gate_02(
-        engine=engine,
-        manifest_path=manifest_path,
-        corpus_dir=option_b_corpus_dir,
-        n_threads=n_threads,
-        model_meta=report.get("model"),
-    )
+    if gate_02_result is None:
+        gate_02_result = evaluate_option_b_gate_02(
+            engine=None,
+            manifest_path=manifest_path,
+            corpus_dir=option_b_corpus_dir,
+            n_threads=n_threads,
+            model_meta=report.get("model"),
+        )
     report["option_b_gate_02"] = gate_02_result.to_dict()
     gate_02_status = gate_02_result.status
     gate_02_measured = gate_02_result.format_measured_summary(
@@ -1399,6 +1410,9 @@ def run_benchmark(
         historical_macro_wer=macro_real_wer,
         historical_macro_cer=macro_real_cer,
         smoke_wer=aggregate_smoke_wer,
+        historical_samples_count=len(real_speech) if real_speech else None,
+        historical_words_count=total_real_ref_words if real_speech else None,
+        historical_edits_count=total_real_edits if real_speech else None,
     )
 
     # GATE-VOICE-03: TTS Latency
@@ -1558,9 +1572,11 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     if gate_01_status == "PASS" and gate_02_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
         status_line = "Stage 2 Prototype — Core Latency, Option B Accuracy, VRAM & RAM Qualified; Egress & Disk Retention NOT RUN"
     elif gate_01_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
-        status_line = "Stage 2 Prototype — Core Latency, VRAM & RAM Qualified; Accuracy, Egress & Disk Retention NOT RUN"
+        acc_str = "Accuracy Qualified" if gate_02_status == "PASS" else ("Accuracy FAILED" if gate_02_status == "FAIL" else "Accuracy NOT RUN")
+        status_line = f"Stage 2 Prototype — Core Latency, VRAM & RAM Qualified; {acc_str}, Egress & Disk Retention NOT RUN"
     elif gate_01_status == "PASS" and gate_05_status == "PASS" and gate_04_status == "NOT RUN":
-        status_line = "Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency, Accuracy, Egress & Disk Retention NOT RUN)"
+        acc_str = "Accuracy Qualified" if gate_02_status == "PASS" else ("Accuracy FAILED" if gate_02_status == "FAIL" else "Accuracy NOT RUN")
+        status_line = f"Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency NOT RUN; {acc_str}; Egress & Disk Retention NOT RUN)"
     else:
         status_line = "Stage 2 Prototype — Incomplete / Partial Qualification"
 
@@ -1573,6 +1589,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     else:
         clean_str = " (Unknown)"
     git_commit_display = f"`{git_commit_str}`{clean_str}"
+
+    manifest_display = report.get("option_b_gate_02", {}).get("manifest_path") or "docs/evaluation/voice_corpus_manifest.json"
 
     lines: list[str] = [
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
@@ -1588,7 +1606,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "- **Responsiveness Note**: FastAPI event loop responsiveness and capture stream continuity under concurrent load were not measured during this prototype benchmark and are marked NOT RUN.",
         f"- **Runtime Engine**: whisper.cpp {report['runtime'].get('version', 'unknown')}",
         f"- **Model**: `{report['model'].get('filename')}` ({round(report['model'].get('size_bytes', 0) / (1024*1024), 2)} MB, SHA-256: `{report['model'].get('sha256', '')[:16]}...`)",
-        "- **Corpus Manifest**: `docs/evaluation/voice_corpus_manifest.json`",
+        f"- **Corpus Manifest**: `{manifest_display}`",
         "",
         "---",
         "",
@@ -1658,9 +1676,11 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             "|---|---|---|---|---|---|",
         ])
         for cr in opt_b["command_results"]:
+            safe_ref = cr["reference_text"].replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            safe_hyp = cr["hypothesis_text"].replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
             lines.append(
-                f"| `{cr['command_id']}` | \"{cr['reference_text']}\" | {cr['reference_word_count']} | "
-                f"\"{cr['hypothesis_text']}\" | {cr['edit_distance']} ({cr['substitutions']}/{cr['deletions']}/{cr['insertions']}) | "
+                f"| `{cr['command_id']}` | \"{safe_ref}\" | {cr['reference_word_count']} | "
+                f"\"{safe_hyp}\" | {cr['edit_distance']} ({cr['substitutions']}/{cr['deletions']}/{cr['insertions']}) | "
                 f"{format_metric_pct(cr['wer_ratio'])} |"
             )
         lines.extend([
