@@ -20,8 +20,10 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
+import struct
 import unicodedata
 import wave
 from dataclasses import asdict, dataclass, field
@@ -61,6 +63,15 @@ EXPECTED_CANONICAL_COMMANDS: dict[str, dict[str, Any]] = {
 
 CANONICAL_TOTAL_REFERENCE_WORDS: int = 49
 GATE_02_TARGET_WER_THRESHOLD_PCT: float = 12.0
+VALID_MANIFEST_STATUSES: frozenset[str] = frozenset({
+    "PENDING_RECORDINGS",
+    "RECORDED",
+    "EVALUATED",
+})
+QUALIFYING_MANIFEST_STATUSES: frozenset[str] = frozenset({
+    "RECORDED",
+    "EVALUATED",
+})
 REQUIRED_PROVENANCE_FIELDS: tuple[str, ...] = (
     "command_id",
     "filename",
@@ -102,6 +113,11 @@ _DIGIT_MAP = {
     "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
     "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
 }
+
+
+def _is_strict_int(val: Any) -> bool:
+    """Return True if val is an int and strictly not a boolean."""
+    return isinstance(val, int) and not isinstance(val, bool)
 
 
 class OptionBCorpusError(Exception):
@@ -174,7 +190,8 @@ class OptionBGate02Result:
     command_results: list[dict[str, Any]] = field(default_factory=list)
     reason: str = ""
     manifest_status: str = "UNKNOWN"
-    manifest_path: str | None = None
+    manifest_display_name: str | None = None
+    manifest_sha256: str | None = None
     model_identifier: str | None = None
     model_digest: str | None = None
     errors: list[str] = field(default_factory=list)
@@ -279,6 +296,126 @@ def compute_levenshtein_ops(seq1: list[str] | str, seq2: list[str] | str) -> tup
     return dp[m][n]
 
 
+def validate_wav_riff_pcm_header(raw_bytes: bytes, filename: str) -> tuple[int, int, int, int]:
+    """Parse and validate RIFF/WAVE header and PCM format down to binary chunk structure.
+
+    Enforces:
+    - RIFF container with WAVE format tag.
+    - fmt chunk: uncompressed PCM (1), mono (1), 16000 Hz, 32000 byte rate, 2 block align, strictly 16 bits per sample.
+    - data chunk: non-empty, frame-aligned payload matching declared chunk length.
+
+    Returns:
+        (n_channels, sampwidth, framerate, n_frames)
+
+    Raises:
+        OptionBAudioValidationError: If any byte-level constraint is violated.
+    """
+    total_len = len(raw_bytes)
+    if total_len < 44:
+        raise OptionBAudioValidationError(
+            f"Audio file '{filename}' is too short ({total_len} bytes) to contain a valid RIFF/WAVE header."
+        )
+
+    if raw_bytes[0:4] != b"RIFF":
+        raise OptionBAudioValidationError(
+            f"Audio file '{filename}' missing RIFF signature."
+        )
+
+    riff_size = struct.unpack("<I", raw_bytes[4:8])[0]
+    if riff_size + 8 > total_len:
+        raise OptionBAudioValidationError(
+            f"Audio file '{filename}' RIFF chunk size {riff_size} exceeds actual file length {total_len}."
+        )
+
+    if raw_bytes[8:12] != b"WAVE":
+        raise OptionBAudioValidationError(
+            f"Audio file '{filename}' missing WAVE format tag."
+        )
+
+    offset = 12
+    fmt_parsed = False
+    data_parsed = False
+    n_channels = 0
+    framerate = 0
+    bits_per_sample = 0
+    n_frames = 0
+
+    while offset + 8 <= total_len:
+        chunk_id = raw_bytes[offset:offset+4]
+        chunk_size = struct.unpack("<I", raw_bytes[offset+4:offset+8])[0]
+        chunk_data_start = offset + 8
+        chunk_data_end = chunk_data_start + chunk_size
+
+        if chunk_data_end > total_len:
+            raise OptionBAudioValidationError(
+                f"Audio file '{filename}' chunk {chunk_id!r} declared size {chunk_size} exceeds file length."
+            )
+
+        if chunk_id == b"fmt ":
+            if chunk_size < 16:
+                raise OptionBAudioValidationError(
+                    f"Audio file '{filename}' fmt chunk size {chunk_size} is less than required 16 bytes."
+                )
+            wFormatTag, nChannels, nSamplesPerSec, nAvgBytesPerSec, nBlockAlign, wBitsPerSample = struct.unpack(
+                "<HHIIHH", raw_bytes[chunk_data_start:chunk_data_start+16]
+            )
+            if wFormatTag != 1:  # WAVE_FORMAT_PCM
+                raise OptionBAudioValidationError(
+                    f"Audio compression violation for '{filename}': expected uncompressed PCM (format tag 1), got {wFormatTag}."
+                )
+            if nChannels != 1:
+                raise OptionBAudioValidationError(
+                    f"Audio channel format violation for '{filename}': expected mono (1 channel), got {nChannels}."
+                )
+            if nSamplesPerSec != 16000:
+                raise OptionBAudioValidationError(
+                    f"Audio sample rate violation for '{filename}': expected 16000 Hz, got {nSamplesPerSec} Hz."
+                )
+            if wBitsPerSample != 16:
+                raise OptionBAudioValidationError(
+                    f"Audio bit depth violation for '{filename}': expected strictly 16-bit PCM, got {wBitsPerSample}-bit."
+                )
+            if nBlockAlign != 2:
+                raise OptionBAudioValidationError(
+                    f"Audio block alignment violation for '{filename}': expected 2 bytes, got {nBlockAlign}."
+                )
+            if nAvgBytesPerSec != 32000:
+                raise OptionBAudioValidationError(
+                    f"Audio byte rate violation for '{filename}': expected 32000 bytes/sec, got {nAvgBytesPerSec}."
+                )
+            fmt_parsed = True
+            n_channels = nChannels
+            framerate = nSamplesPerSec
+            bits_per_sample = wBitsPerSample
+        elif chunk_id == b"data":
+            if not fmt_parsed:
+                raise OptionBAudioValidationError(
+                    f"Audio file '{filename}' contains data chunk before fmt chunk."
+                )
+            if chunk_size <= 0:
+                raise OptionBAudioValidationError(
+                    f"Audio payload violation for '{filename}': data chunk is empty (0 bytes)."
+                )
+            if chunk_size % 2 != 0:
+                raise OptionBAudioValidationError(
+                    f"Audio payload violation for '{filename}': data chunk size {chunk_size} not aligned to 16-bit samples."
+                )
+            n_frames = chunk_size // 2
+            data_parsed = True
+
+        pad = chunk_size % 2
+        offset = chunk_data_end + pad
+
+    if not fmt_parsed:
+        raise OptionBAudioValidationError(f"Audio file '{filename}' missing required fmt chunk.")
+    if not data_parsed:
+        raise OptionBAudioValidationError(f"Audio file '{filename}' missing required data chunk.")
+    if n_frames <= 0:
+        raise OptionBAudioValidationError(f"Audio payload violation for '{filename}': zero frames found.")
+
+    return n_channels, 2, framerate, n_frames
+
+
 def validate_option_b_manifest(
     manifest_data: dict[str, Any],
 ) -> tuple[dict[str, CanonicalCommand], list[OptionBClipManifest]]:
@@ -296,6 +433,12 @@ def validate_option_b_manifest(
     corpus_section = manifest_data.get("formal_accuracy_corpus")
     if not isinstance(corpus_section, dict):
         raise OptionBManifestError("Manifest missing 'formal_accuracy_corpus' object.")
+
+    status = corpus_section.get("status")
+    if not isinstance(status, str) or status not in VALID_MANIFEST_STATUSES:
+        raise OptionBManifestError(
+            f"Manifest 'formal_accuracy_corpus.status' must be one of {sorted(VALID_MANIFEST_STATUSES)}, got {status!r}."
+        )
 
     # 1. Validate canonical_commands
     raw_commands = corpus_section.get("canonical_commands")
@@ -336,9 +479,9 @@ def validate_option_b_manifest(
             )
 
         wc = cmd_raw.get("word_count")
-        if wc != expected_meta["word_count"]:
+        if not _is_strict_int(wc) or wc != expected_meta["word_count"]:
             raise OptionBManifestError(
-                f"Word count mismatch for '{cid}'. Expected {expected_meta['word_count']}, got {wc}."
+                f"Word count mismatch for '{cid}'. Expected {expected_meta['word_count']}, got {wc!r}."
             )
 
         desc = cmd_raw.get("description", expected_meta["description"])
@@ -357,9 +500,9 @@ def validate_option_b_manifest(
         )
 
     manifest_total_words = corpus_section.get("total_reference_words")
-    if manifest_total_words != CANONICAL_TOTAL_REFERENCE_WORDS:
+    if not _is_strict_int(manifest_total_words) or manifest_total_words != CANONICAL_TOTAL_REFERENCE_WORDS:
         raise OptionBManifestError(
-            f"Manifest 'total_reference_words' is {manifest_total_words}, expected {CANONICAL_TOTAL_REFERENCE_WORDS}."
+            f"Manifest 'total_reference_words' is {manifest_total_words!r}, expected {CANONICAL_TOTAL_REFERENCE_WORDS}."
         )
 
     # 2. Validate clips
@@ -437,17 +580,17 @@ def validate_option_b_manifest(
 
         # Size check
         size_bytes = clip_raw["size_bytes"]
-        if not isinstance(size_bytes, int) or size_bytes <= 0:
-            raise OptionBManifestError(f"Clip '{fn}' size_bytes must be a positive integer.")
+        if not _is_strict_int(size_bytes) or size_bytes <= 0:
+            raise OptionBManifestError(f"Clip '{fn}' size_bytes must be a positive integer, got {size_bytes!r}.")
 
         # Audio parameters
         sr = clip_raw["sample_rate_hz"]
-        if sr != 16000:
-            raise OptionBManifestError(f"Clip '{fn}' sample_rate_hz must be strictly 16000, got {sr}.")
+        if not _is_strict_int(sr) or sr != 16000:
+            raise OptionBManifestError(f"Clip '{fn}' sample_rate_hz must be strictly 16000, got {sr!r}.")
 
         ch = clip_raw["channels"]
-        if ch != 1:
-            raise OptionBManifestError(f"Clip '{fn}' channels must be strictly 1 (mono), got {ch}.")
+        if not _is_strict_int(ch) or ch != 1:
+            raise OptionBManifestError(f"Clip '{fn}' channels must be strictly 1 (mono), got {ch!r}.")
 
         fmt = clip_raw["sample_format"]
         if fmt != "16-bit signed PCM (little-endian)":
@@ -456,8 +599,10 @@ def validate_option_b_manifest(
             )
 
         dur = clip_raw["duration_seconds"]
-        if not isinstance(dur, (int, float)) or dur <= 0.0:
-            raise OptionBManifestError(f"Clip '{fn}' duration_seconds must be a positive number.")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not math.isfinite(dur) or dur <= 0.0:
+            raise OptionBManifestError(
+                f"Clip '{fn}' duration_seconds must be a finite, positive number, got {dur!r}."
+            )
 
         # Consenting operator provenance
         speaker_id = clip_raw["consenting_speaker_id"]
@@ -533,24 +678,26 @@ def validate_option_b_audio_file(
         target_path.relative_to(resolved_corpus)
     except ValueError:
         raise OptionBAudioValidationError(
-            f"Path traversal detected: '{clip.filename}' resolves outside corpus root '{resolved_corpus}'."
+            f"Path traversal detected: '{clip.filename}' resolves outside corpus root."
         )
 
     if not target_path.exists():
         raise OptionBAudioValidationError(
-            f"Option B audio file not found: '{target_path}'."
+            f"Option B audio file not found: '{clip.filename}'."
         )
 
     if not target_path.is_file():
         raise OptionBAudioValidationError(
-            f"Option B audio path is not a regular file: '{target_path}'."
+            f"Option B audio path is not a regular file: '{clip.filename}'."
         )
 
     # Read bytes once to prevent TOCTOU and redundant disk reads
     try:
         raw_bytes = target_path.read_bytes()
     except OSError as exc:
-        raise OptionBAudioValidationError(f"Failed to read audio file '{target_path}': {exc}") from exc
+        raise OptionBAudioValidationError(
+            f"Failed to read audio file '{clip.filename}': {exc.strerror or exc}"
+        ) from exc
 
     # Size check
     actual_size = len(raw_bytes)
@@ -573,7 +720,12 @@ def validate_option_b_audio_file(
             "GATE-VOICE-02 strictly requires genuine, naturally spoken human recordings."
         )
 
-    # RIFF/WAVE header and PCM format validation
+    # 1. Byte-level RIFF/WAVE header and 16-bit PCM format validation
+    riff_channels, riff_sampwidth, riff_framerate, riff_n_frames = validate_wav_riff_pcm_header(
+        raw_bytes, clip.filename
+    )
+
+    # 2. Standard library wave parser validation
     try:
         with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
             n_channels = wf.getnchannels()
@@ -649,23 +801,31 @@ def evaluate_option_b_gate_02(
     model_id = model_meta.get("filename") if model_meta else None
     model_sha = model_meta.get("sha256") if model_meta else None
 
+    manifest_display = manifest_path.name
+    try:
+        manifest_raw = manifest_path.read_bytes()
+        manifest_sha = hashlib.sha256(manifest_raw).hexdigest().lower()
+    except Exception:
+        manifest_sha = None
+
     result = OptionBGate02Result(
         model_identifier=model_id,
         model_digest=model_sha,
-        manifest_path=str(manifest_path),
+        manifest_display_name=manifest_display,
+        manifest_sha256=manifest_sha,
     )
 
     # 1. Manifest file existence & load
     if not manifest_path.exists():
         result.status = OptionBGateStatus.NOT_RUN.value
-        result.reason = f"Voice corpus manifest not found at '{manifest_path}'"
+        result.reason = f"Voice corpus manifest '{manifest_display}' not found"
         return result
     try:
         with manifest_path.open("r", encoding="utf-8") as f:
             manifest_data = json.load(f)
     except Exception as exc:
         result.status = OptionBGateStatus.NOT_RUN.value
-        result.reason = f"Failed to parse manifest JSON at '{manifest_path}': {exc}"
+        result.reason = f"Failed to parse manifest JSON for '{manifest_display}': {exc}"
         return result
     # 2. Manifest structural validation FIRST before extracting status
     try:
@@ -691,12 +851,12 @@ def evaluate_option_b_gate_02(
         )
         return result
 
-    # Prevent a pending manifest with clips from producing a formal measured result
-    if result.manifest_status == "PENDING_RECORDINGS":
+    # Prevent a non-qualifying manifest with clips from producing a formal measured result
+    if result.manifest_status not in QUALIFYING_MANIFEST_STATUSES:
         result.status = OptionBGateStatus.NOT_RUN.value
         result.reason = (
-            "Option B manifest status is PENDING_RECORDINGS despite clips being present; "
-            "manifest status must be updated to RECORDED or EVALUATED to qualify."
+            f"Option B manifest status '{result.manifest_status}' is not qualifying; "
+            f"manifest status must be one of {sorted(QUALIFYING_MANIFEST_STATUSES)} to qualify."
         )
         return result
 
@@ -708,14 +868,26 @@ def evaluate_option_b_gate_02(
 
     if not corpus_dir.exists() or not corpus_dir.is_dir():
         result.status = OptionBGateStatus.NOT_RUN.value
-        result.reason = f"Option B corpus directory '{corpus_dir}' does not exist or is not a directory"
+        result.reason = f"Option B corpus directory '{corpus_dir.name}' does not exist or is not a directory"
         return result
 
     # 4. Audio file safety, cryptographic validation, and physical alias detection
     validated_files: dict[str, ValidatedAudioClip] = {}
+    seen_audio_digests: set[str] = set()
     seen_resolved_paths: set[Path] = set()
+    seen_file_identities: set[tuple[int, int]] = set()
 
     for clip in clips:
+        if clip.sha256_digest in seen_audio_digests:
+            result.status = OptionBGateStatus.NOT_RUN.value
+            result.reason = (
+                f"Duplicate audio content detected: clip '{clip.filename}' ({clip.command_id}) "
+                f"has identical SHA-256 digest to another clip in the corpus"
+            )
+            result.errors.append(result.reason)
+            return result
+        seen_audio_digests.add(clip.sha256_digest)
+
         try:
             val_clip = validate_option_b_audio_file(clip, corpus_dir)
             real_path = val_clip.path.resolve()
@@ -723,11 +895,34 @@ def evaluate_option_b_gate_02(
                 result.status = OptionBGateStatus.NOT_RUN.value
                 result.reason = (
                     f"Duplicate file alias detected: clip '{clip.filename}' ({clip.command_id}) "
-                    f"resolves to already registered file '{real_path}'"
+                    f"resolves to already registered file"
                 )
                 result.errors.append(result.reason)
                 return result
             seen_resolved_paths.add(real_path)
+
+            if val_clip.path.is_symlink():
+                result.status = OptionBGateStatus.NOT_RUN.value
+                result.reason = (
+                    f"Symlink rejected: clip '{clip.filename}' ({clip.command_id}) is a symbolic link; "
+                    "qualification audio clips must be regular files"
+                )
+                result.errors.append(result.reason)
+                return result
+
+            st = val_clip.path.stat()
+            file_ident = (st.st_dev, st.st_ino)
+            if st.st_ino != 0 and file_ident in seen_file_identities:
+                result.status = OptionBGateStatus.NOT_RUN.value
+                result.reason = (
+                    f"Duplicate physical file detected: clip '{clip.filename}' ({clip.command_id}) "
+                    f"shares inode with another clip (hard link alias detected)"
+                )
+                result.errors.append(result.reason)
+                return result
+            if st.st_ino != 0:
+                seen_file_identities.add(file_ident)
+
             validated_files[clip.command_id] = val_clip
         except (OptionBAudioValidationError, OSError) as exc:
             result.status = OptionBGateStatus.NOT_RUN.value

@@ -51,6 +51,7 @@ from tools.bench.whisper_prototype import (
 from tools.bench.option_b_eval import (
     OptionBGate02Result,
     OptionBGateStatus,
+    compute_levenshtein_ops,
     evaluate_option_b_gate_02,
     normalize_text_for_option_b,
     validate_option_b_audio_file,
@@ -59,54 +60,8 @@ from tools.bench.option_b_eval import (
 
 logger = logging.getLogger("voice_bench")
 
-_DIGIT_MAP = {
-    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
-    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
-}
-
-
-def normalize_text_for_eval(text: str) -> str:
-    """Normalize text for ASR WER evaluation (casefold, remove punctuation, expand digits, collapse whitespace)."""
-    text = text.lower()
-    text = re.sub(r"\d", lambda m: f" {_DIGIT_MAP[m.group(0)]} ", text)
-    text = re.sub(r"[^\w\s]", "", text)
-    return " ".join(text.split())
-
-
-# Provide aliases for testing and external callers
+normalize_text_for_eval = normalize_text_for_option_b
 normalize_text = normalize_text_for_eval
-
-
-def compute_levenshtein_ops(seq1: list[str] | str, seq2: list[str] | str) -> tuple[int, int, int, int]:
-    """Compute Wagner-Fischer edit distance and operations between two sequences.
-
-    Returns:
-        (distance, substitutions, deletions, insertions)
-    """
-    m, n = len(seq1), len(seq2)
-    # dp[i][j] = (dist, subs, dels, ins)
-    dp = [[(0, 0, 0, 0)] * (n + 1) for _ in range(m + 1)]
-    for i in range(1, m + 1):
-        dp[i][0] = (i, 0, i, 0)
-    for j in range(1, n + 1):
-        dp[0][j] = (j, 0, 0, j)
-
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if seq1[i - 1] == seq2[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
-            else:
-                prev_sub = dp[i - 1][j - 1]
-                prev_del = dp[i - 1][j]
-                prev_ins = dp[i][j - 1]
-
-                cand_sub = (prev_sub[0] + 1, prev_sub[1] + 1, prev_sub[2], prev_sub[3])
-                cand_del = (prev_del[0] + 1, prev_del[1], prev_del[2] + 1, prev_del[3])
-                cand_ins = (prev_ins[0] + 1, prev_ins[1], prev_ins[2], prev_ins[3] + 1)
-
-                dp[i][j] = min(cand_sub, cand_del, cand_ins, key=lambda x: x[0])
-
-    return dp[m][n]
 
 
 def compute_wer(reference: str, hypothesis: str) -> float:
@@ -1590,7 +1545,12 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         clean_str = " (Unknown)"
     git_commit_display = f"`{git_commit_str}`{clean_str}"
 
-    manifest_display = report.get("option_b_gate_02", {}).get("manifest_path") or "docs/evaluation/voice_corpus_manifest.json"
+    manifest_name = report.get("option_b_gate_02", {}).get("manifest_display_name") or "voice_corpus_manifest.json"
+    manifest_sha = report.get("option_b_gate_02", {}).get("manifest_sha256")
+    if manifest_sha:
+        manifest_display = f"`{manifest_name}` (SHA-256: `{manifest_sha[:16]}...`)"
+    else:
+        manifest_display = f"`{manifest_name}`"
 
     lines: list[str] = [
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
@@ -1606,7 +1566,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "- **Responsiveness Note**: FastAPI event loop responsiveness and capture stream continuity under concurrent load were not measured during this prototype benchmark and are marked NOT RUN.",
         f"- **Runtime Engine**: whisper.cpp {report['runtime'].get('version', 'unknown')}",
         f"- **Model**: `{report['model'].get('filename')}` ({round(report['model'].get('size_bytes', 0) / (1024*1024), 2)} MB, SHA-256: `{report['model'].get('sha256', '')[:16]}...`)",
-        f"- **Corpus Manifest**: `{manifest_display}`",
+        f"- **Corpus Manifest**: {manifest_display}",
         "",
         "---",
         "",
