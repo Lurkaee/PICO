@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 logger = logging.getLogger("option_b_eval")
 
@@ -322,9 +322,14 @@ def validate_wav_riff_pcm_header(raw_bytes: bytes, filename: str) -> tuple[int, 
         )
 
     riff_size = struct.unpack("<I", raw_bytes[4:8])[0]
-    if riff_size + 8 > total_len:
+    riff_end = 8 + riff_size
+    if riff_end > total_len:
         raise OptionBAudioValidationError(
             f"Audio file '{filename}' RIFF chunk size {riff_size} exceeds actual file length {total_len}."
+        )
+    if total_len > riff_end:
+        raise OptionBAudioValidationError(
+            f"Audio file '{filename}' contains {total_len - riff_end} unauthorized trailing bytes beyond RIFF boundary."
         )
 
     if raw_bytes[8:12] != b"WAVE":
@@ -340,18 +345,23 @@ def validate_wav_riff_pcm_header(raw_bytes: bytes, filename: str) -> tuple[int, 
     bits_per_sample = 0
     n_frames = 0
 
-    while offset + 8 <= total_len:
+    while offset + 8 <= riff_end:
         chunk_id = raw_bytes[offset:offset+4]
         chunk_size = struct.unpack("<I", raw_bytes[offset+4:offset+8])[0]
         chunk_data_start = offset + 8
         chunk_data_end = chunk_data_start + chunk_size
+        pad = chunk_size % 2
 
-        if chunk_data_end > total_len:
+        if chunk_data_end + pad > riff_end:
             raise OptionBAudioValidationError(
-                f"Audio file '{filename}' chunk {chunk_id!r} declared size {chunk_size} exceeds file length."
+                f"Audio file '{filename}' chunk {chunk_id!r} declared size {chunk_size} exceeds RIFF boundary."
             )
 
         if chunk_id == b"fmt ":
+            if fmt_parsed:
+                raise OptionBAudioValidationError(
+                    f"Audio file '{filename}' contains duplicate 'fmt ' chunk."
+                )
             if chunk_size < 16:
                 raise OptionBAudioValidationError(
                     f"Audio file '{filename}' fmt chunk size {chunk_size} is less than required 16 bytes."
@@ -388,6 +398,10 @@ def validate_wav_riff_pcm_header(raw_bytes: bytes, filename: str) -> tuple[int, 
             framerate = nSamplesPerSec
             bits_per_sample = wBitsPerSample
         elif chunk_id == b"data":
+            if data_parsed:
+                raise OptionBAudioValidationError(
+                    f"Audio file '{filename}' contains duplicate 'data' chunk."
+                )
             if not fmt_parsed:
                 raise OptionBAudioValidationError(
                     f"Audio file '{filename}' contains data chunk before fmt chunk."
@@ -403,8 +417,12 @@ def validate_wav_riff_pcm_header(raw_bytes: bytes, filename: str) -> tuple[int, 
             n_frames = chunk_size // 2
             data_parsed = True
 
-        pad = chunk_size % 2
         offset = chunk_data_end + pad
+
+    if offset != riff_end:
+        raise OptionBAudioValidationError(
+            f"Audio file '{filename}' has unexpected trailing or incomplete chunk data within RIFF container."
+        )
 
     if not fmt_parsed:
         raise OptionBAudioValidationError(f"Audio file '{filename}' missing required fmt chunk.")
@@ -670,8 +688,25 @@ def validate_option_b_audio_file(
     Raises:
         OptionBAudioValidationError: If file fails path, format, or cryptographic checks.
     """
-    resolved_corpus = corpus_dir.resolve()
-    target_path = (corpus_dir / clip.filename).resolve()
+    raw_candidate = corpus_dir / clip.filename
+    if raw_candidate.is_symlink():
+        raise OptionBAudioValidationError(
+            f"Symlink rejected: '{clip.filename}' is a symbolic link; qualification audio clips must be regular files."
+        )
+
+    try:
+        resolved_corpus = corpus_dir.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise OptionBAudioValidationError(
+            f"Failed to resolve corpus root: {getattr(exc, 'strerror', None) or exc}"
+        ) from exc
+
+    try:
+        target_path = raw_candidate.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise OptionBAudioValidationError(
+            f"Failed to resolve audio file path for '{clip.filename}': {getattr(exc, 'strerror', None) or exc}"
+        ) from exc
 
     # Path traversal & containment check
     try:
@@ -686,7 +721,7 @@ def validate_option_b_audio_file(
             f"Option B audio file not found: '{clip.filename}'."
         )
 
-    if not target_path.is_file():
+    if not target_path.is_file() or target_path.is_symlink():
         raise OptionBAudioValidationError(
             f"Option B audio path is not a regular file: '{clip.filename}'."
         )
@@ -787,6 +822,7 @@ def evaluate_option_b_gate_02(
     corpus_dir: Path | None,
     n_threads: int = 4,
     model_meta: dict[str, Any] | None = None,
+    telemetry_poll_fn: Callable[[], None] | None = None,
 ) -> OptionBGate02Result:
     """Evaluate formal GATE-VOICE-02 accuracy against the Option B human command corpus.
 
@@ -802,6 +838,7 @@ def evaluate_option_b_gate_02(
     model_sha = model_meta.get("sha256") if model_meta else None
 
     manifest_display = manifest_path.name
+    manifest_raw: bytes | None = None
     try:
         manifest_raw = manifest_path.read_bytes()
         manifest_sha = hashlib.sha256(manifest_raw).hexdigest().lower()
@@ -821,11 +858,21 @@ def evaluate_option_b_gate_02(
         result.reason = f"Voice corpus manifest '{manifest_display}' not found"
         return result
     try:
-        with manifest_path.open("r", encoding="utf-8") as f:
-            manifest_data = json.load(f)
+        if manifest_raw is None:
+            raise OSError("manifest bytes were not read")
+        manifest_data = json.loads(manifest_raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        result.status = OptionBGateStatus.NOT_RUN.value
+        result.reason = f"Failed to parse manifest JSON for '{manifest_display}': JSONDecodeError ({exc.msg} at line {exc.lineno})"
+        return result
+    except OSError as exc:
+        result.status = OptionBGateStatus.NOT_RUN.value
+        err_msg = exc.strerror or type(exc).__name__
+        result.reason = f"Failed to read manifest file '{manifest_display}': {type(exc).__name__} ({err_msg})"
+        return result
     except Exception as exc:
         result.status = OptionBGateStatus.NOT_RUN.value
-        result.reason = f"Failed to parse manifest JSON for '{manifest_display}': {exc}"
+        result.reason = f"Failed to parse manifest JSON for '{manifest_display}': {type(exc).__name__}"
         return result
     # 2. Manifest structural validation FIRST before extracting status
     try:
@@ -888,6 +935,16 @@ def evaluate_option_b_gate_02(
             return result
         seen_audio_digests.add(clip.sha256_digest)
 
+        candidate_path = corpus_dir / clip.filename
+        if candidate_path.is_symlink():
+            result.status = OptionBGateStatus.NOT_RUN.value
+            result.reason = (
+                f"Symlink rejected: clip '{clip.filename}' ({clip.command_id}) is a symbolic link; "
+                "qualification audio clips must be regular files"
+            )
+            result.errors.append(result.reason)
+            return result
+
         try:
             val_clip = validate_option_b_audio_file(clip, corpus_dir)
             real_path = val_clip.path.resolve()
@@ -900,15 +957,6 @@ def evaluate_option_b_gate_02(
                 result.errors.append(result.reason)
                 return result
             seen_resolved_paths.add(real_path)
-
-            if val_clip.path.is_symlink():
-                result.status = OptionBGateStatus.NOT_RUN.value
-                result.reason = (
-                    f"Symlink rejected: clip '{clip.filename}' ({clip.command_id}) is a symbolic link; "
-                    "qualification audio clips must be regular files"
-                )
-                result.errors.append(result.reason)
-                return result
 
             st = val_clip.path.stat()
             file_ident = (st.st_dev, st.st_ino)
@@ -924,10 +972,11 @@ def evaluate_option_b_gate_02(
                 seen_file_identities.add(file_ident)
 
             validated_files[clip.command_id] = val_clip
-        except (OptionBAudioValidationError, OSError) as exc:
+        except (OptionBAudioValidationError, OSError, RuntimeError) as exc:
             result.status = OptionBGateStatus.NOT_RUN.value
-            result.reason = f"Audio validation failed for clip '{clip.filename}': {exc}"
-            result.errors.append(str(exc))
+            err_msg = getattr(exc, "strerror", None) or str(exc)
+            result.reason = f"Audio validation failed for clip '{clip.filename}': {err_msg}"
+            result.errors.append(err_msg)
             return result
 
     # 5. Native inference engine availability
@@ -951,6 +1000,8 @@ def evaluate_option_b_gate_02(
         cmd_meta = canonical_commands[clip.command_id]
         ref_text = cmd_meta.canonical_text
 
+        if telemetry_poll_fn is not None:
+            telemetry_poll_fn()
         try:
             engine_out = engine.transcribe_wav_bytes(val_clip.audio_bytes, n_threads=n_threads)
             if isinstance(engine_out, (tuple, list)):
@@ -966,6 +1017,9 @@ def evaluate_option_b_gate_02(
             )
             result.errors.append(str(exc))
             return result
+        finally:
+            if telemetry_poll_fn is not None:
+                telemetry_poll_fn()
         norm_ref = normalize_text_for_option_b(ref_text)
         norm_hyp = normalize_text_for_option_b(hyp_text)
 

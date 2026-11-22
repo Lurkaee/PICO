@@ -1187,12 +1187,30 @@ def run_benchmark(
             ollama_checkpoints.append((f"sample_{filename}", res_ckpt.state, res_ckpt.info, res_ckpt.digest))
 
         # Checkpoint: Run Option B STT evaluation while engine is alive and sampler is active
+        def _option_b_telemetry_poll() -> None:
+            nonlocal min_avail_ram_observed, avail_ram_readings_valid
+            nonlocal max_vram_observed, min_vram_observed, vram_observations_count, vram_readings_valid
+            _, avail_now = query_system_memory_mb()
+            if avail_now is not None:
+                min_avail_ram_observed = min(min_avail_ram_observed, avail_now)
+            else:
+                avail_ram_readings_valid = False
+
+            vram_now = query_gpu_vram_mb()
+            if vram_now is not None:
+                max_vram_observed = max(max_vram_observed, vram_now)
+                min_vram_observed = min(min_vram_observed, vram_now)
+                vram_observations_count += 1
+            else:
+                vram_readings_valid = False
+
         gate_02_result = evaluate_option_b_gate_02(
             engine=engine,
             manifest_path=manifest_path,
             corpus_dir=option_b_corpus_dir,
             n_threads=n_threads,
             model_meta=report.get("model"),
+            telemetry_poll_fn=_option_b_telemetry_poll,
         )
 
         # Checkpoint: Check Ollama residency post-final inference iteration

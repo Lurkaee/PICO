@@ -80,7 +80,10 @@ def create_12bit_test_wav_bytes(
     return riff_header + riff_payload
 
 
-def create_mock_manifest_dict(clips: list[dict] | None = None) -> dict:
+def create_mock_manifest_dict(
+    clips: list[dict] | None = None,
+    status: str | None = None,
+) -> dict:
     """Helper to generate a valid manifest dictionary with optional clips."""
     canonical_commands_list = []
     for cid, meta in EXPECTED_CANONICAL_COMMANDS.items():
@@ -91,11 +94,14 @@ def create_mock_manifest_dict(clips: list[dict] | None = None) -> dict:
             "description": meta["description"],
         })
 
+    if status is None:
+        status = "RECORDED" if clips else "PENDING_RECORDINGS"
+
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "PICO Voice Evaluation Corpus Manifest",
         "formal_accuracy_corpus": {
-            "status": "RECORDED" if clips else "PENDING_RECORDINGS",
+            "status": status,
             "specification": "Option B — Naturally spoken human recordings of the four canonical command texts",
             "required_format": "16 kHz, 16-bit mono signed PCM (little-endian) RIFF/WAVE",
             "target_wer_threshold": 12.0,
@@ -621,6 +627,164 @@ class TestOptionBAudioFileValidation:
         with pytest.raises(OptionBAudioValidationError, match="Audio file 'corrupt.wav' (RIFF chunk size|missing|too short)"):
             validate_option_b_audio_file(clip, corpus_dir)
 
+    def test_riff_size_exceeds_total_len_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        wav_bytes = bytearray(create_test_wav_bytes(1.0))
+        struct.pack_into("<I", wav_bytes, 4, len(wav_bytes) + 1000)
+        (corpus_dir / "bad_riff_size.wav").write_bytes(bytes(wav_bytes))
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="bad_riff_size.wav",
+            sha256_digest=hashlib.sha256(wav_bytes).hexdigest().lower(),
+            size_bytes=len(wav_bytes),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="RIFF chunk size.*exceeds actual file length"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_unauthorized_trailing_bytes_beyond_riff_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        wav_bytes = create_test_wav_bytes(1.0) + b"UNAUTHORIZED_TRAILING_BYTES"
+        (corpus_dir / "trailing.wav").write_bytes(wav_bytes)
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="trailing.wav",
+            sha256_digest=hashlib.sha256(wav_bytes).hexdigest().lower(),
+            size_bytes=len(wav_bytes),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="unauthorized trailing bytes beyond RIFF boundary"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_duplicate_fmt_chunk_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        # Craft WAV with duplicate fmt chunk
+        base_wav = create_test_wav_bytes(1.0)
+        # fmt chunk is 24 bytes (8 header + 16 payload) starting at offset 12
+        fmt_chunk = base_wav[12:36]
+        # data chunk is the rest
+        data_chunk = base_wav[36:]
+        duplicate_fmt_payload = b"WAVE" + fmt_chunk + fmt_chunk + data_chunk
+        riff_header = struct.pack("<4sI", b"RIFF", len(duplicate_fmt_payload))
+        bad_wav = riff_header + duplicate_fmt_payload
+        (corpus_dir / "dup_fmt.wav").write_bytes(bad_wav)
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="dup_fmt.wav",
+            sha256_digest=hashlib.sha256(bad_wav).hexdigest().lower(),
+            size_bytes=len(bad_wav),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="duplicate 'fmt ' chunk"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_duplicate_data_chunk_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        base_wav = create_test_wav_bytes(1.0)
+        fmt_chunk = base_wav[12:36]
+        data_chunk = base_wav[36:]
+        duplicate_data_payload = b"WAVE" + fmt_chunk + data_chunk + data_chunk
+        riff_header = struct.pack("<4sI", b"RIFF", len(duplicate_data_payload))
+        bad_wav = riff_header + duplicate_data_payload
+        (corpus_dir / "dup_data.wav").write_bytes(bad_wav)
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="dup_data.wav",
+            sha256_digest=hashlib.sha256(bad_wav).hexdigest().lower(),
+            size_bytes=len(bad_wav),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="duplicate 'data' chunk"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_chunk_declared_size_exceeds_riff_boundary_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        base_wav = bytearray(create_test_wav_bytes(1.0))
+        # Data chunk size is at offset 40 (4 bytes)
+        struct.pack_into("<I", base_wav, 40, len(base_wav) + 500)
+        # Keep RIFF size matching actual length so it reaches the chunk boundary check
+        struct.pack_into("<I", base_wav, 4, len(base_wav) - 8)
+        (corpus_dir / "bad_chunk_size.wav").write_bytes(bytes(base_wav))
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="bad_chunk_size.wav",
+            sha256_digest=hashlib.sha256(base_wav).hexdigest().lower(),
+            size_bytes=len(base_wav),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="exceeds RIFF boundary"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_symlink_audio_file_rejected_before_resolution(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        real_file = corpus_dir / "real.wav"
+        wav_bytes = create_test_wav_bytes(1.0)
+        real_file.write_bytes(wav_bytes)
+
+        symlink_path = corpus_dir / "in_root_symlink.wav"
+        try:
+            symlink_path.symlink_to(real_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlink creation not permitted in this Windows environment")
+
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="in_root_symlink.wav",
+            sha256_digest=hashlib.sha256(wav_bytes).hexdigest().lower(),
+            size_bytes=len(wav_bytes),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="Symlink rejected.*symbolic link; qualification audio clips must be regular files"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
     def test_symlink_escaping_corpus_root_rejected(self, tmp_path: Path):
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()
@@ -648,7 +812,35 @@ class TestOptionBAudioFileValidation:
             acoustic_environment_description="Room",
             ground_truth_transcript="PICO stop.",
         )
-        with pytest.raises(OptionBAudioValidationError, match="resolves outside corpus root"):
+        with pytest.raises(OptionBAudioValidationError, match="Symlink rejected|resolves outside corpus root"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_symlink_resolution_runtime_error_translated(self, tmp_path: Path, monkeypatch):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        wav_bytes = create_test_wav_bytes(1.0)
+        (corpus_dir / "clip.wav").write_bytes(wav_bytes)
+
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="clip.wav",
+            sha256_digest=hashlib.sha256(wav_bytes).hexdigest().lower(),
+            size_bytes=len(wav_bytes),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        # Simulate symlink loop raising RuntimeError
+        def mock_resolve(*args, **kwargs):
+            raise RuntimeError("Symlink loop detected")
+        monkeypatch.setattr(Path, "resolve", mock_resolve)
+
+        with pytest.raises(OptionBAudioValidationError, match="Failed to resolve"):
             validate_option_b_audio_file(clip, corpus_dir)
 
     def test_rejection_of_known_synthetic_smoke_or_historical_digest(self, tmp_path: Path, monkeypatch):
@@ -1142,7 +1334,23 @@ class TestOptionBGate02Evaluation:
         assert str(secret_dir) not in md
         assert "SecretDeveloper" not in md
 
-    def test_populated_manifest_with_synthetic_or_historical_digest_rejected(self, setup_corpus):
+    def test_manifest_is_directory_sanitized_privacy(self, tmp_path: Path):
+        """Pointing manifest_path to a directory must not leak filesystem paths into reason or errors."""
+        bad_dir = tmp_path / "manifest_dir"
+        bad_dir.mkdir()
+        res = evaluate_option_b_gate_02(
+            engine=MagicMock(),
+            manifest_path=bad_dir,
+            corpus_dir=tmp_path,
+        )
+        assert res.status == OptionBGateStatus.NOT_RUN.value
+        assert str(tmp_path) not in res.reason
+        assert str(bad_dir) not in res.reason
+        for err in res.errors:
+            assert str(tmp_path) not in err
+            assert str(bad_dir) not in err
+
+    def test_populated_manifest_with_synthetic_or_historical_digest_rejected(self, setup_corpus, monkeypatch):
         manifest_path, corpus_dir = setup_corpus
         from tools.bench.option_b_eval import KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS
         known_digest = next(iter(KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS))
@@ -1154,13 +1362,27 @@ class TestOptionBGate02Evaluation:
         clips[0]["sha256_digest"] = known_digest
         manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8")
 
+        # Mock hashlib.sha256 so that reading the first audio file computes known_digest
+        real_sha256 = hashlib.sha256
+        def mock_sha256(data=b""):
+            hasher = real_sha256(data)
+            if len(data) == clips[0]["size_bytes"]:
+                m = MagicMock()
+                m.hexdigest.return_value = known_digest
+                return m
+            return hasher
+        monkeypatch.setattr("hashlib.sha256", mock_sha256)
+
+        mock_engine = MagicMock()
         res = evaluate_option_b_gate_02(
-            engine=MagicMock(),
+            engine=mock_engine,
             manifest_path=manifest_path,
             corpus_dir=corpus_dir,
         )
         assert res.status == OptionBGateStatus.NOT_RUN.value
-        assert "Audio validation failed" in res.reason
+        assert "Security rejection" in res.reason
+        assert "matches known synthetic smoke or historical prototype digest" in res.reason
+        assert mock_engine.transcribe_wav_bytes.called is False
 
 
 # ==============================================================================
@@ -1248,19 +1470,143 @@ class TestOptionBBenchmarkIntegration:
         model_file = tmp_path / "ggml-base.en.bin"
         model_file.write_bytes(b"GGUF" + b"\x00" * 100)
 
-        corpus_dir = tmp_path / "corpus"
-        corpus_dir.mkdir()
-        wav_bytes = create_test_wav_bytes(duration_s=4.92)
-        (corpus_dir / "audio_cmd_workflow_5s.wav").write_bytes(wav_bytes)
+        # 1. Setup mock smoke corpus dir
+        smoke_dir = tmp_path / "smoke_corpus"
+        smoke_dir.mkdir()
+        smoke_wav = create_test_wav_bytes(duration_s=4.92)
+        (smoke_dir / "audio_cmd_workflow_5s.wav").write_bytes(smoke_wav)
+
+        # 2. Setup 4 distinct Option B recordings
+        option_b_dir = tmp_path / "option_b_corpus"
+        option_b_dir.mkdir()
+        clips_data = []
+        durations = [1.0, 3.0, 5.0, 10.0]
+        cids = ["cmd_short_1s", "cmd_query_3s", "cmd_workflow_5s", "cmd_dictation_10s"]
+        for cid, dur in zip(cids, durations):
+            fn = f"{cid}.wav"
+            b = create_test_wav_bytes(duration_s=dur)
+            (option_b_dir / fn).write_bytes(b)
+            clips_data.append(create_mock_clip_entry(cid, fn, b, duration_s=dur))
 
         manifest_path = tmp_path / "manifest.json"
-        manifest_path.write_text(json.dumps(create_mock_manifest_dict(clips=[])), encoding="utf-8")
+        manifest_path.write_text(json.dumps(create_mock_manifest_dict(clips=clips_data, status="RECORDED")), encoding="utf-8")
+
+        event_log: list[str] = []
+
+        mock_engine_instance = MagicMock()
+        mock_engine_instance.version = "v1.9.5"
+        mock_engine_instance.system_info = "AVX2"
+
+        def mock_transcribe(audio_bytes, n_threads=4, return_breakdown=False):
+            event_log.append(f"transcribe_{len(audio_bytes)}")
+            if return_breakdown:
+                return (
+                    "summarize the latest system logs", 0.2, 4.92,
+                    {
+                        "wav_parse_seconds": 0.001,
+                        "pcm_norm_seconds": 0.002,
+                        "c_buf_prep_seconds": 0.001,
+                        "native_inference_seconds": 0.196,
+                    }
+                )
+            return "PICO stop."
+
+        mock_engine_instance.transcribe_wav_bytes.side_effect = mock_transcribe
+        def mock_close():
+            event_log.append("engine_close")
+        mock_engine_instance.close.side_effect = mock_close
+
+        monkeypatch.setattr(voice_bench, "PicoWhisperEngine", lambda **kw: mock_engine_instance)
+        monkeypatch.setattr(voice_bench, "verify_model_artifact", lambda p: {"filename": p.name, "sha256": "abcdef"})
+
+        from tools.bench.voice_bench import OllamaResidencyResult, OllamaResidencyState
+        res_mock = OllamaResidencyResult(OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b is resident on GPU", "digest123")
+        def mock_residency(m):
+            event_log.append(f"residency_{m}")
+            return res_mock
+        monkeypatch.setattr(voice_bench, "verify_ollama_model_residency", mock_residency)
+
+        def mock_vram():
+            event_log.append("vram_poll")
+            return 1200
+        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", mock_vram)
+        monkeypatch.setattr(voice_bench, "query_process_memory_mb", lambda: (250.0, 200.0, 150.0))
+        monkeypatch.setattr(voice_bench, "query_system_memory_mb", lambda: (16000.0, 8000.0))
+        monkeypatch.setattr(voice_bench, "audit_active_process_sockets", lambda pid: [])
+
+        mock_sampler = MagicMock()
+        mock_sampler.get_results.return_value = (300.0, 7500.0, True, 20)
+        def mock_sampler_start():
+            event_log.append("sampler_start")
+        def mock_sampler_stop():
+            event_log.append("sampler_stop")
+        mock_sampler.start.side_effect = mock_sampler_start
+        mock_sampler.stop.side_effect = mock_sampler_stop
+        monkeypatch.setattr(voice_bench, "ContinuousMemorySampler", lambda **kw: mock_sampler)
+
+        report = voice_bench.run_benchmark(
+            model_path=model_file,
+            corpus_dir=smoke_dir,
+            runtime_dir=tmp_path / "runtime",
+            manifest_path=manifest_path,
+            option_b_corpus_dir=option_b_dir,
+            iterations=1,
+            n_threads=4,
+        )
+
+        assert report["host"]["ollama_llm_resident"] is True
+        assert "sampler_start" in event_log
+        assert "sampler_stop" in event_log
+        assert "engine_close" in event_log
+
+        # Verify that Option B clips were transcribed before engine close and sampler stop
+        option_b_transcribes = [ev for ev in event_log if ev.startswith("transcribe_")]
+        assert len(option_b_transcribes) >= 4
+
+        # Verify engine close happened after all transcriptions
+        last_transcribe_idx = max(i for i, ev in enumerate(event_log) if ev.startswith("transcribe_"))
+        close_idx = event_log.index("engine_close")
+        sampler_stop_idx = event_log.index("sampler_stop")
+        assert close_idx > last_transcribe_idx
+        assert sampler_stop_idx > last_transcribe_idx
+
+        # Verify residency checkpoints list contains post_final
+        checkpoints = report["host"]["ollama_checkpoints"]
+        assert any(cp[0] == "post_final" for cp in checkpoints)
+
+        assert "option_b_gate_02" in report
+        assert report["option_b_gate_02"]["status"] in ("PASS", "FAIL")
+        assert report["gates"]["GATE-VOICE-02"]["status"] in ("PASS", "FAIL")
+
+    def test_run_benchmark_option_b_vram_spike_detected(self, tmp_path: Path, monkeypatch):
+        """Verify VRAM polling during Option B transcription actively records peaks."""
+        model_file = tmp_path / "ggml-base.en.bin"
+        model_file.write_bytes(b"GGUF" + b"\x00" * 100)
+
+        smoke_dir = tmp_path / "smoke_corpus"
+        smoke_dir.mkdir()
+        smoke_wav = create_test_wav_bytes(duration_s=4.92)
+        (smoke_dir / "audio_cmd_workflow_5s.wav").write_bytes(smoke_wav)
+
+        option_b_dir = tmp_path / "option_b_corpus"
+        option_b_dir.mkdir()
+        clips_data = []
+        durations = [1.0, 3.0, 5.0, 10.0]
+        cids = ["cmd_short_1s", "cmd_query_3s", "cmd_workflow_5s", "cmd_dictation_10s"]
+        for cid, dur in zip(cids, durations):
+            fn = f"{cid}.wav"
+            b = create_test_wav_bytes(duration_s=dur)
+            (option_b_dir / fn).write_bytes(b)
+            clips_data.append(create_mock_clip_entry(cid, fn, b, duration_s=dur))
+
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_text(json.dumps(create_mock_manifest_dict(clips=clips_data, status="RECORDED")), encoding="utf-8")
 
         mock_engine_instance = MagicMock()
         mock_engine_instance.version = "v1.9.5"
         mock_engine_instance.system_info = "AVX2"
         mock_engine_instance.transcribe_wav_bytes.return_value = (
-            "summarize the latest system logs", 0.2, 4.92,
+            "PICO stop.", 0.2, 1.0,
             {
                 "wav_parse_seconds": 0.001,
                 "pcm_norm_seconds": 0.002,
@@ -1275,7 +1621,24 @@ class TestOptionBBenchmarkIntegration:
         res_mock = OllamaResidencyResult(OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b is resident on GPU", "digest123")
         monkeypatch.setattr(voice_bench, "verify_ollama_model_residency", lambda m: res_mock)
 
-        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", lambda: 1200)
+        # Baseline VRAM is 1000 MB, but spikes to 3800 MB during Option B evaluation
+        vram_readings = [1000]
+        def mock_transcribe_spike(audio_bytes, n_threads=4, return_breakdown=False):
+            if return_breakdown:
+                return (
+                    "PICO stop.", 0.2, 1.0,
+                    {
+                        "wav_parse_seconds": 0.001,
+                        "pcm_norm_seconds": 0.002,
+                        "c_buf_prep_seconds": 0.001,
+                        "native_inference_seconds": 0.196,
+                    }
+                )
+            vram_readings.append(3800)
+            return "PICO stop."
+
+        mock_engine_instance.transcribe_wav_bytes.side_effect = mock_transcribe_spike
+        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", lambda: vram_readings[-1])
         monkeypatch.setattr(voice_bench, "query_process_memory_mb", lambda: (250.0, 200.0, 150.0))
         monkeypatch.setattr(voice_bench, "query_system_memory_mb", lambda: (16000.0, 8000.0))
         monkeypatch.setattr(voice_bench, "audit_active_process_sockets", lambda pid: [])
@@ -1286,18 +1649,12 @@ class TestOptionBBenchmarkIntegration:
 
         report = voice_bench.run_benchmark(
             model_path=model_file,
-            corpus_dir=corpus_dir,
+            corpus_dir=smoke_dir,
             runtime_dir=tmp_path / "runtime",
             manifest_path=manifest_path,
-            option_b_corpus_dir=None,
+            option_b_corpus_dir=option_b_dir,
             iterations=1,
             n_threads=4,
         )
 
-        assert report["host"]["ollama_llm_resident"] is True
-        assert mock_sampler.start.called
-        assert mock_sampler.stop.called
-        assert mock_engine_instance.close.called
-        assert "option_b_gate_02" in report
-        assert report["option_b_gate_02"]["status"] == "NOT RUN"
-        assert report["gates"]["GATE-VOICE-01"]["status"] in ("PASS", "FAIL")
+        assert report["host"]["peak_vram_used_mb"] >= 3800
