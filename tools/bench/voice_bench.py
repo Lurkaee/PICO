@@ -264,6 +264,11 @@ class ContinuousMemorySampler:
         self.has_telemetry_error: bool = False
         self.exceptions: list[Exception] = []
 
+        # Background VRAM tracking across full lifecycle
+        self.peak_vram_mb: float | None = None
+        self.min_vram_mb: float | None = None
+        self.vram_samples_count: int = 0
+
     def start(self) -> None:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="PicoMemorySampler")
@@ -278,10 +283,11 @@ class ContinuousMemorySampler:
                     self.has_telemetry_error = True
 
     def sample_once(self) -> None:
-        """Collect a single synchronous sample of available system RAM and process working set."""
+        """Collect a single synchronous sample of available system RAM, process working set, and GPU VRAM."""
         try:
             _, avail_mb = query_system_memory_mb()
             peak_ws, cur_ws, _ = query_process_memory_mb()
+            vram_mb = query_gpu_vram_mb()
 
             with self._lock:
                 self.samples_count += 1
@@ -299,10 +305,22 @@ class ContinuousMemorySampler:
                         self.peak_working_set_mb = cur_ws
                 else:
                     self.has_telemetry_error = True
+
+                if vram_mb is not None:
+                    if self.peak_vram_mb is None or vram_mb > self.peak_vram_mb:
+                        self.peak_vram_mb = vram_mb
+                    if self.min_vram_mb is None or vram_mb < self.min_vram_mb:
+                        self.min_vram_mb = vram_mb
+                    self.vram_samples_count += 1
         except Exception as exc:
             with self._lock:
                 self.has_telemetry_error = True
                 self.exceptions.append(exc)
+
+    def get_vram_results(self) -> tuple[float | None, float | None, int]:
+        """Return (peak_vram_mb, min_vram_mb, vram_samples_count)."""
+        with self._lock:
+            return (self.peak_vram_mb, self.min_vram_mb, self.vram_samples_count)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -1243,6 +1261,13 @@ def run_benchmark(
             sampler.stop()
 
     sampler_peak_ws, sampler_min_avail_ram, ram_valid, ram_samples_count = sampler.get_results()
+    if hasattr(sampler, "get_vram_results"):
+        s_peak_vram, s_min_vram, s_vram_cnt = sampler.get_vram_results()
+        if s_peak_vram is not None:
+            max_vram_observed = max(max_vram_observed, s_peak_vram)
+            min_vram_observed = min(min_vram_observed, s_min_vram) if min_vram_observed != 999999 else s_min_vram
+            vram_observations_count += s_vram_cnt
+            vram_readings_valid = True
 
     all_ws_readings = [ws for ws in [peak_ws_init, peak_ws_final, sampler_peak_ws] if ws is not None]
     overall_peak_ws = max(all_ws_readings) if all_ws_readings else None

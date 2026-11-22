@@ -88,11 +88,16 @@ REQUIRED_PROVENANCE_FIELDS: tuple[str, ...] = (
 )
 
 KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS: frozenset[str] = frozenset({
-    # Synthetic SAPI smoke fixtures
-    "9e54a7c18ea693a189f3bbceeb5e282bfba9d32d3999e1eeafef6b8c94e09cb6",  # audio_cmd_short_1s.wav
-    "c7921a9767f40775a6396b27e80f4955c3c0a520ca4f5d60ee458760fa50787a",  # audio_cmd_query_3s.wav
-    "df600bb94ae27d530ee21fb1549488bb4a2e5d959549f57ebbf25287f9850c99",  # audio_cmd_workflow_5s.wav
-    "ad2ba59c8fa7270e5b7c02b11340fa0fae534f3a2c4e64f7c2250269ff0caaa2",  # audio_cmd_dictation_10s.wav
+    # Synthetic SAPI smoke fixtures (current canonical manifest entries)
+    "99145561a3764a923ce34ad9dd10a32a95a468a53be7efc24d2fa435ab6a169b",  # audio_cmd_short_1s.wav
+    "12b4223d60468bf283339f6dce24ed7b780f98e097c04452b260fc8edd980753",  # audio_cmd_query_3s.wav
+    "3ab412cb5c4e4ed18af6186861dbc9e97b8690186b9dd3e370464209925969e5",  # audio_cmd_workflow_5s.wav
+    "15af94874ec10f715cd8bd2d7e5154bafd2dcb5ff9dc1d4d5f930f39de550dab",  # audio_cmd_dictation_10s.wav
+    # Synthetic SAPI smoke fixtures (historical / alternative generation variants)
+    "9e54a7c18ea693a189f3bbceeb5e282bfba9d32d3999e1eeafef6b8c94e09cb6",  # audio_cmd_short_1s.wav (alt)
+    "c7921a9767f40775a6396b27e80f4955c3c0a520ca4f5d60ee458760fa50787a",  # audio_cmd_query_3s.wav (alt)
+    "df600bb94ae27d530ee21fb1549488bb4a2e5d959549f57ebbf25287f9850c99",  # audio_cmd_workflow_5s.wav (alt)
+    "ad2ba59c8fa7270e5b7c02b11340fa0fae534f3a2c4e64f7c2250269ff0caaa2",  # audio_cmd_dictation_10s.wav (alt)
     "12981559981be1ff71e626cfb74549f315a6b0c2a7c473c914ebfdce2f8db5a5",  # audio_cmd_negative_noise_1s.wav
     "876615ae90e4f8dcfc918c541c4efdf979aa7dc02bf17088b200b3f8e582846f",  # audio_cmd_silence_1s.wav
     # Historical prototype fixtures
@@ -689,10 +694,13 @@ def validate_option_b_audio_file(
         OptionBAudioValidationError: If file fails path, format, or cryptographic checks.
     """
     raw_candidate = corpus_dir / clip.filename
-    if raw_candidate.is_symlink():
-        raise OptionBAudioValidationError(
-            f"Symlink rejected: '{clip.filename}' is a symbolic link; qualification audio clips must be regular files."
-        )
+    cur = raw_candidate
+    while cur != corpus_dir and cur != cur.parent:
+        if cur.is_symlink():
+            raise OptionBAudioValidationError(
+                f"Symlink rejected: '{clip.filename}' or parent directory is a symbolic link; qualification audio clips must be regular files."
+            )
+        cur = cur.parent
 
     try:
         resolved_corpus = corpus_dir.resolve()
@@ -715,6 +723,7 @@ def validate_option_b_audio_file(
         raise OptionBAudioValidationError(
             f"Path traversal detected: '{clip.filename}' resolves outside corpus root."
         )
+
 
     if not target_path.exists():
         raise OptionBAudioValidationError(
@@ -838,41 +847,65 @@ def evaluate_option_b_gate_02(
     model_sha = model_meta.get("sha256") if model_meta else None
 
     manifest_display = manifest_path.name
-    manifest_raw: bytes | None = None
-    try:
-        manifest_raw = manifest_path.read_bytes()
-        manifest_sha = hashlib.sha256(manifest_raw).hexdigest().lower()
-    except Exception:
-        manifest_sha = None
-
     result = OptionBGate02Result(
         model_identifier=model_id,
         model_digest=model_sha,
         manifest_display_name=manifest_display,
-        manifest_sha256=manifest_sha,
+        manifest_sha256=None,
     )
 
     # 1. Manifest file existence & load
-    if not manifest_path.exists():
+    if manifest_path.is_dir():
+        result.status = OptionBGateStatus.NOT_RUN.value
+        result.reason = f"Failed to read manifest file '{manifest_display}': IsADirectoryError (Path is a directory)"
+        result.errors.append(result.reason)
+        return result
+
+    try:
+        manifest_raw = manifest_path.read_bytes()
+    except FileNotFoundError:
         result.status = OptionBGateStatus.NOT_RUN.value
         result.reason = f"Voice corpus manifest '{manifest_display}' not found"
         return result
-    try:
-        if manifest_raw is None:
-            raise OSError("manifest bytes were not read")
-        manifest_data = json.loads(manifest_raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+    except IsADirectoryError as exc:
         result.status = OptionBGateStatus.NOT_RUN.value
-        result.reason = f"Failed to parse manifest JSON for '{manifest_display}': JSONDecodeError ({exc.msg} at line {exc.lineno})"
+        err_msg = exc.strerror or "Path is a directory"
+        result.reason = f"Failed to read manifest file '{manifest_display}': IsADirectoryError ({err_msg})"
+        result.errors.append(result.reason)
+        return result
+    except PermissionError as exc:
+        result.status = OptionBGateStatus.NOT_RUN.value
+        err_msg = exc.strerror or "Permission denied"
+        result.reason = f"Failed to read manifest file '{manifest_display}': PermissionError ({err_msg})"
+        result.errors.append(result.reason)
         return result
     except OSError as exc:
         result.status = OptionBGateStatus.NOT_RUN.value
         err_msg = exc.strerror or type(exc).__name__
         result.reason = f"Failed to read manifest file '{manifest_display}': {type(exc).__name__} ({err_msg})"
+        result.errors.append(result.reason)
+        return result
+
+    manifest_sha = hashlib.sha256(manifest_raw).hexdigest().lower()
+    result.manifest_sha256 = manifest_sha
+
+    try:
+        manifest_text = manifest_raw.decode("utf-8")
+        manifest_data = json.loads(manifest_text)
+    except UnicodeDecodeError as exc:
+        result.status = OptionBGateStatus.NOT_RUN.value
+        result.reason = f"Failed to parse manifest UTF-8 for '{manifest_display}': UnicodeDecodeError ({exc.reason})"
+        result.errors.append(result.reason)
+        return result
+    except json.JSONDecodeError as exc:
+        result.status = OptionBGateStatus.NOT_RUN.value
+        result.reason = f"Failed to parse manifest JSON for '{manifest_display}': JSONDecodeError ({exc.msg} at line {exc.lineno})"
+        result.errors.append(result.reason)
         return result
     except Exception as exc:
         result.status = OptionBGateStatus.NOT_RUN.value
         result.reason = f"Failed to parse manifest JSON for '{manifest_display}': {type(exc).__name__}"
+        result.errors.append(result.reason)
         return result
     # 2. Manifest structural validation FIRST before extracting status
     try:
@@ -936,11 +969,18 @@ def evaluate_option_b_gate_02(
         seen_audio_digests.add(clip.sha256_digest)
 
         candidate_path = corpus_dir / clip.filename
-        if candidate_path.is_symlink():
+        cur = candidate_path
+        has_symlink = False
+        while cur != corpus_dir and cur != cur.parent:
+            if cur.is_symlink():
+                has_symlink = True
+                break
+            cur = cur.parent
+        if has_symlink:
             result.status = OptionBGateStatus.NOT_RUN.value
             result.reason = (
-                f"Symlink rejected: clip '{clip.filename}' ({clip.command_id}) is a symbolic link; "
-                "qualification audio clips must be regular files"
+                f"Symlink rejected: clip '{clip.filename}' ({clip.command_id}) or its parent directory is a symbolic link; "
+                "qualification audio clips must be regular files within regular directories"
             )
             result.errors.append(result.reason)
             return result

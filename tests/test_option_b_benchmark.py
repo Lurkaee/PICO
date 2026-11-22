@@ -815,6 +815,66 @@ class TestOptionBAudioFileValidation:
         with pytest.raises(OptionBAudioValidationError, match="Symlink rejected|resolves outside corpus root"):
             validate_option_b_audio_file(clip, corpus_dir)
 
+    def test_symlink_parent_directory_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        real_sub = tmp_path / "real_sub"
+        real_sub.mkdir()
+        real_file = real_sub / "clip.wav"
+        wav_bytes = create_test_wav_bytes(1.0)
+        real_file.write_bytes(wav_bytes)
+
+        symlink_dir = corpus_dir / "symlink_dir"
+        try:
+            symlink_dir.symlink_to(real_sub, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlink creation not permitted in this Windows environment")
+
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="symlink_dir/clip.wav",
+            sha256_digest=hashlib.sha256(wav_bytes).hexdigest().lower(),
+            size_bytes=len(wav_bytes),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="Symlink rejected"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
+    def test_riff_odd_chunk_missing_padding_rejected(self, tmp_path: Path):
+        corpus_dir = tmp_path / "corpus"
+        corpus_dir.mkdir()
+        base_wav = bytearray(create_test_wav_bytes(1.0))
+        # Add an odd-sized metadata chunk (e.g. 5 bytes) without the 1-byte pad at the end of the file
+        odd_chunk = b"test" + struct.pack("<I", 5) + b"12345"  # 13 bytes total, odd payload
+        base_wav.extend(odd_chunk)
+        # Set RIFF length to exactly include odd_chunk without pad
+        struct.pack_into("<I", base_wav, 4, len(base_wav) - 8)
+        (corpus_dir / "odd_chunk_no_pad.wav").write_bytes(bytes(base_wav))
+
+        clip = OptionBClipManifest(
+            command_id="cmd_short_1s",
+            filename="odd_chunk_no_pad.wav",
+            sha256_digest=hashlib.sha256(base_wav).hexdigest().lower(),
+            size_bytes=len(base_wav),
+            sample_rate_hz=16000,
+            channels=1,
+            sample_format="16-bit signed PCM (little-endian)",
+            duration_seconds=1.0,
+            consenting_speaker_id="operator_01",
+            physical_microphone_model="SM7B",
+            acoustic_environment_description="Room",
+            ground_truth_transcript="PICO stop.",
+        )
+        with pytest.raises(OptionBAudioValidationError, match="exceeds RIFF boundary|unexpected trailing or incomplete chunk data"):
+            validate_option_b_audio_file(clip, corpus_dir)
+
     def test_symlink_resolution_runtime_error_translated(self, tmp_path: Path, monkeypatch):
         corpus_dir = tmp_path / "corpus"
         corpus_dir.mkdir()
@@ -1384,6 +1444,83 @@ class TestOptionBGate02Evaluation:
         assert "matches known synthetic smoke or historical prototype digest" in res.reason
         assert mock_engine.transcribe_wav_bytes.called is False
 
+    def test_all_manifest_smoke_and_real_speech_fixtures_rejected_by_denylist(self):
+        """Verify that every fixture in the canonical manifest is covered by the denylist."""
+        from tools.bench.option_b_eval import KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS
+        manifest_file = Path(__file__).resolve().parents[1] / "docs" / "evaluation" / "voice_corpus_manifest.json"
+        manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+
+        smoke_clips = manifest_data.get("smoke_test_clips", [])
+        assert len(smoke_clips) >= 4
+        for clip in smoke_clips:
+            assert clip["sha256"].lower() in KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS, (
+                f"Smoke clip {clip['filename']} ({clip['sha256']}) must be in KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS"
+            )
+
+        real_clips = manifest_data.get("real_speech_clips", [])
+        assert len(real_clips) >= 6
+        for clip in real_clips:
+            assert clip["sha256"].lower() in KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS, (
+                f"Historical real speech clip {clip['filename']} ({clip['sha256']}) must be in KNOWN_NON_HUMAN_OR_HISTORICAL_DIGESTS"
+            )
+
+    def test_evaluate_option_b_manifest_read_exceptions(self, tmp_path: Path, monkeypatch):
+        """Verify manifest reading exceptions return NOT RUN and never leak file paths or usernames."""
+        mock_engine = MagicMock()
+
+        # 1. FileNotFoundError
+        missing = tmp_path / "secret_user" / "nonexistent_manifest.json"
+        res_missing = evaluate_option_b_gate_02(mock_engine, missing, tmp_path)
+        assert res_missing.status == OptionBGateStatus.NOT_RUN.value
+        assert "not found" in res_missing.reason
+        assert "secret_user" not in res_missing.reason
+        assert str(missing) not in res_missing.reason
+
+        # 2. IsADirectoryError
+        secret_parent = tmp_path / "secret_vault"
+        secret_parent.mkdir()
+        dir_path = secret_parent / "manifest_dir"
+        dir_path.mkdir()
+        res_dir = evaluate_option_b_gate_02(mock_engine, dir_path, tmp_path)
+        assert res_dir.status == OptionBGateStatus.NOT_RUN.value
+        assert "IsADirectoryError" in res_dir.reason
+        assert "manifest_dir" in res_dir.reason
+        assert "secret_vault" not in res_dir.reason
+        assert str(dir_path) not in res_dir.reason
+
+        # 3. PermissionError
+        perm_file = tmp_path / "secret_perm.json"
+        perm_file.write_text("{}", encoding="utf-8")
+        real_read_bytes = Path.read_bytes
+        def mock_read_bytes_perm(self_path):
+            if str(self_path) == str(perm_file):
+                raise PermissionError(13, "Access is denied", str(perm_file))
+            return real_read_bytes(self_path)
+        monkeypatch.setattr(Path, "read_bytes", mock_read_bytes_perm)
+        res_perm = evaluate_option_b_gate_02(mock_engine, perm_file, tmp_path)
+        assert res_perm.status == OptionBGateStatus.NOT_RUN.value
+        assert "PermissionError" in res_perm.reason
+        assert "Access is denied" in res_perm.reason
+        assert "secret_perm.json" in res_perm.reason
+        assert str(tmp_path) not in res_perm.reason
+
+        # 4. UnicodeDecodeError
+        monkeypatch.undo()
+        bad_utf8 = tmp_path / "bad_utf8.json"
+        bad_utf8.write_bytes(b"\x80\xFF\xFE\xFD")
+        res_utf8 = evaluate_option_b_gate_02(mock_engine, bad_utf8, tmp_path)
+        assert res_utf8.status == OptionBGateStatus.NOT_RUN.value
+        assert "UnicodeDecodeError" in res_utf8.reason
+        assert str(tmp_path) not in res_utf8.reason
+
+        # 5. json.JSONDecodeError
+        bad_json = tmp_path / "bad_json.json"
+        bad_json.write_text("{ unclosed json", encoding="utf-8")
+        res_json = evaluate_option_b_gate_02(mock_engine, bad_json, tmp_path)
+        assert res_json.status == OptionBGateStatus.NOT_RUN.value
+        assert "JSONDecodeError" in res_json.reason
+        assert str(tmp_path) not in res_json.reason
+
 
 # ==============================================================================
 # 4. Benchmark Integration and Strict Gate Segregation
@@ -1482,23 +1619,48 @@ class TestOptionBBenchmarkIntegration:
         clips_data = []
         durations = [1.0, 3.0, 5.0, 10.0]
         cids = ["cmd_short_1s", "cmd_query_3s", "cmd_workflow_5s", "cmd_dictation_10s"]
+        clip_bytes_map: dict[str, bytes] = {}
         for cid, dur in zip(cids, durations):
             fn = f"{cid}.wav"
             b = create_test_wav_bytes(duration_s=dur)
             (option_b_dir / fn).write_bytes(b)
+            clip_bytes_map[cid] = b
             clips_data.append(create_mock_clip_entry(cid, fn, b, duration_s=dur))
 
         manifest_path = tmp_path / "manifest.json"
         manifest_path.write_text(json.dumps(create_mock_manifest_dict(clips=clips_data, status="RECORDED")), encoding="utf-8")
 
         event_log: list[str] = []
+        option_b_clip_shas = {hashlib.sha256(b).hexdigest().lower(): cid for cid, b in clip_bytes_map.items()}
+        transcribed_option_b_shas: list[str] = []
+        sampler_active_during_option_b: list[bool] = []
+        engine_open_during_option_b: list[bool] = []
 
         mock_engine_instance = MagicMock()
         mock_engine_instance.version = "v1.9.5"
         mock_engine_instance.system_info = "AVX2"
+        engine_is_open = True
+
+        sampler_is_active = False
+        def mock_sampler_start():
+            nonlocal sampler_is_active
+            sampler_is_active = True
+            event_log.append("sampler_start")
+        def mock_sampler_stop():
+            nonlocal sampler_is_active
+            sampler_is_active = False
+            event_log.append("sampler_stop")
 
         def mock_transcribe(audio_bytes, n_threads=4, return_breakdown=False):
-            event_log.append(f"transcribe_{len(audio_bytes)}")
+            sha = hashlib.sha256(audio_bytes).hexdigest().lower()
+            if sha in option_b_clip_shas:
+                transcribed_option_b_shas.append(sha)
+                sampler_active_during_option_b.append(sampler_is_active)
+                engine_open_during_option_b.append(engine_is_open)
+                event_log.append(f"option_b_transcribe_{option_b_clip_shas[sha]}")
+            else:
+                event_log.append(f"transcribe_{len(audio_bytes)}")
+
             if return_breakdown:
                 return (
                     "summarize the latest system logs", 0.2, 4.92,
@@ -1513,6 +1675,8 @@ class TestOptionBBenchmarkIntegration:
 
         mock_engine_instance.transcribe_wav_bytes.side_effect = mock_transcribe
         def mock_close():
+            nonlocal engine_is_open
+            engine_is_open = False
             event_log.append("engine_close")
         mock_engine_instance.close.side_effect = mock_close
 
@@ -1530,16 +1694,19 @@ class TestOptionBBenchmarkIntegration:
             event_log.append("vram_poll")
             return 1200
         monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", mock_vram)
-        monkeypatch.setattr(voice_bench, "query_process_memory_mb", lambda: (250.0, 200.0, 150.0))
-        monkeypatch.setattr(voice_bench, "query_system_memory_mb", lambda: (16000.0, 8000.0))
+        def mock_process_mem():
+            event_log.append("process_mem_poll")
+            return (250.0, 200.0, 150.0)
+        monkeypatch.setattr(voice_bench, "query_process_memory_mb", mock_process_mem)
+        def mock_sys_mem():
+            event_log.append("sys_mem_poll")
+            return (16000.0, 8000.0)
+        monkeypatch.setattr(voice_bench, "query_system_memory_mb", mock_sys_mem)
         monkeypatch.setattr(voice_bench, "audit_active_process_sockets", lambda pid: [])
 
         mock_sampler = MagicMock()
         mock_sampler.get_results.return_value = (300.0, 7500.0, True, 20)
-        def mock_sampler_start():
-            event_log.append("sampler_start")
-        def mock_sampler_stop():
-            event_log.append("sampler_stop")
+        mock_sampler.get_vram_results.return_value = (1200, 1200, 20)
         mock_sampler.start.side_effect = mock_sampler_start
         mock_sampler.stop.side_effect = mock_sampler_stop
         monkeypatch.setattr(voice_bench, "ContinuousMemorySampler", lambda **kw: mock_sampler)
@@ -1559,18 +1726,30 @@ class TestOptionBBenchmarkIntegration:
         assert "sampler_stop" in event_log
         assert "engine_close" in event_log
 
-        # Verify that Option B clips were transcribed before engine close and sampler stop
-        option_b_transcribes = [ev for ev in event_log if ev.startswith("transcribe_")]
-        assert len(option_b_transcribes) >= 4
+        # 1. Assert exact SHA-256 identities of all 4 temporary Option B clips were transcribed
+        assert len(transcribed_option_b_shas) == 4
+        assert set(transcribed_option_b_shas) == set(option_b_clip_shas.keys())
+        for sha in option_b_clip_shas:
+            assert transcribed_option_b_shas.count(sha) == 1
 
-        # Verify engine close happened after all transcriptions
-        last_transcribe_idx = max(i for i, ev in enumerate(event_log) if ev.startswith("transcribe_"))
+        # 2. Assert sampler was active and engine was open during all 4 Option B transcriptions
+        assert all(sampler_active_during_option_b)
+        assert all(engine_open_during_option_b)
+
+        # 3. Assert all 4 transcriptions occur before post_final residency checkpoint
+        post_final_idx = next(i for i, ev in enumerate(event_log) if ev == "residency_qwen3.5:2b" and i > event_log.index("option_b_transcribe_cmd_dictation_10s"))
+        for cid in cids:
+            clip_idx = event_log.index(f"option_b_transcribe_{cid}")
+            assert clip_idx < post_final_idx
+
+        # 4. Assert engine close and sampler stop happened AFTER all transcriptions and final telemetry
+        last_transcribe_idx = max(i for i, ev in enumerate(event_log) if "transcribe" in ev)
         close_idx = event_log.index("engine_close")
         sampler_stop_idx = event_log.index("sampler_stop")
         assert close_idx > last_transcribe_idx
         assert sampler_stop_idx > last_transcribe_idx
 
-        # Verify residency checkpoints list contains post_final
+        # 5. Verify residency checkpoints list contains post_final
         checkpoints = report["host"]["ollama_checkpoints"]
         assert any(cp[0] == "post_final" for cp in checkpoints)
 
@@ -1579,7 +1758,8 @@ class TestOptionBBenchmarkIntegration:
         assert report["gates"]["GATE-VOICE-02"]["status"] in ("PASS", "FAIL")
 
     def test_run_benchmark_option_b_vram_spike_detected(self, tmp_path: Path, monkeypatch):
-        """Verify VRAM polling during Option B transcription actively records peaks."""
+        """Verify periodic VRAM polling during Option B transcription actively detects and records spikes."""
+        import time
         model_file = tmp_path / "ggml-base.en.bin"
         model_file.write_bytes(b"GGUF" + b"\x00" * 100)
 
@@ -1605,25 +1785,11 @@ class TestOptionBBenchmarkIntegration:
         mock_engine_instance = MagicMock()
         mock_engine_instance.version = "v1.9.5"
         mock_engine_instance.system_info = "AVX2"
-        mock_engine_instance.transcribe_wav_bytes.return_value = (
-            "PICO stop.", 0.2, 1.0,
-            {
-                "wav_parse_seconds": 0.001,
-                "pcm_norm_seconds": 0.002,
-                "c_buf_prep_seconds": 0.001,
-                "native_inference_seconds": 0.196,
-            }
-        )
-        monkeypatch.setattr(voice_bench, "PicoWhisperEngine", lambda **kw: mock_engine_instance)
-        monkeypatch.setattr(voice_bench, "verify_model_artifact", lambda p: {"filename": p.name, "sha256": "abcdef"})
 
-        from tools.bench.voice_bench import OllamaResidencyResult, OllamaResidencyState
-        res_mock = OllamaResidencyResult(OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b is resident on GPU", "digest123")
-        monkeypatch.setattr(voice_bench, "verify_ollama_model_residency", lambda m: res_mock)
+        vram_current = 1000
 
-        # Baseline VRAM is 1000 MB, but spikes to 3800 MB during Option B evaluation
-        vram_readings = [1000]
         def mock_transcribe_spike(audio_bytes, n_threads=4, return_breakdown=False):
+            nonlocal vram_current
             if return_breakdown:
                 return (
                     "PICO stop.", 0.2, 1.0,
@@ -1634,18 +1800,32 @@ class TestOptionBBenchmarkIntegration:
                         "native_inference_seconds": 0.196,
                     }
                 )
-            vram_readings.append(3800)
+            # Transient spike during Option B transcription that resets before returning
+            vram_current = 3800
+            time.sleep(0.06)  # Give continuous sampler thread window to observe the spike
+            vram_current = 1000
             return "PICO stop."
 
         mock_engine_instance.transcribe_wav_bytes.side_effect = mock_transcribe_spike
-        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", lambda: vram_readings[-1])
+        monkeypatch.setattr(voice_bench, "PicoWhisperEngine", lambda **kw: mock_engine_instance)
+        monkeypatch.setattr(voice_bench, "verify_model_artifact", lambda p: {"filename": p.name, "sha256": "abcdef"})
+
+        from tools.bench.voice_bench import OllamaResidencyResult, OllamaResidencyState
+        res_mock = OllamaResidencyResult(OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b is resident on GPU", "digest123")
+        monkeypatch.setattr(voice_bench, "verify_ollama_model_residency", lambda m: res_mock)
+
+        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", lambda: vram_current)
         monkeypatch.setattr(voice_bench, "query_process_memory_mb", lambda: (250.0, 200.0, 150.0))
         monkeypatch.setattr(voice_bench, "query_system_memory_mb", lambda: (16000.0, 8000.0))
         monkeypatch.setattr(voice_bench, "audit_active_process_sockets", lambda pid: [])
 
-        mock_sampler = MagicMock()
-        mock_sampler.get_results.return_value = (300.0, 7500.0, True, 20)
-        monkeypatch.setattr(voice_bench, "ContinuousMemorySampler", lambda **kw: mock_sampler)
+        # Use fast sample interval on real ContinuousMemorySampler so it catches the spike
+        orig_sampler_cls = voice_bench.ContinuousMemorySampler
+        monkeypatch.setattr(
+            voice_bench,
+            "ContinuousMemorySampler",
+            lambda **kw: orig_sampler_cls(sample_interval_seconds=0.01),
+        )
 
         report = voice_bench.run_benchmark(
             model_path=model_file,
@@ -1658,3 +1838,77 @@ class TestOptionBBenchmarkIntegration:
         )
 
         assert report["host"]["peak_vram_used_mb"] >= 3800
+        assert report["gates"]["GATE-VOICE-04"]["status"] == "FAIL"
+
+    def test_run_benchmark_lifecycle_cleanup_on_transcribe_exception(self, tmp_path: Path, monkeypatch):
+        """Verify engine.close() and sampler.stop() are guaranteed to run if transcribe throws."""
+        model_file = tmp_path / "ggml-base.en.bin"
+        model_file.write_bytes(b"GGUF" + b"\x00" * 100)
+
+        smoke_dir = tmp_path / "smoke_corpus"
+        smoke_dir.mkdir()
+        smoke_wav = create_test_wav_bytes(duration_s=4.92)
+        (smoke_dir / "audio_cmd_workflow_5s.wav").write_bytes(smoke_wav)
+
+        cleanup_log: list[str] = []
+
+        mock_engine_instance = MagicMock()
+        mock_engine_instance.version = "v1.9.5"
+        mock_engine_instance.system_info = "AVX2"
+        mock_engine_instance.transcribe_wav_bytes.side_effect = RuntimeError("Simulated engine crash")
+        mock_engine_instance.close.side_effect = lambda: cleanup_log.append("engine_closed")
+
+        monkeypatch.setattr(voice_bench, "PicoWhisperEngine", lambda **kw: mock_engine_instance)
+        monkeypatch.setattr(voice_bench, "verify_model_artifact", lambda p: {"filename": p.name, "sha256": "abcdef"})
+
+        from tools.bench.voice_bench import OllamaResidencyResult, OllamaResidencyState
+        res_mock = OllamaResidencyResult(OllamaResidencyState.GPU_RESIDENT, "qwen3.5:2b is resident on GPU", "digest123")
+        monkeypatch.setattr(voice_bench, "verify_ollama_model_residency", lambda m: res_mock)
+        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", lambda: 1000)
+        monkeypatch.setattr(voice_bench, "query_process_memory_mb", lambda: (250.0, 200.0, 150.0))
+        monkeypatch.setattr(voice_bench, "query_system_memory_mb", lambda: (16000.0, 8000.0))
+        monkeypatch.setattr(voice_bench, "audit_active_process_sockets", lambda pid: [])
+
+        mock_sampler = MagicMock()
+        mock_sampler.get_results.return_value = (300.0, 7500.0, True, 20)
+        mock_sampler.stop.side_effect = lambda: cleanup_log.append("sampler_stopped")
+        monkeypatch.setattr(voice_bench, "ContinuousMemorySampler", lambda **kw: mock_sampler)
+
+        with pytest.raises(RuntimeError, match="Simulated engine crash"):
+            voice_bench.run_benchmark(
+                model_path=model_file,
+                corpus_dir=smoke_dir,
+                runtime_dir=tmp_path / "runtime",
+                manifest_path=None,
+                option_b_corpus_dir=None,
+                iterations=1,
+                n_threads=4,
+            )
+
+        assert "engine_closed" in cleanup_log
+        assert "sampler_stopped" in cleanup_log
+
+    def test_continuous_memory_sampler_vram_tracking(self, monkeypatch):
+        """Directly verify ContinuousMemorySampler background thread tracks peak and min VRAM."""
+        import time
+        vram_readings = [1000, 2500, 1200]
+        vram_idx = 0
+        def mock_vram():
+            nonlocal vram_idx
+            val = vram_readings[min(vram_idx, len(vram_readings) - 1)]
+            vram_idx += 1
+            return val
+
+        monkeypatch.setattr(voice_bench, "query_gpu_vram_mb", mock_vram)
+        monkeypatch.setattr(voice_bench, "query_system_memory_mb", lambda: (16000.0, 8000.0))
+        monkeypatch.setattr(voice_bench, "query_process_memory_mb", lambda: (200.0, 150.0, 100.0))
+
+        sampler = voice_bench.ContinuousMemorySampler(sample_interval_seconds=0.01)
+        sampler.start()
+        time.sleep(0.06)
+        sampler.stop()
+
+        peak_vram, min_vram, cnt = sampler.get_vram_results()
+        assert peak_vram == 2500
+        assert min_vram == 1000
+        assert cnt >= 3
