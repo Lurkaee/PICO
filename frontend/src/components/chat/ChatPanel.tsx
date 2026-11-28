@@ -491,7 +491,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="messages-list">
+      <div className="chat-messages" role="log" aria-live="polite" aria-label="Conversation messages">
         {loadingHistory && (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 20, color: 'var(--text-muted)' }}>
             <RefreshCw className="animate-spin" style={{ width: 20, height: 20, marginRight: 8 }} />
@@ -524,31 +524,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         )}
 
         {messages.map((msg) => (
-          <div key={msg.id} className={`message-bubble ${msg.role}`}>
+          <div
+            key={msg.id}
+            className={`message ${msg.role}`}
+            role="article"
+            aria-label={`${msg.role === 'user' ? 'Your' : "PICO's"} message`}
+          >
             <div className="message-header">
-              <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>
-                {msg.role === 'user' ? 'Operator' : 'PICO'}
-              </span>
-              <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-            </div>
-
-            <div className="message-content">{msg.content}</div>
-
-            {msg.role === 'user' && !msg.id.startsWith('local_user_') && (
-              <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+              <div className="message-meta">
+                <span className="message-role">
+                  {msg.role === 'user' ? 'Operator' : 'PICO'}
+                </span>
+                <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+              {msg.role === 'user' && !msg.id.startsWith('local_user_') && (
                 <button
                   type="button"
-                  className="btn btn-secondary btn-sm"
+                  className="message-action-btn"
                   onClick={() => handlePlanWorkflow(msg)}
                   disabled={streaming || !isBackendReachable || synthesizingMessageId !== null}
-                  style={{
-                    fontSize: '0.72rem',
-                    padding: '3px 8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    opacity: streaming || !isBackendReachable ? 0.6 : 1,
-                  }}
                   title={
                     !isBackendReachable
                       ? 'Backend offline — workflow planning unavailable'
@@ -558,72 +552,79 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   }
                   aria-label={`Plan request ${msg.id} as workflow`}
                 >
-                  <GitFork style={{ width: 12, height: 12 }} />
+                  <GitFork className="icon-sm" />
                   {synthesizingMessageId === msg.id ? 'Planning...' : 'Plan as Workflow'}
                 </button>
-              </div>
-            )}
+              )}
+            </div>
+
+            <div className="message-content">{msg.content}</div>
 
             {msg.routing_metadata && (
-              <div className="routing-meta-tag">
-                <span>{msg.routing_metadata.provider}</span>
-                <span>/</span>
-                <span>{msg.routing_metadata.model}</span>
-                <span>•</span>
-                <span className={`classification-badge ${msg.routing_metadata.effective_classification}`}>
-                  {msg.routing_metadata.effective_classification}
-                </span>
-              </div>
+              <details className="message-routing">
+                <summary>
+                  <span>{msg.routing_metadata.provider}</span>
+                  <span>/</span>
+                  <span>{msg.routing_metadata.model}</span>
+                  <span>•</span>
+                  <span className={`classification-badge ${msg.routing_metadata.effective_classification}`}>
+                    {msg.routing_metadata.effective_classification}
+                  </span>
+                </summary>
+              </details>
             )}
           </div>
         ))}
 
         {/* Live Streaming Content Bubble */}
         {streaming && (
-          <div className="message-bubble assistant">
+          <div
+            className="message assistant streaming"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+            aria-label="PICO is generating a response"
+          >
             <div className="message-header">
-              <span style={{ fontWeight: 600 }}>PICO (Streaming)</span>
-              <span className="animate-pulse" style={{ color: 'var(--primary)', fontSize: '0.75rem' }}>
-                ● generating...
-              </span>
+              <div className="message-meta">
+                <span className="message-role">PICO</span>
+                <span className="streaming-indicator">
+                  <span className="animate-pulse" style={{ color: 'var(--primary)', fontSize: '0.75rem' }}>
+                    ● generating...
+                  </span>
+                </span>
+              </div>
             </div>
             <div className="message-content">
               {streamingContent || <span style={{ color: 'var(--text-muted)' }}>Thinking...</span>}
             </div>
             {currentRouting && (
-              <div className="routing-meta-tag">
-                <span>{currentRouting.provider}</span>
-                <span>/</span>
-                <span>{currentRouting.model}</span>
-                <span>•</span>
-                <span className={`classification-badge ${currentRouting.effective_classification}`}>
-                  {currentRouting.effective_classification}
-                </span>
-              </div>
+              <details className="message-routing">
+                <summary>
+                  <span>{currentRouting.provider}</span>
+                  <span>/</span>
+                  <span>{currentRouting.model}</span>
+                  <span>•</span>
+                  <span className={`classification-badge ${currentRouting.effective_classification}`}>
+                    {currentRouting.effective_classification}
+                  </span>
+                </summary>
+              </details>
             )}
           </div>
         )}
 
         {isCancelled && !streaming && (
-          <div style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--warning)', margin: '4px 0' }}>
-            Generation stopped by operator.
+          <div className="system-message" role="status" aria-live="polite">
+            <div className="message-content">Generation stopped by operator.</div>
           </div>
         )}
 
         {streamError && (
           <div
-            style={{
-              padding: '10px 14px',
-              borderRadius: 'var(--radius-md)',
-              backgroundColor: 'var(--danger-subtle)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: 'var(--danger)',
-              fontSize: '0.85rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-            }}
+            className="ambiguous-banner"
             role="alert"
+            aria-live="assertive"
           >
             <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
             <span>{streamError}</span>
@@ -632,27 +633,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
         {ambiguousOutcome && (
           <div
-            style={{
-              padding: '10px 14px',
-              borderRadius: 'var(--radius-md)',
-              backgroundColor: 'var(--warning-subtle)',
-              border: '1px solid rgba(245, 158, 11, 0.4)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '0.85rem',
-              color: '#fcd34d',
-              margin: '6px 0',
-            }}
+            className="ambiguous-banner"
             role="alert"
+            aria-live="assertive"
           >
+            <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
             <span>Outcome uncertain: verify history before repeating your instruction.</span>
             <button
               type="button"
-              className="btn btn-secondary"
+              className="btn btn-secondary btn-sm"
               onClick={() => { void refreshHistory(activeConversation?.id); }}
               disabled={loadingHistory || !isBackendReachable}
-              style={{ fontSize: '0.75rem', padding: '3px 8px' }}
             >
               <RefreshCw className={loadingHistory ? 'animate-spin' : ''} style={{ width: 12, height: 12, marginRight: 4 }} />
               Inspect History
@@ -666,44 +657,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       {/* Bounded In-Memory Drafts Outbox */}
       {drafts.length > 0 && (
         <div
-          style={{
-            backgroundColor: 'var(--bg-surface-elevated)',
-            border: '1px solid var(--border-default)',
-            borderRadius: 'var(--radius-md)',
-            padding: '10px 14px',
-            margin: '0 20px 10px 20px',
-          }}
+          className="draft-outbox"
+          role="region"
+          aria-label="In-memory draft outbox"
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+          <div className="draft-outbox-header">
+            <div className="draft-outbox-title">
               <FileText style={{ width: 14, height: 14, color: 'var(--info)' }} />
               <span>In-Memory Drafts ({drafts.length}) — Not Transmitted</span>
             </div>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Memory-only, never auto-sent</span>
+            <span className="draft-outbox-subtitle">Memory-only, never auto-sent</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 130, overflowY: 'auto' }}>
             {drafts.map((d) => (
               <div
                 key={d.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '6px 10px',
-                  fontSize: '0.8rem',
-                }}
+                className="draft-item"
               >
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65%' }}>
-                  {d.text}
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span className="draft-text">{d.text}</span>
+                <div className="draft-actions">
                   <button
                     type="button"
-                    className="btn btn-secondary"
-                    style={{ fontSize: '0.7rem', padding: '2px 6px' }}
+                    className="btn btn-secondary btn-sm"
                     onClick={() => {
                       setInput(d.text);
                       removeDraft(d.id);
@@ -715,8 +690,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   </button>
                   <button
                     type="button"
-                    className="btn btn-primary"
-                    style={{ fontSize: '0.7rem', padding: '2px 8px' }}
+                    className="btn btn-primary btn-sm"
                     disabled={!isBackendReachable || streaming}
                     onClick={() => {
                       removeDraft(d.id);
@@ -747,16 +721,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       {/* Workflow Synthesis Proposal & Feedback Cards */}
       {(synthesisResponse || synthesisError || submittedWorkflowId) && (
         <div
-          style={{
-            margin: '0 16px 12px 16px',
-            padding: 14,
-            borderRadius: 'var(--radius-md)',
-            backgroundColor: 'var(--bg-surface-elevated)',
-            border: '1px solid var(--border-default)',
-            boxShadow: 'var(--shadow-md)',
-            maxHeight: '320px',
-            overflowY: 'auto',
-          }}
+          className="workflow-proposal"
+          role="region"
+          aria-label="Workflow proposal"
           data-testid="workflow-proposal-card"
         >
           {synthesisError && (

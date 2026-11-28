@@ -115,6 +115,9 @@ export const App: React.FC = () => {
 
   return (
     <ConnectivityProvider onReconnected={handleReconnected}>
+      <a href="#main-content" className="skip-to-content">
+        Skip to main content
+      </a>
       <AppLayout
         currentTab={currentTab}
         onTabChange={setCurrentTab}

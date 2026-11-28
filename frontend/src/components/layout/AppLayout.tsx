@@ -86,21 +86,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       {/* Top Header */}
       <header className="app-header" data-tauri-drag-region="deep">
         <div className="brand-section">
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 'var(--radius-md)',
-              backgroundColor: 'var(--primary)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#ffffff',
-              fontWeight: 800,
-              fontSize: '1rem',
-              letterSpacing: '0.05em',
-            }}
-          >
+          <div className="brand-mark" aria-label="PICO brand">
             P
           </div>
           <span className="brand-title">PICO</span>
@@ -108,7 +94,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </div>
 
         {/* Center: Companion Presence & Privacy Scope */}
-        <div className="header-center" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="header-center">
           {companionStateRecord && !isCompactMode && (
             <CompanionPresence
               stateRecord={companionStateRecord}
@@ -210,78 +196,66 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
           {/* Navigation Tabs */}
           <nav className="nav-tabs" aria-label="Main Navigation">
             <button
-              className={`nav-tab-btn ${currentTab === 'chat' ? 'active' : ''}`}
+              className={`nav-tab-btn ${currentTab === 'chat' ? 'nav-tab-btn-active' : ''}`}
               onClick={() => onTabChange('chat')}
+              aria-label="Conversations"
             >
-              <MessageSquare style={{ width: 16, height: 16 }} />
+              <MessageSquare className="nav-icon" />
               <span>Conversations</span>
             </button>
 
             <button
-              className={`nav-tab-btn ${currentTab === 'workflows' ? 'active' : ''}`}
+              className={`nav-tab-btn ${currentTab === 'workflows' ? 'nav-tab-btn-active' : ''}`}
               onClick={() => onTabChange('workflows')}
+              aria-label="Workflows & Verification"
             >
-              <GitBranch style={{ width: 16, height: 16 }} />
+              <GitBranch className="nav-icon" />
               <span>Workflows & Verification</span>
             </button>
 
             <button
-              className={`nav-tab-btn ${currentTab === 'approvals' ? 'active' : ''}`}
+              className={`nav-tab-btn ${currentTab === 'approvals' ? 'nav-tab-btn-active' : ''}`}
               onClick={() => onTabChange('approvals')}
-              style={{ justifyContent: 'space-between' }}
+              aria-label={`Approval Inbox (${pendingApprovalsCount} pending)`}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <ShieldAlert style={{ width: 16, height: 16 }} />
-                <span>Approval Inbox</span>
-              </div>
+              <ShieldAlert className="nav-icon" />
+              <span>Approval Inbox</span>
               {pendingApprovalsCount > 0 && (
-                <span
-                  style={{
-                    backgroundColor: 'var(--warning)',
-                    color: 'var(--text-inverse)',
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    padding: '1px 6px',
-                    borderRadius: 'var(--radius-full)',
-                  }}
-                >
-                  {pendingApprovalsCount}
-                </span>
+                <span className="badge badge-warning">{pendingApprovalsCount}</span>
               )}
             </button>
 
             <button
-              className={`nav-tab-btn ${currentTab === 'memory' ? 'active' : ''}`}
+              className={`nav-tab-btn ${currentTab === 'memory' ? 'nav-tab-btn-active' : ''}`}
               onClick={() => onTabChange('memory')}
+              aria-label="Memory Inspector"
             >
-              <Database style={{ width: 16, height: 16 }} />
+              <Database className="nav-icon" />
               <span>Memory Inspector</span>
             </button>
 
             <button
-              className={`nav-tab-btn ${currentTab === 'status' ? 'active' : ''}`}
+              className={`nav-tab-btn ${currentTab === 'status' ? 'nav-tab-btn-active' : ''}`}
               onClick={() => onTabChange('status')}
+              aria-label="System Diagnostics"
             >
-              <Activity style={{ width: 16, height: 16 }} />
+              <Activity className="nav-icon" />
               <span>System Diagnostics</span>
             </button>
           </nav>
 
           {/* Conversations Section (when in chat view) */}
-          <div className="sidebar-header" style={{ marginTop: 8 }}>
-            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-              Sessions ({conversations.length})
-            </span>
+          <div className="sidebar-header">
+            <span className="sidebar-label">Sessions ({conversations.length})</span>
             <button
               type="button"
-              className="btn btn-secondary"
+              className="btn btn-secondary btn-sm"
               onClick={onNewConversation}
-              style={{ fontSize: '0.75rem', padding: '3px 8px' }}
               title="Start a new conversation"
               aria-label="New conversation"
             >
-              <Plus style={{ width: 13, height: 13 }} />
-              New
+              <Plus className="nav-icon" />
+              <span>New</span>
             </button>
           </div>
 
@@ -289,20 +263,13 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             {conversations.map((c) => (
               <button
                 key={c.id}
-                className={`conversation-item ${activeConversation?.id === c.id ? 'active' : ''}`}
+                className={`conversation-item ${activeConversation?.id === c.id ? 'conversation-item-active' : ''}`}
                 onClick={() => {
                   onSelectConversation(c);
                   if (currentTab !== 'chat') onTabChange('chat');
                 }}
               >
-                <span
-                  style={{
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: 220,
-                  }}
-                >
+                <span className="conversation-title">
                   {c.title}
                 </span>
               </button>
@@ -311,7 +278,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </aside>
 
         {/* Center Area */}
-        <main className="center-surface">{children}</main>
+        <main id="main-content" className="center-surface">{children}</main>
       </div>
       )}
     </div>

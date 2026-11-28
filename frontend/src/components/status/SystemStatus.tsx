@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { Activity, Cpu, Eye, Wrench, RefreshCw, AlertCircle, CheckCircle, Clock, Power } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Activity, Cpu, Eye, Wrench, RefreshCw, Clock, Power } from 'lucide-react';
 import { isTauri } from '@tauri-apps/api/core';
 import { api } from '../../api/client';
 import { PerceptionStatus, SchedulerMetrics, SystemHealth, ToolCapability } from '../../types';
 import { useConnectivity } from '../../context/ConnectivityContext';
 
 export const SystemStatus: React.FC = () => {
-  const { connectivity, isBackendReachable, inferenceDegraded } = useConnectivity();
+  const { connectivity: _connectivity, isBackendReachable: _isBackendReachable, inferenceDegraded: _inferenceDegraded } = useConnectivity();
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [schedulerStatus, setSchedulerStatus] = useState<{
     enabled: boolean;
@@ -18,7 +18,7 @@ export const SystemStatus: React.FC = () => {
   const [perceptionStatus, setPerceptionStatus] = useState<PerceptionStatus | null>(null);
   const [capabilities, setCapabilities] = useState<ToolCapability[]>([]);
   const [loading, setLoading] = useState(false);
-  const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [_errorNotice, setErrorNotice] = useState<string | null>(null);
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
   const [isStale, setIsStale] = useState(false);
   const [autoStartStatus, setAutoStartStatus] = useState<{
@@ -28,7 +28,7 @@ export const SystemStatus: React.FC = () => {
   } | null>(null);
   const [updatingAutoStart, setUpdatingAutoStart] = useState(false);
 
-  const toggleAutoStart = async () => {
+  const toggleAutoStart = useCallback(async () => {
     if (!autoStartStatus || updatingAutoStart) return;
     setUpdatingAutoStart(true);
     try {
@@ -40,9 +40,9 @@ export const SystemStatus: React.FC = () => {
     } finally {
       setUpdatingAutoStart(false);
     }
-  };
+  }, [autoStartStatus, updatingAutoStart]);
 
-  const fetchDiagnostics = async () => {
+  const fetchDiagnostics = useCallback(async () => {
     setLoading(true);
     setErrorNotice(null);
     try {
@@ -90,221 +90,356 @@ export const SystemStatus: React.FC = () => {
     } catch (err) {
       setErrorNotice(err instanceof Error ? err.message : String(err));
       // Preserve existing in-memory values; do not substitute zeroes or clear state
-      setIsStale(true);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    fetchDiagnostics();
+  }, [fetchDiagnostics]);
 
   useEffect(() => {
     fetchDiagnostics();
-    const interval = setInterval(fetchDiagnostics, 6000);
+    const interval = setInterval(fetchDiagnostics, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchDiagnostics]);
+
+  const getHealthStatusClass = (status: string) => {
+    const s = status.toLowerCase();
+    if (s === 'healthy') return 'status-indicator--healthy';
+    if (s === 'degraded') return 'status-indicator--degraded';
+    if (s === 'failed' || s === 'unhealthy') return 'status-indicator--failed';
+    return 'status-indicator--unknown';
+  };
+
+  const getRiskTierClass = (tier: string) => {
+    if (tier === 'CRITICAL' || tier === 'HIGH') return 'capability-card__risk--critical';
+    if (tier === 'MEDIUM') return 'capability-card__risk--medium';
+    return 'capability-card__risk--low';
+  };
+
+  const getHealthOverviewClass = (status: string) => {
+    const s = status.toLowerCase();
+    if (s === 'healthy') return 'health-overview__value--healthy';
+    if (s === 'degraded') return 'health-overview__value--degraded';
+    if (s === 'failed') return 'health-overview__value--failed';
+    return '';
+  };
+
+  const getDiagnosticMetricClass = (healthy: boolean | null) => {
+    if (healthy === true) return 'diagnostic-metric__value--healthy';
+    if (healthy === false) return 'diagnostic-metric__value--failed';
+    return 'diagnostic-metric__value--unknown';
+  };
 
   return (
-    <div className="panel-view">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <h2 style={{ fontSize: '1.25rem', marginBottom: 4 }}>System Diagnostics & Subsystems</h2>
-            {isStale && lastSuccessfulFetch && (
-              <span className="stale-badge" title="Data retained in-memory during offline disconnection">
-                <Clock style={{ width: 12, height: 12 }} /> Stale as of {lastSuccessfulFetch.toLocaleTimeString()}
-              </span>
-            )}
+    <div className="workspace-root" style={{ height: '100%', backgroundColor: 'var(--bg-canvas)' }}>
+      <header className="workspace-header">
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h1 className="workspace-title">System Status</h1>
+            <p className="workspace-description">
+              Real-time system health, diagnostics, and capability registry
+            </p>
           </div>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Real-time telemetry grounded in backend state across resource scheduling, perception, and registered tools.
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+            {isStale && (
+              <div className="stale-banner" style={{ marginBottom: 0, padding: 'var(--space-2) var(--space-3)', fontSize: 'var(--text-xs)' }}>
+                <div className="stale-banner__text">
+                  <Clock style={{ width: 14, height: 14 }} />
+                  <span>Stale Data \u2014 last successful fetch: {lastSuccessfulFetch?.toLocaleTimeString() || 'never'}</span>
+                </div>
+              </div>
+            )}
+            <button
+              className="btn--icon-sm"
+              onClick={handleRefresh}
+              disabled={loading}
+              aria-label="Refresh diagnostics"
+              title="Refresh"
+            >
+              <RefreshCw style={{ width: 18, height: 18 }} />
+            </button>
+          </div>
         </div>
-        <button className="btn btn-secondary" onClick={fetchDiagnostics} disabled={loading}>
-          <RefreshCw className={loading ? 'animate-spin' : ''} style={{ width: 14, height: 14 }} />
-          Refresh
-        </button>
-      </div>
+      </header>
 
-      {errorNotice && (
-        <div
-          style={{
-            padding: '10px 14px',
-            borderRadius: 'var(--radius-md)',
-            backgroundColor: 'var(--danger-subtle)',
-            border: '1px solid rgba(239, 68, 68, 0.3)',
-            color: 'var(--danger)',
-            fontSize: '0.85rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-          role="alert"
-        >
-          <AlertCircle style={{ width: 16, height: 16, flexShrink: 0 }} />
-          <span>{errorNotice}</span>
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
-        {/* Card 1: Core System Health */}
-        <div className="card">
-          <div className="card-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Activity style={{ color: isBackendReachable ? 'var(--success)' : 'var(--danger)', width: 18, height: 18 }} />
-              <h3 style={{ fontSize: '0.95rem' }}>Core Engine Health</h3>
-            </div>
-            {isBackendReachable ? (
-              <span style={{ color: 'var(--success)', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
-                <CheckCircle style={{ width: 12, height: 12 }} /> Reachable ({connectivity})
+      <main className="workspace-content" role="main">
+        <div className="workspace-grid two-column full-width">
+          {/* Card 1: Overall System Health */}
+          <section className="section-card" aria-labelledby="system-health-title">
+            <header className="section-header">
+              <h2 id="system-health-title" className="section-title">
+                <Activity className="section-icon" style={{ width: 20, height: 20 }} />
+                Overall System Health
+              </h2>
+              <span className={`status-indicator ${getHealthStatusClass(health?.status || 'unknown')}`}>
+                <span className="status-indicator__dot" style={{ backgroundColor: 'currentColor' }} />
+                {health?.status || 'Unknown'}
               </span>
+            </header>
+            <div className="health-overview">
+              <div className="health-overview__item">
+                <div className="health-overview__icon">
+                  <Activity style={{ width: 24, height: 24 }} />
+                </div>
+                <div className={`health-overview__value ${getHealthOverviewClass(health?.status || 'unknown')}`}>
+                  {health?.status || '\u2014'}
+                </div>
+                <div className="health-overview__label">Status</div>
+              </div>
+              <div className="health-overview__item">
+                <div className="health-overview__icon">
+                  <Cpu style={{ width: 24, height: 24 }} />
+                </div>
+                <div className="health-overview__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                  {health?.environment || '\u2014'}
+                </div>
+                <div className="health-overview__label">Environment</div>
+              </div>
+              <div className="health-overview__item">
+                <div className="health-overview__icon">
+                  <Clock style={{ width: 24, height: 24 }} />
+                </div>
+                <div className="health-overview__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                  {health?.version || '\u2014'}
+                </div>
+                <div className="health-overview__label">Version</div>
+              </div>
+            </div>
+            {health?.timestamp && (
+              <div style={{ marginTop: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+                Last checked: {new Date(health.timestamp).toLocaleString()}
+              </div>
+            )}
+          </section>
+
+          {/* Card 3: Perception & Diagnostics */}
+          <section className="section-card" aria-labelledby="perception-title">
+            <header className="section-header">
+              <h2 id="perception-title" className="section-title">
+                <Eye className="section-icon" style={{ width: 20, height: 20 }} />
+                Perception & Diagnostics
+              </h2>
+            </header>
+            {perceptionStatus ? (
+              <div className="diagnostics-grid">
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Perception Enabled</span>
+                  <span className={`diagnostic-metric__value ${getDiagnosticMetricClass(perceptionStatus.enabled)}`}>
+                    {perceptionStatus.enabled ? 'Yes' : 'No'}
+                  </span>
+                </div>
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Audio Capture</span>
+                  <span className={`diagnostic-metric__value ${getDiagnosticMetricClass(perceptionStatus.audio_capture_enabled)}`}>
+                    {perceptionStatus.audio_capture_enabled ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Vision</span>
+                  <span className={`diagnostic-metric__value ${getDiagnosticMetricClass(perceptionStatus.vision_enabled)}`}>
+                    {perceptionStatus.vision_enabled ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Motion</span>
+                  <span className={`diagnostic-metric__value ${getDiagnosticMetricClass(perceptionStatus.motion_enabled)}`}>
+                    {perceptionStatus.motion_enabled ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Environmental</span>
+                  <span className={`diagnostic-metric__value ${getDiagnosticMetricClass(perceptionStatus.environmental_enabled)}`}>
+                    {perceptionStatus.environmental_enabled ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Adapter Mode</span>
+                  <span className="diagnostic-metric__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                    {perceptionStatus.adapter_mode}
+                  </span>
+                </div>
+                <div className="diagnostic-metric">
+                  <span className="diagnostic-metric__label">Active Audio Sessions</span>
+                  <span className="diagnostic-metric__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                    {perceptionStatus.active_audio_sessions}
+                  </span>
+                </div>
+              </div>
             ) : (
-              <span style={{ color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}>
-                <AlertCircle style={{ width: 12, height: 12 }} /> {connectivity === 'reconnecting' ? 'Reconnecting...' : 'Offline'}
-              </span>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', padding: 'var(--space-4) 0' }}>
+                No perception data available
+              </div>
             )}
-          </div>
-          <div style={{ fontSize: '0.825rem', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--text-secondary)' }}>
-            <div>Environment: <strong style={{ color: 'var(--text-primary)' }}>{health?.environment || 'unknown'}</strong></div>
-            <div>Version: <strong style={{ color: 'var(--text-primary)' }}>{health?.version || 'unknown'}</strong></div>
-            <div>Inference Status: <strong style={{ color: inferenceDegraded ? 'var(--warning)' : 'var(--success)' }}>{inferenceDegraded ? 'Degraded / Provider Unavailable' : 'Ready'}</strong></div>
-            <div>Last Polled: {lastSuccessfulFetch ? lastSuccessfulFetch.toLocaleTimeString() : 'N/A'}</div>
-          </div>
-        </div>
+          </section>
 
-        {/* Card 2: Single-Model Resource Scheduler */}
-        <div className="card">
-          <div className="card-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Cpu style={{ color: 'var(--primary)', width: 18, height: 18 }} />
-              <h3 style={{ fontSize: '0.95rem' }}>Resource Scheduler</h3>
-            </div>
-            <span style={{ fontSize: '0.75rem', color: schedulerStatus?.enabled ? 'var(--success)' : 'var(--warning)' }}>
-              {schedulerStatus?.enabled ? 'Active' : 'Disabled'}
-            </span>
-          </div>
-          <div style={{ fontSize: '0.825rem', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--text-secondary)' }}>
-            <div>Active Local Leases: <strong style={{ color: 'var(--text-primary)' }}>{schedulerStatus?.active_local ?? 0} / 1</strong></div>
-            <div>Active Cloud Leases: <strong style={{ color: 'var(--text-primary)' }}>{schedulerStatus?.active_cloud ?? 0} / 5</strong></div>
-            <div>Queue Depth: <strong style={{ color: 'var(--text-primary)' }}>{schedulerStatus?.queue_depth ?? 0}</strong></div>
-            <div>Resident Model: <strong style={{ color: 'var(--primary)' }}>{schedulerMetrics?.current_model || 'none'}</strong></div>
-            <div>Total Requests Processed: <strong style={{ color: 'var(--text-primary)' }}>{schedulerMetrics?.total_requests_processed ?? 0}</strong></div>
-          </div>
-        </div>
-
-        {/* Card 3: Perception Subsystem */}
-        <div className="card">
-          <div className="card-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Eye style={{ color: 'var(--info)', width: 18, height: 18 }} />
-              <h3 style={{ fontSize: '0.95rem' }}>Perception Subsystem</h3>
-            </div>
-            <span style={{ fontSize: '0.75rem', color: perceptionStatus?.enabled ? 'var(--success)' : 'var(--text-muted)' }}>
-              {perceptionStatus?.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </div>
-          <div style={{ fontSize: '0.825rem', display: 'flex', flexDirection: 'column', gap: 6, color: 'var(--text-secondary)' }}>
-            <div>Audio Capture: <strong style={{ color: perceptionStatus?.audio_capture_enabled ? 'var(--success)' : 'var(--text-muted)' }}>{perceptionStatus?.audio_capture_enabled ? 'Available' : 'Disabled'}</strong></div>
-            <div>Vision Engine: <strong style={{ color: perceptionStatus?.vision_enabled ? 'var(--success)' : 'var(--text-muted)' }}>{perceptionStatus?.vision_enabled ? 'Available' : 'Disabled'}</strong></div>
-            <div>Adapter Mode: <strong style={{ color: 'var(--text-primary)' }}>{perceptionStatus?.adapter_mode || 'unknown'}</strong></div>
-            <div>Active Audio Sessions: <strong style={{ color: 'var(--text-primary)' }}>{perceptionStatus?.active_audio_sessions ?? 0}</strong></div>
-          </div>
-        </div>
-
-        {/* Card 4: Windows Desktop Shell & Auto-Start */}
-        {isTauri() && (
-          <div className="card">
-            <div className="card-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Power style={{ color: 'var(--primary)', width: 18, height: 18 }} />
-                <h3 style={{ fontSize: '0.95rem' }}>Windows Desktop Integration</h3>
+          {/* Card 4: Scheduler Status */}
+          <section className="section-card" aria-labelledby="scheduler-title">
+            <header className="section-header">
+              <h2 id="scheduler-title" className="section-title">
+                <Wrench className="section-icon" style={{ width: 20, height: 20 }} />
+                Scheduler
+              </h2>
+            </header>
+            {schedulerStatus ? (
+              <>
+                <div className="scheduler-status">
+                  <div className="scheduler-status__item">
+                    <span className="scheduler-status__label">Enabled</span>
+                    <span className={`scheduler-status__value ${getDiagnosticMetricClass(schedulerStatus.enabled)}`}>
+                      {schedulerStatus.enabled ? 'Yes' : 'No'}
+                    </span>
+                  </div>
+                  <div className="scheduler-status__item">
+                    <span className="scheduler-status__label">Active Local</span>
+                    <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                      {schedulerStatus.active_local}
+                    </span>
+                  </div>
+                  <div className="scheduler-status__item">
+                    <span className="scheduler-status__label">Active Cloud</span>
+                    <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                      {schedulerStatus.active_cloud}
+                    </span>
+                  </div>
+                  <div className="scheduler-status__item">
+                    <span className="scheduler-status__label">Queue Depth</span>
+                    <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                      {schedulerStatus.queue_depth}
+                    </span>
+                  </div>
+                </div>
+                {schedulerMetrics && (
+                  <div style={{ marginTop: 'var(--space-4)' }}>
+                    <h3 style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 'var(--space-2)' }}>
+                      Metrics
+                    </h3>
+                    <div className="scheduler-status">
+                      <div className="scheduler-status__item">
+                        <span className="scheduler-status__label">Current Model</span>
+                        <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                          {schedulerMetrics.current_model || '\u2014'}
+                        </span>
+                      </div>
+                      <div className="scheduler-status__item">
+                        <span className="scheduler-status__label">Processed</span>
+                        <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                          {schedulerMetrics.total_requests_processed}
+                        </span>
+                      </div>
+                      <div className="scheduler-status__item">
+                        <span className="scheduler-status__label">Cancelled</span>
+                        <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                          {schedulerMetrics.total_cancelled}
+                        </span>
+                      </div>
+                      <div className="scheduler-status__item">
+                        <span className="scheduler-status__label">Timeouts</span>
+                        <span className="scheduler-status__value" style={{ fontFamily: 'var(--font-mono)' }}>
+                          {schedulerMetrics.total_timeouts}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', padding: 'var(--space-4) 0' }}>
+                No scheduler data available
               </div>
-              <span style={{ fontSize: '0.75rem', color: autoStartStatus?.enabled ? 'var(--success)' : 'var(--text-muted)' }}>
-                {autoStartStatus?.enabled ? 'Auto-Start On' : 'Auto-Start Off'}
+            )}
+          </section>
+
+          {/* Card 5: Auto-Start (Tauri only) */}
+          {isTauri() && (
+            <section className="section-card" aria-labelledby="autostart-title">
+              <header className="section-header">
+                <h2 id="autostart-title" className="section-title">
+                  <Power className="section-icon" style={{ width: 20, height: 20 }} />
+                  Auto-Start
+                </h2>
+              </header>
+              {autoStartStatus ? (
+                <div className="auto-start-card">
+                  <div className="auto-start-card__status">
+                    <div className="auto-start-card__info">
+                      <span className="auto-start-card__label">
+                        Status: {autoStartStatus.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                      {autoStartStatus.executable_path && (
+                        <span className="auto-start-card__path">
+                          Registered: {autoStartStatus.executable_path}
+                        </span>
+                      )}
+                      {autoStartStatus.matches_current_exe === false && autoStartStatus.executable_path && (
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--warning)', fontWeight: 600 }}>
+                          \u26a0 Registered path differs from current executable
+                        </span>
+                      )}
+                    </div>
+                    <div className="auto-start-card__action">
+                      <button
+                        className={`btn--sm ${autoStartStatus.enabled ? 'btn--danger-sm' : 'btn--primary-sm'}`}
+                        onClick={toggleAutoStart}
+                        disabled={updatingAutoStart}
+                      >
+                        {updatingAutoStart
+                          ? 'Updating\u2026'
+                          : autoStartStatus.enabled
+                          ? 'Disable Startup'
+                          : 'Enable Startup'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', padding: 'var(--space-4) 0' }}>
+                  Loading auto-start status\u2026
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* Card 6: Registered Tool Capabilities */}
+          <section className="section-card" aria-labelledby="capabilities-title">
+            <header className="section-header">
+              <h2 id="capabilities-title" className="section-title">
+                <Wrench className="section-icon" style={{ width: 20, height: 20, color: 'var(--warning)' }} />
+                Registered Capabilities Allowlist
+              </h2>
+              <span className="section-count" aria-label="Capabilities count">
+                {capabilities.length}
               </span>
-            </div>
-            <div style={{ fontSize: '0.825rem', display: 'flex', flexDirection: 'column', gap: 8, color: 'var(--text-secondary)' }}>
-              <div>Integration: <strong style={{ color: 'var(--text-primary)' }}>Native Windows Shell (HKCU Run)</strong></div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
-                <span>Launch on Windows startup:</span>
-                <button
-                  className={`btn ${autoStartStatus?.enabled ? 'btn-danger' : 'btn-secondary'}`}
-                  style={{ padding: '4px 10px', fontSize: '0.75rem' }}
-                  onClick={toggleAutoStart}
-                  disabled={updatingAutoStart}
-                >
-                  {updatingAutoStart
-                    ? 'Updating...'
-                    : autoStartStatus?.enabled
-                    ? 'Disable Startup'
-                    : 'Enable Startup'}
-                </button>
-              </div>
-              {autoStartStatus?.executable_path && (
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
-                  Registered: {autoStartStatus.executable_path}
+            </header>
+            <div className="capabilities-grid">
+              {capabilities.map((c) => (
+                <article key={c.capability_id} className="capability-card">
+                  <header className="capability-card__header">
+                    <span className="capability-card__name">{c.name}</span>
+                    <span className={`capability-card__risk ${getRiskTierClass(c.risk_tier)}`}>
+                      {c.risk_tier}
+                    </span>
+                  </header>
+                  <span className="capability-card__id" style={{ fontFamily: 'var(--font-mono)' }}>
+                    {c.capability_id}@{c.version}
+                  </span>
+                  <p className="capability-card__description">{c.description}</p>
+                  {c.consequential && (
+                    <span className="capability-card__consequential">\u2022 Consequential Action</span>
+                  )}
+                </article>
+              ))}
+              {capabilities.length === 0 && (
+                <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'var(--text-muted)', padding: 'var(--space-8) var(--space-4)' }}>
+                  No capabilities registered
                 </div>
               )}
             </div>
-          </div>
-        )}
-
-        {/* Card 5: Registered Tool Capabilities */}
-        <div className="card" style={{ gridColumn: '1 / -1' }}>
-          <div className="card-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Wrench style={{ color: 'var(--warning)', width: 18, height: 18 }} />
-              <h3 style={{ fontSize: '0.95rem' }}>Registered Capabilities Allowlist ({capabilities.length})</h3>
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10, marginTop: 8 }}>
-            {capabilities.map((c) => (
-              <div
-                key={c.capability_id}
-                style={{
-                  padding: 10,
-                  borderRadius: 'var(--radius-sm)',
-                  backgroundColor: 'var(--bg-canvas)',
-                  border: '1px solid var(--border-subtle)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{c.name}</span>
-                  <span
-                    style={{
-                      fontSize: '0.65rem',
-                      padding: '1px 5px',
-                      borderRadius: 'var(--radius-sm)',
-                      backgroundColor:
-                        c.risk_tier === 'CRITICAL' || c.risk_tier === 'HIGH'
-                          ? 'rgba(239, 68, 68, 0.15)'
-                          : 'rgba(99, 102, 241, 0.15)',
-                      color:
-                        c.risk_tier === 'CRITICAL' || c.risk_tier === 'HIGH'
-                          ? 'var(--danger)'
-                          : 'var(--primary)',
-                    }}
-                  >
-                    {c.risk_tier}
-                  </span>
-                </div>
-                <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                  {c.capability_id}@{c.version}
-                </span>
-                <p style={{ fontSize: '0.775rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                  {c.description}
-                </p>
-                {c.consequential && (
-                  <span style={{ fontSize: '0.7rem', color: 'var(--warning)', fontWeight: 600 }}>
-                    • Consequential Action
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+          </section>
         </div>
-      </div>
+      </main>
     </div>
   );
 };
