@@ -63,11 +63,19 @@ Accuracy qualification requires evaluating Word Error Rate ($\text{WER}$) across
      3. `audio_cmd_workflow_5s.wav`: `"Summarize the latest system logs and create a new draft task for review."` ($N=13$ words)
      4. `audio_cmd_dictation_10s.wav`: `"We need to verify the database migrations, ensure all foreign key constraints are enabled, and check that the memory service cleans up expired working memories automatically."` ($N=26$ words)
    - **Canonical Reference Word Count Total**: $N_{\text{total}} = 2 + 8 + 13 + 26 = 49\text{ reference words}$ across the four canonical commands.
-   - **Audio Format Specification**: 16 kHz sample rate, 16-bit signed integer linear PCM (little-endian), 1 channel (mono), RIFF/WAVE container.
-   - **Ingestion & Provenance Requirements**: Each recording must be registered in `docs/evaluation/voice_corpus_manifest.json` with an immutable SHA-256 cryptographic digest, verified ground-truth reference transcript, consenting speaker identifier, physical microphone model, and recording environment metadata.
+   - **Audio Format Specification**: 16 kHz sample rate, 16-bit signed integer linear PCM (little-endian), 1 channel (mono), uncompressed RIFF/WAVE container.
+   - **Explicit Manifest-to-Recording Mapping**: Each recording in `formal_accuracy_corpus.clips` must map 1:1 to a canonical command via `canonical_commands[].command_id`. Exactly four unique entries matching `cmd_short_1s`, `cmd_query_3s`, `cmd_workflow_5s`, and `cmd_dictation_10s` are required. Duplicate commands, duplicate filenames, or unknown command IDs are strictly rejected.
+   - **Clip Schema & Provenance Requirements**: Every clip entry must supply all 12 required fields (`command_id`, `filename`, `sha256_digest`, `size_bytes`, `sample_rate_hz`, `channels`, `sample_format`, `duration_seconds`, `consenting_speaker_id`, `physical_microphone_model`, `acoustic_environment_description`, `ground_truth_transcript`). A single consistent consenting speaker identifier must be maintained across all four recordings.
+   - **Local-Only Recording Storage & CLI Parameter**: Human WAV recordings must remain strictly local and are never committed to git or uploaded. The benchmark harness reads human recordings from an explicit local directory specified via `--option-b-corpus-dir <path>`. Filenames must be safe relative paths within the designated corpus directory; path traversal (`..` or absolute paths) and escaping symlinks are rejected.
+   - **Formal Aggregate WER Calculation**:
+     $$\text{WER}_{\text{agg}} = \frac{\sum_{i=1}^4 \text{edits}_i}{N_{\text{total}}} = \frac{\sum_{i=1}^4 (S_i + D_i + I_i)}{49}$$
+     The denominator is strictly 49 reference words. The mean of individual command WER values is not used.
+   - **Exact Gate Decision Rules**:
+     - **`PASS`**: Measured aggregate $\text{WER}_{\text{agg}} \le 12.0\%$ ($\le 5\text{ edits} / 49\text{ words} = 10.20\%$).
+     - **`FAIL`**: Measured aggregate $\text{WER}_{\text{agg}} > 12.0\%$ ($\ge 6\text{ edits} / 49\text{ words} = 12.24\%$).
+     - **`NOT RUN`**: If the Option B corpus directory is not provided, if clips are missing (`clips: []` under `PENDING_RECORDINGS`), if audio validation fails, or if inference runtime crashes. An inference crash is never misreported as an accuracy failure.
    - **No Demographic Quotas**: In accordance with the elimination of specification drift, no arbitrary demographic or multi-speaker minimums (e.g. 5–10 speakers across specific genders or regional accents) are required.
-   - **Acceptance Threshold**: Measured aggregate $\text{WER} \le 12.0\%$ across the four canonical human command recordings ($N_{\text{total}} = 49$ reference words) is required for **`PASS`**. If measured $\text{WER} > 12.0\%$, the gate is **`FAIL`**.
-   - **Current Status**: Formal human recordings have not yet been produced and registered. Until qualifying human recordings are supplied and physically benchmarked, `GATE-VOICE-02` remains **`NOT RUN`**.
+   - **Current Status**: Formal human recordings have not yet been produced and registered (`status: PENDING_RECORDINGS`). Until qualifying human recordings are supplied and physically benchmarked, `GATE-VOICE-02` remains **`NOT RUN`**.
    - **Non-Claims Boundary**: Passing this limited four-command corpus provides empirical evidence strictly for the four canonical command texts, the recorded speaker, the tested physical microphone, and the pinned STT model/runtime. It must **not** be described or interpreted as proof of general multi-speaker robustness, regional accent tolerance, or unconstrained conversational robustness.
 
 2. **Automated CI Smoke-Test Fixtures (Synthetic SAPI Audio)**:

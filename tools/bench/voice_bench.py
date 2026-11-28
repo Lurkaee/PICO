@@ -48,57 +48,20 @@ from tools.bench.whisper_prototype import (
     WhisperRuntimeError,
     verify_model_artifact,
 )
+from tools.bench.option_b_eval import (
+    OptionBGate02Result,
+    OptionBGateStatus,
+    compute_levenshtein_ops,
+    evaluate_option_b_gate_02,
+    normalize_text_for_option_b,
+    validate_option_b_audio_file,
+    validate_option_b_manifest,
+)
 
 logger = logging.getLogger("voice_bench")
 
-_DIGIT_MAP = {
-    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
-    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
-}
-
-
-def normalize_text_for_eval(text: str) -> str:
-    """Normalize text for ASR WER evaluation (casefold, remove punctuation, expand digits, collapse whitespace)."""
-    text = text.lower()
-    text = re.sub(r"\d", lambda m: f" {_DIGIT_MAP[m.group(0)]} ", text)
-    text = re.sub(r"[^\w\s]", "", text)
-    return " ".join(text.split())
-
-
-# Provide aliases for testing and external callers
+normalize_text_for_eval = normalize_text_for_option_b
 normalize_text = normalize_text_for_eval
-
-
-def compute_levenshtein_ops(seq1: list[str] | str, seq2: list[str] | str) -> tuple[int, int, int, int]:
-    """Compute Wagner-Fischer edit distance and operations between two sequences.
-
-    Returns:
-        (distance, substitutions, deletions, insertions)
-    """
-    m, n = len(seq1), len(seq2)
-    # dp[i][j] = (dist, subs, dels, ins)
-    dp = [[(0, 0, 0, 0)] * (n + 1) for _ in range(m + 1)]
-    for i in range(1, m + 1):
-        dp[i][0] = (i, 0, i, 0)
-    for j in range(1, n + 1):
-        dp[0][j] = (j, 0, 0, j)
-
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if seq1[i - 1] == seq2[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
-            else:
-                prev_sub = dp[i - 1][j - 1]
-                prev_del = dp[i - 1][j]
-                prev_ins = dp[i][j - 1]
-
-                cand_sub = (prev_sub[0] + 1, prev_sub[1] + 1, prev_sub[2], prev_sub[3])
-                cand_del = (prev_del[0] + 1, prev_del[1], prev_del[2] + 1, prev_del[3])
-                cand_ins = (prev_ins[0] + 1, prev_ins[1], prev_ins[2], prev_ins[3] + 1)
-
-                dp[i][j] = min(cand_sub, cand_del, cand_ins, key=lambda x: x[0])
-
-    return dp[m][n]
 
 
 def compute_wer(reference: str, hypothesis: str) -> float:
@@ -301,6 +264,11 @@ class ContinuousMemorySampler:
         self.has_telemetry_error: bool = False
         self.exceptions: list[Exception] = []
 
+        # Background VRAM tracking across full lifecycle
+        self.peak_vram_mb: float | None = None
+        self.min_vram_mb: float | None = None
+        self.vram_samples_count: int = 0
+
     def start(self) -> None:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="PicoMemorySampler")
@@ -315,10 +283,11 @@ class ContinuousMemorySampler:
                     self.has_telemetry_error = True
 
     def sample_once(self) -> None:
-        """Collect a single synchronous sample of available system RAM and process working set."""
+        """Collect a single synchronous sample of available system RAM, process working set, and GPU VRAM."""
         try:
             _, avail_mb = query_system_memory_mb()
             peak_ws, cur_ws, _ = query_process_memory_mb()
+            vram_mb = query_gpu_vram_mb()
 
             with self._lock:
                 self.samples_count += 1
@@ -336,10 +305,22 @@ class ContinuousMemorySampler:
                         self.peak_working_set_mb = cur_ws
                 else:
                     self.has_telemetry_error = True
+
+                if vram_mb is not None:
+                    if self.peak_vram_mb is None or vram_mb > self.peak_vram_mb:
+                        self.peak_vram_mb = vram_mb
+                    if self.min_vram_mb is None or vram_mb < self.min_vram_mb:
+                        self.min_vram_mb = vram_mb
+                    self.vram_samples_count += 1
         except Exception as exc:
             with self._lock:
                 self.has_telemetry_error = True
                 self.exceptions.append(exc)
+
+    def get_vram_results(self) -> tuple[float | None, float | None, int]:
+        """Return (peak_vram_mb, min_vram_mb, vram_samples_count)."""
+        with self._lock:
+            return (self.peak_vram_mb, self.min_vram_mb, self.vram_samples_count)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -978,9 +959,14 @@ def run_benchmark(
     corpus_dir: Path,
     n_threads: int = 4,
     iterations: int = 10,
+    option_b_corpus_dir: Path | None = None,
+    manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """Execute complete qualification benchmark suite with rigorous evidence collection."""
     current_pid = os.getpid()
+
+    if manifest_path is None:
+        manifest_path = REPO_ROOT / "docs" / "evaluation" / "voice_corpus_manifest.json"
 
     # Query initial memory and system state
     peak_ws_init, cur_ws_init, priv_init = query_process_memory_mb()
@@ -1016,6 +1002,7 @@ def run_benchmark(
     sampler.start()
     ollama_checkpoints: list[tuple[str, OllamaResidencyState, str, str | None]] = []
     engine: PicoWhisperEngine | None = None
+    gate_02_result: OptionBGate02Result | None = None
 
     try:
         # Step 1: Verify intended model is positively GPU-resident before establishing baseline
@@ -1217,6 +1204,33 @@ def run_benchmark(
             res_ckpt = verify_ollama_model_residency("qwen3.5:2b")
             ollama_checkpoints.append((f"sample_{filename}", res_ckpt.state, res_ckpt.info, res_ckpt.digest))
 
+        # Checkpoint: Run Option B STT evaluation while engine is alive and sampler is active
+        def _option_b_telemetry_poll() -> None:
+            nonlocal min_avail_ram_observed, avail_ram_readings_valid
+            nonlocal max_vram_observed, min_vram_observed, vram_observations_count, vram_readings_valid
+            _, avail_now = query_system_memory_mb()
+            if avail_now is not None:
+                min_avail_ram_observed = min(min_avail_ram_observed, avail_now)
+            else:
+                avail_ram_readings_valid = False
+
+            vram_now = query_gpu_vram_mb()
+            if vram_now is not None:
+                max_vram_observed = max(max_vram_observed, vram_now)
+                min_vram_observed = min(min_vram_observed, vram_now)
+                vram_observations_count += 1
+            else:
+                vram_readings_valid = False
+
+        gate_02_result = evaluate_option_b_gate_02(
+            engine=engine,
+            manifest_path=manifest_path,
+            corpus_dir=option_b_corpus_dir,
+            n_threads=n_threads,
+            model_meta=report.get("model"),
+            telemetry_poll_fn=_option_b_telemetry_poll,
+        )
+
         # Checkpoint: Check Ollama residency post-final inference iteration
         res_post_final = verify_ollama_model_residency("qwen3.5:2b")
         ollama_checkpoints.append(("post_final", res_post_final.state, res_post_final.info, res_post_final.digest))
@@ -1247,6 +1261,13 @@ def run_benchmark(
             sampler.stop()
 
     sampler_peak_ws, sampler_min_avail_ram, ram_valid, ram_samples_count = sampler.get_results()
+    if hasattr(sampler, "get_vram_results"):
+        s_peak_vram, s_min_vram, s_vram_cnt = sampler.get_vram_results()
+        if s_peak_vram is not None:
+            max_vram_observed = max(max_vram_observed, s_peak_vram)
+            min_vram_observed = min(min_vram_observed, s_min_vram) if min_vram_observed != 999999 else s_min_vram
+            vram_observations_count += s_vram_cnt
+            vram_readings_valid = True
 
     all_ws_readings = [ws for ws in [peak_ws_init, peak_ws_final, sampler_peak_ws] if ws is not None]
     overall_peak_ws = max(all_ws_readings) if all_ws_readings else None
@@ -1371,20 +1392,26 @@ def run_benchmark(
         gate_01_status = "NOT RUN"
         gate_01_measured = f"Designated 5-second benchmark sample '{DESIGNATED_5S_SAMPLE}' missing from evaluation corpus"
 
-    # GATE-VOICE-02: STT Accuracy (WER)
-    # The current corpus contains only JFK slices and 1 numeric sample.
-    # Marking NOT RUN for full qualification per spec guidelines until multi-speaker corpus is evaluated.
-    if aggregate_real_wer is not None:
-        gate_02_status = "NOT RUN"
-        gate_02_measured = (
-            f"Preliminary real-speech aggregate WER={format_metric_pct(aggregate_real_wer)} "
-            f"(Macro WER={format_metric_pct(macro_real_wer)}, CER={format_metric_pct(macro_real_cer)}). "
-            f"Smoke command WER={format_metric_pct(aggregate_smoke_wer)}. "
-            "Qualification marked NOT RUN pending multi-speaker conversational corpus per manifest."
+    # GATE-VOICE-02: STT Accuracy (WER) - Formal Option B Evaluation
+    if gate_02_result is None:
+        gate_02_result = evaluate_option_b_gate_02(
+            engine=None,
+            manifest_path=manifest_path,
+            corpus_dir=option_b_corpus_dir,
+            n_threads=n_threads,
+            model_meta=report.get("model"),
         )
-    else:
-        gate_02_status = "NOT RUN"
-        gate_02_measured = "No real-speech samples evaluated"
+    report["option_b_gate_02"] = gate_02_result.to_dict()
+    gate_02_status = gate_02_result.status
+    gate_02_measured = gate_02_result.format_measured_summary(
+        historical_mixed_wer=aggregate_real_wer,
+        historical_macro_wer=macro_real_wer,
+        historical_macro_cer=macro_real_cer,
+        smoke_wer=aggregate_smoke_wer,
+        historical_samples_count=len(real_speech) if real_speech else None,
+        historical_words_count=total_real_ref_words if real_speech else None,
+        historical_edits_count=total_real_edits if real_speech else None,
+    )
 
     # GATE-VOICE-03: TTS Latency
     gate_03_status = "NOT RUN"
@@ -1467,10 +1494,10 @@ def run_benchmark(
         },
         "GATE-VOICE-02": {
             "name": "STT Accuracy (WER)",
-            "threshold": "Aggregate WER <= 12.0% on representative multi-speaker real speech corpus",
+            "threshold": "Aggregate WER <= 12.0% across Option B human corpus (N_total = 49 reference words)",
             "measured": gate_02_measured,
             "status": gate_02_status,
-            "method": "Wagner-Fischer dynamic programming edit distance with digit normalization",
+            "method": "Wagner-Fischer dynamic programming edit distance with digit normalization over 49 canonical reference words",
         },
         "GATE-VOICE-03": {
             "name": "TTS Latency",
@@ -1536,13 +1563,18 @@ def run_benchmark(
 def render_markdown_report(report: dict[str, Any]) -> str:
     """Format benchmark report dictionary into clean, truthful Markdown."""
     gate_01_status = report.get("gates", {}).get("GATE-VOICE-01", {}).get("status", "NOT RUN")
+    gate_02_status = report.get("gates", {}).get("GATE-VOICE-02", {}).get("status", "NOT RUN")
     gate_04_status = report.get("gates", {}).get("GATE-VOICE-04", {}).get("status", "NOT RUN")
     gate_05_status = report.get("gates", {}).get("GATE-VOICE-05", {}).get("status", "NOT RUN")
 
-    if gate_01_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
-        status_line = "Stage 2 Prototype — Core Latency, VRAM & RAM Qualified; Accuracy, Egress & Disk Retention NOT RUN"
+    if gate_01_status == "PASS" and gate_02_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
+        status_line = "Stage 2 Prototype — Core Latency, Option B Accuracy, VRAM & RAM Qualified; Egress & Disk Retention NOT RUN"
+    elif gate_01_status == "PASS" and gate_04_status == "PASS" and gate_05_status == "PASS":
+        acc_str = "Accuracy Qualified" if gate_02_status == "PASS" else ("Accuracy FAILED" if gate_02_status == "FAIL" else "Accuracy NOT RUN")
+        status_line = f"Stage 2 Prototype — Core Latency, VRAM & RAM Qualified; {acc_str}, Egress & Disk Retention NOT RUN"
     elif gate_01_status == "PASS" and gate_05_status == "PASS" and gate_04_status == "NOT RUN":
-        status_line = "Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency, Accuracy, Egress & Disk Retention NOT RUN)"
+        acc_str = "Accuracy Qualified" if gate_02_status == "PASS" else ("Accuracy FAILED" if gate_02_status == "FAIL" else "Accuracy NOT RUN")
+        status_line = f"Stage 2 Prototype — Partial Qualification (Core Latency & RAM Met; Ollama Co-Residency NOT RUN; {acc_str}; Egress & Disk Retention NOT RUN)"
     else:
         status_line = "Stage 2 Prototype — Incomplete / Partial Qualification"
 
@@ -1555,6 +1587,13 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     else:
         clean_str = " (Unknown)"
     git_commit_display = f"`{git_commit_str}`{clean_str}"
+
+    manifest_name = report.get("option_b_gate_02", {}).get("manifest_display_name") or "voice_corpus_manifest.json"
+    manifest_sha = report.get("option_b_gate_02", {}).get("manifest_sha256")
+    if manifest_sha:
+        manifest_display = f"`{manifest_name}` (SHA-256: `{manifest_sha[:16]}...`)"
+    else:
+        manifest_display = f"`{manifest_name}`"
 
     lines: list[str] = [
         "# PICO — Local STT (whisper.cpp) Hardware Qualification Report (Stage 2 Prototype)",
@@ -1570,7 +1609,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "- **Responsiveness Note**: FastAPI event loop responsiveness and capture stream continuity under concurrent load were not measured during this prototype benchmark and are marked NOT RUN.",
         f"- **Runtime Engine**: whisper.cpp {report['runtime'].get('version', 'unknown')}",
         f"- **Model**: `{report['model'].get('filename')}` ({round(report['model'].get('size_bytes', 0) / (1024*1024), 2)} MB, SHA-256: `{report['model'].get('sha256', '')[:16]}...`)",
-        "- **Corpus Manifest**: `docs/evaluation/voice_corpus_manifest.json`",
+        f"- **Corpus Manifest**: {manifest_display}",
         "",
         "---",
         "",
@@ -1629,10 +1668,59 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "## 3. Accuracy Metrics Breakdown",
         "",
-        f"- **Real Speech Aggregate WER**: {format_metric_pct(real_wer)} (total edits / total reference words)",
-        f"- **Real Speech Macro-Average WER**: {format_metric_pct(real_macro_wer)} (unweighted mean across clips)",
+    ])
+
+    opt_b = report.get("option_b_gate_02", {})
+    if opt_b.get("command_results"):
+        lines.extend([
+            "### 3.1 Formal Option B Human Accuracy Results (GATE-VOICE-02)",
+            "",
+            "| Command ID | Reference Text | Words | Emitted Hypothesis | Edits (S/D/I) | Command WER |",
+            "|---|---|---|---|---|---|",
+        ])
+        for cr in opt_b["command_results"]:
+            safe_ref = cr["reference_text"].replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            safe_hyp = cr["hypothesis_text"].replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            lines.append(
+                f"| `{cr['command_id']}` | \"{safe_ref}\" | {cr['reference_word_count']} | "
+                f"\"{safe_hyp}\" | {cr['edit_distance']} ({cr['substitutions']}/{cr['deletions']}/{cr['insertions']}) | "
+                f"{format_metric_pct(cr['wer_ratio'])} |"
+            )
+        lines.extend([
+            "",
+            f"- **Option B Aggregate Edits**: {opt_b.get('aggregate_edit_count')} edits",
+            f"- **Option B Exact Denominator**: {opt_b.get('exact_reference_denominator', 49)} reference words",
+            f"- **Option B Aggregate WER**: **{opt_b.get('aggregate_wer_pct')}** (Threshold: <= {opt_b.get('target_wer_threshold_pct', 12.0)}%)",
+            f"- **GATE-VOICE-02 Formal Gate Status**: **{opt_b.get('status', 'NOT RUN')}**",
+            "",
+        ])
+    else:
+        opt_b_reason = opt_b.get("reason", "Option B human command corpus pending acquisition and registration.")
+        lines.extend([
+            "### 3.1 Formal Option B Human Accuracy Status (GATE-VOICE-02)",
+            "",
+            f"- **GATE-VOICE-02 Status**: **{opt_b.get('status', 'NOT RUN')}**",
+            f"- **Details**: {opt_b_reason}",
+            "",
+        ])
+
+    lines.extend([
+        "### 3.2 Historical Mixed Real-Speech Prototype Fixtures (Informational Only)",
+        "",
+        f"- **Real Speech Aggregate WER**: {format_metric_pct(real_wer)} (total edits / total reference words across historical mixed real-speech fixtures: 5 JFK speech slices + 1 vosk_digits.wav numeric recording)",
+        f"- **Real Speech Macro-Average WER**: {format_metric_pct(real_macro_wer)} (unweighted mean across the 6 mixed real-speech fixtures)",
         f"- **Real Speech Macro-Average CER**: {format_metric_pct(real_macro_cer)}",
-        f"- **Synthetic Commands Smoke WER**: {format_metric_pct(smoke_wer)} (reported separately from real speech)",
+        "",
+        "### 3.3 Synthetic Commands Smoke Test Fixtures (CI Regression Smoke Only)",
+        "",
+        f"- **Synthetic Commands Smoke WER**: {format_metric_pct(smoke_wer)} (Windows SAPI smoke test; reported separately from real speech)",
+        "",
+        "> [!NOTE]",
+        "> **Canonical Option B Corpus & Formal WER Status**:",
+        "> The canonical command reference word count is formally established at exactly **49 reference words** across the four canonical commands ($2 + 8 + 13 + 26 = 49\\text{ words}$, with command 4 having 26 words).",
+        "> Formal Word Error Rate ($\\text{WER}$) for `GATE-VOICE-02` can **only** be calculated when all four natural human audio recordings are provided under Option B.",
+        "> Historical mixed real-speech prototype fixtures (5 JFK speech slices + 1 Vosk digit sequence, 75 total reference words) and synthetic Windows SAPI smoke clips represent distinct preliminary evaluation datasets; their edit counts and error metrics must **never** be cross-conflated with or transferred onto the canonical Option B command corpus.",
+        f"> Consequently, `GATE-VOICE-02` status is: **`{report.get('gates', {}).get('GATE-VOICE-02', {}).get('status', 'NOT RUN')}`**.",
         "",
         "---",
         "",
@@ -1688,6 +1776,18 @@ def main() -> None:
         help="Directory containing evaluation WAV files",
     )
     parser.add_argument(
+        "--option-b-corpus-dir",
+        type=Path,
+        default=None,
+        help="Directory containing local Option B human command WAV files (GATE-VOICE-02)",
+    )
+    parser.add_argument(
+        "--manifest-path",
+        type=Path,
+        default=REPO_ROOT / "docs" / "evaluation" / "voice_corpus_manifest.json",
+        help="Path to voice corpus manifest JSON",
+    )
+    parser.add_argument(
         "--threads",
         type=int,
         default=4,
@@ -1727,6 +1827,8 @@ def main() -> None:
         corpus_dir=args.corpus_dir,
         n_threads=args.threads,
         iterations=args.iterations,
+        option_b_corpus_dir=args.option_b_corpus_dir,
+        manifest_path=args.manifest_path,
     )
 
     # Save JSON report
