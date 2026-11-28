@@ -23,7 +23,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.12.4",
+    "@tauri-apps/cli": "^2.12.6",
     "@testing-library/jest-dom": "^8.0.0",
     "@testing-library/react": "^16.2.0",
     "@types/node": "^26.6.6",
