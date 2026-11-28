@@ -1,12 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Trash2, RefreshCw, AlertCircle, CheckCircle, Info, Clock } from 'lucide-react';
+import {
+  Search,
+  Trash2,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle,
+  Info,
+  Clock,
+} from 'lucide-react';
 import { api } from '../../api/client';
 import { ProceduralMemoryItem, SemanticFact, WorkingMemoryItem } from '../../types';
+
+type MemoryTab = 'semantic' | 'working' | 'procedural' | 'status';
 import { useConnectivity } from '../../context/ConnectivityContext';
 
 export const MemoryInspector: React.FC = () => {
-  const { isBackendReachable } = useConnectivity();
-  const [activeTab, setActiveTab] = useState<'semantic' | 'working' | 'procedural' | 'status'>('semantic');
+  const { isBackendReachable: _isBackendReachable } = useConnectivity();
+  const [activeTab, setActiveTab] = useState<MemoryTab>('semantic');
   const [semanticFacts, setSemanticFacts] = useState<SemanticFact[]>([]);
   const [workingItems, setWorkingItems] = useState<WorkingMemoryItem[]>([]);
   const [procedures, setProcedures] = useState<ProceduralMemoryItem[]>([]);
@@ -84,26 +94,18 @@ export const MemoryInspector: React.FC = () => {
           delete next[factId];
           return next;
         });
-        setErrorNotice(`Reconciliation confirmed: memory fact ${factId} was deleted.`);
-      } else {
-        setAmbiguousFactIds((prev) => {
-          const next = { ...prev };
-          delete next[factId];
-          return next;
-        });
-        setErrorNotice(`Reconciliation confirmed: memory fact ${factId} still exists on backend. Controls unlocked.`);
       }
+      setLastSuccessfulFetch(new Date());
+      setIsStale(false);
     } catch (err) {
-      setErrorNotice(
-        `Reconciliation inconclusive: could not verify memory state (${err instanceof Error ? err.message : String(err)}). Fact deletion remains locked.`
-      );
+      setErrorNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleForgetFact = async (factId: string) => {
-    if (!isBackendReachable) {
+  const handleForget = async (factId: string) => {
+    if (!_isBackendReachable) {
       setErrorNotice('Cannot forget memory while offline. Deletion requests are not queued offline.');
       return;
     }
@@ -122,7 +124,7 @@ export const MemoryInspector: React.FC = () => {
         setErrorNotice('Fact could not be forgotten or does not exist.');
       }
     } catch (err) {
-      const isNet = !isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
+      const isNet = !_isBackendReachable || (err instanceof Error && (err.name === 'NetworkError' || err.name === 'TimeoutError'));
       if (isNet) {
         setAmbiguousFactIds((prev) => ({
           ...prev,
@@ -305,7 +307,7 @@ export const MemoryInspector: React.FC = () => {
                         <button
                           className="btn btn-secondary"
                           onClick={() => reconcileFact(fact.id)}
-                          disabled={loading || !isBackendReachable}
+                          disabled={loading || !_isBackendReachable}
                           style={{ padding: '3px 8px', fontSize: '0.75rem' }}
                           title="Reconcile authoritative memory state from backend"
                         >
@@ -318,9 +320,9 @@ export const MemoryInspector: React.FC = () => {
                         <span style={{ fontSize: '0.75rem', color: 'var(--warning)' }}>Confirm forget?</span>
                         <button
                           className="btn btn-danger"
-                          onClick={() => handleForgetFact(fact.id)}
-                          disabled={loading || !isBackendReachable}
-                          title={!isBackendReachable ? 'Controls locked: backend offline' : 'Forget fact'}
+                          onClick={() => handleForget(fact.id)}
+                          disabled={loading || !_isBackendReachable}
+                          title={!_isBackendReachable ? 'Controls locked: backend offline' : 'Forget fact'}
                           style={{ padding: '4px 8px', fontSize: '0.75rem' }}
                         >
                           Forget
@@ -337,10 +339,10 @@ export const MemoryInspector: React.FC = () => {
                       <button
                         className="btn-icon"
                         onClick={() => setConfirmForgetFactId(fact.id)}
-                        disabled={loading || !isBackendReachable}
-                        title={!isBackendReachable ? 'Cannot delete facts while offline' : 'Forget this memory fact'}
+                        disabled={loading || !_isBackendReachable}
+                        title={!_isBackendReachable ? 'Cannot delete facts while offline' : 'Forget this memory fact'}
                         aria-label="Forget fact"
-                        style={{ color: !isBackendReachable ? 'var(--text-muted)' : 'var(--text-muted)', opacity: !isBackendReachable ? 0.5 : 1 }}
+                        style={{ color: !_isBackendReachable ? 'var(--text-muted)' : 'var(--text-muted)', opacity: !_isBackendReachable ? 0.5 : 1 }}
                       >
                         <Trash2 style={{ width: 16, height: 16 }} />
                       </button>
